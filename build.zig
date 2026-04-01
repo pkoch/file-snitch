@@ -4,26 +4,46 @@ const fuse_support = @import("build/fuse_support.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const root_module = b.createModule(.{
+    const executable_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    configureFuseInterop(b, executable_module, target.result.os.tag);
 
     const exe = b.addExecutable(.{
         .name = "file-snitch",
-        .root_module = root_module,
+        .root_module = executable_module,
     });
+    fuse_support.addCompileCommandsStep(b, target.result.os.tag);
+    b.installArtifact(exe);
 
-    exe.root_module.addIncludePath(b.path("c"));
-    exe.root_module.addCSourceFile(.{
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureFuseInterop(b, test_module, target.result.os.tag);
+
+    const tests = b.addTest(.{
+        .root_module = test_module,
+    });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run integration tests");
+    test_step.dependOn(&run_tests.step);
+}
+
+fn configureFuseInterop(
+    b: *std.Build,
+    module: *std.Build.Module,
+    os_tag: std.Target.Os.Tag,
+) void {
+    module.addIncludePath(b.path("c"));
+    module.addCSourceFile(.{
         .file = b.path("c/libfuse_shim.c"),
         .flags = &.{ "-std=c11", "-D_FILE_OFFSET_BITS=64" },
     });
-
-    fuse_support.configureModule(b, exe.root_module, target.result.os.tag);
-    fuse_support.addCompileCommandsStep(b, target.result.os.tag);
-
-    b.installArtifact(exe);
+    fuse_support.configureModule(b, module, os_tag);
 }

@@ -15,7 +15,7 @@ Current state:
 - the synthetic root directory now answers `getattr` and `readdir` cleanly
 - the mount now exposes one readable synthetic status file
 - the mount now exposes one readable synthetic audit file
-- the repo now has a debug inspection path for verifying synthetic filesystem behavior without mounting
+- the daemon/session API now supports dry-run inspection of synthetic filesystem behavior without mounting
 - the mount now seeds one-level regular files from a host backing-store directory
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - those one-level regular file mutations now write through into the host backing-store directory
@@ -30,12 +30,10 @@ Current state:
 - the daemon now owns an in-memory policy engine with path-prefix rules and `allow` / `deny` / `prompt` outcomes
 - the filesystem model, audit trail, and path semantics now live in Zig
 - the C shim now only owns `libfuse` ABI glue, mount execution, host-fd lock plumbing, and macOS xattr syscalls
-- the demo now exercises both the allow and deny sides of that mutation policy
 - the daemon now has a CLI prompt broker with default-deny timeout behavior
-- the demo now exercises rule-driven `prompt` outcomes with both unavailable and scripted-allow brokers
 - the session now records an in-memory audit trail for reads and mutations
 - the synthetic audit file now renders that in-memory audit trail as mounted file content
-- the demo app still inspects the execution plan without mounting
+- Zig integration tests now exercise the dry-run session path, execution plan, persistence, and policy behavior without mounting
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
 - a separate scripted macFUSE prompt smoke test now verifies live prompt allow, explicit deny, and timeout behavior
 - the live smoke test now also verifies temp-write replacement over an existing file
@@ -73,9 +71,8 @@ FUSE discovery:
 
 Current verification:
 - `zig build`
+- `zig build test`
 - `zig build compile-commands`
-- `zig test src/prompt.zig -lc`
-- `./zig-out/bin/file-snitch demo`
 - `./scripts/live-mount-smoke.sh`
 - `./scripts/prompt-mount-smoke.sh`
 
