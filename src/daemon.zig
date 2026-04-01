@@ -115,6 +115,10 @@ pub const Session = struct {
         try fuse.debugTruncateFile(self.handle, path.ptr, size);
     }
 
+    pub fn debugRenameFile(self: *Session, from: [:0]const u8, to: [:0]const u8) !void {
+        try fuse.debugRenameFile(self.handle, from.ptr, to.ptr);
+    }
+
     pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
         try fuse.debugRemoveFile(self.handle, path.ptr);
     }

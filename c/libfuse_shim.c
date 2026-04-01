@@ -145,6 +145,11 @@ static int fsn_truncate_user_file_with_persistence(
 );
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path);
+static int fsn_rename_user_file_with_persistence(
+    struct fsn_fuse_session *session,
+    const char *from,
+    const char *to
+);
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     (void)conn;
@@ -1151,6 +1156,111 @@ static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *sessio
     return fsn_remove_user_file(session, path);
 }
 
+static int fsn_rename_user_file_with_persistence(
+    struct fsn_fuse_session *session,
+    const char *from,
+    const char *to
+) {
+    char source_host_path[PATH_MAX];
+    char target_host_path[PATH_MAX];
+    char *target_name;
+    char *target_path;
+    uint32_t source_index;
+    uint32_t target_index;
+    uint32_t index;
+    int found_target;
+    struct fsn_virtual_file *file;
+    int result;
+
+    if (session == NULL || from == NULL || to == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    if (!fsn_is_user_file_path(from) || !fsn_is_user_file_path(to)) {
+        return -EINVAL;
+    }
+
+    if (fsn_is_reserved_path(session, from) || fsn_is_reserved_path(session, to)) {
+        return -EACCES;
+    }
+
+    if (strcmp(from, to) == 0) {
+        return 0;
+    }
+
+    source_index = 0;
+    target_index = 0;
+    found_target = 0;
+    for (index = 0; index < session->user_file_count; index += 1) {
+        if (strcmp(session->user_files[index].path, from) == 0) {
+            source_index = index;
+            found_target |= 2;
+        } else if (strcmp(session->user_files[index].path, to) == 0) {
+            target_index = index;
+            found_target |= 1;
+        }
+    }
+
+    if ((found_target & 2) == 0) {
+        return -ENOENT;
+    }
+
+    target_name = fsn_strdup(to + 1);
+    target_path = fsn_strdup(to);
+    if (target_name == NULL || target_path == NULL) {
+        free(target_name);
+        free(target_path);
+        return -ENOMEM;
+    }
+
+    result = fsn_build_backing_store_file_path(session, from, source_host_path, sizeof(source_host_path));
+    if (result != 0) {
+        free(target_name);
+        free(target_path);
+        return result;
+    }
+
+    result = fsn_build_backing_store_file_path(session, to, target_host_path, sizeof(target_host_path));
+    if (result != 0) {
+        free(target_name);
+        free(target_path);
+        return result;
+    }
+
+    if (rename(source_host_path, target_host_path) != 0) {
+        free(target_name);
+        free(target_path);
+        return -errno;
+    }
+
+    if ((found_target & 1) != 0) {
+        fsn_free_virtual_file(&session->user_files[target_index]);
+        if (target_index + 1 < session->user_file_count) {
+            memmove(
+                &session->user_files[target_index],
+                &session->user_files[target_index + 1],
+                (size_t)(session->user_file_count - target_index - 1) * sizeof(*session->user_files)
+            );
+        }
+        session->user_file_count -= 1;
+        memset(&session->user_files[session->user_file_count], 0, sizeof(*session->user_files));
+        if (target_index < source_index) {
+            source_index -= 1;
+        }
+    }
+
+    file = &session->user_files[source_index];
+    free(file->name);
+    free(file->path);
+    file->name = target_name;
+    file->path = target_path;
+    return 0;
+}
+
 static int fsn_mutations_allowed(const struct fsn_fuse_session *session) {
     return session != NULL && session->allow_mutations != 0;
 }
@@ -1359,6 +1469,34 @@ static int fsn_fuse_unlink(const char *path) {
     }
 }
 
+static int fsn_fuse_rename(const char *from, const char *to) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    char audit_path[(PATH_MAX * 2) + 8];
+    int result;
+    int written;
+
+    if (from == NULL || to == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_is_reserved_path(session, from) || fsn_is_reserved_path(session, to)) {
+        written = snprintf(audit_path, sizeof(audit_path), "%s -> %s", from, to);
+        if (written < 0 || (size_t)written >= sizeof(audit_path)) {
+            strcpy(audit_path, "<rename>");
+        }
+        fsn_record_audit_event(session, "rename", audit_path, -EACCES);
+        return -EACCES;
+    }
+
+    result = fsn_rename_user_file_with_persistence(session, from, to);
+    written = snprintf(audit_path, sizeof(audit_path), "%s -> %s", from, to);
+    if (written < 0 || (size_t)written >= sizeof(audit_path)) {
+        strcpy(audit_path, "<rename>");
+    }
+    fsn_record_audit_event(session, "rename", audit_path, result);
+    return result;
+}
+
 static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     memset(&session->operations, 0, sizeof(session->operations));
     session->operations.init = fsn_fuse_init;
@@ -1374,7 +1512,8 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.read = fsn_fuse_read;
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
-    session->configured_operation_count = 12;
+    session->operations.rename = fsn_fuse_rename;
+    session->configured_operation_count = 13;
 }
 
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session) {
@@ -1882,6 +2021,24 @@ int fsn_fuse_debug_truncate_file(struct fsn_fuse_session *session, const char *p
         fsn_record_audit_event(session, "truncate", path, result);
         return result;
     }
+}
+
+int fsn_fuse_debug_rename_file(struct fsn_fuse_session *session, const char *from, const char *to) {
+    char audit_path[(PATH_MAX * 2) + 8];
+    int result;
+    int written;
+
+    if (session == NULL || from == NULL || to == NULL) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    result = fsn_rename_user_file_with_persistence(session, from, to);
+    written = snprintf(audit_path, sizeof(audit_path), "%s -> %s", from, to);
+    if (written < 0 || (size_t)written >= sizeof(audit_path)) {
+        strcpy(audit_path, "<rename>");
+    }
+    fsn_record_audit_event(session, "rename", audit_path, result);
+    return result;
 }
 
 int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *path) {

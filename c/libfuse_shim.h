@@ -114,6 +114,11 @@ int fsn_fuse_debug_truncate_file(
     const char *path,
     uint64_t size
 );
+int fsn_fuse_debug_rename_file(
+    struct fsn_fuse_session *session,
+    const char *from,
+    const char *to
+);
 int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *path);
 uint32_t fsn_fuse_debug_audit_count(const struct fsn_fuse_session *session);
 int fsn_fuse_debug_audit_event_at(

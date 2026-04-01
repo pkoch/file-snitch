@@ -6,7 +6,8 @@ pub fn run() !void {
     const allocator = std.heap.page_allocator;
     const environment = try fuse.probe();
     const audit_path = "/file-snitch-audit";
-    const note_path = "/demo-note.txt";
+    const created_note_path = "/demo-note.txt";
+    const note_path = "/renamed-note.txt";
     const blocked_note_path = "/blocked-note.txt";
     const seed_path = "/seed-from-store.txt";
     const status_path = "/file-snitch-status";
@@ -23,8 +24,9 @@ pub fn run() !void {
     });
     defer session.deinit();
 
-    try session.debugCreateFile(note_path, 0o600);
-    try session.debugWriteFile(note_path, "hello from file-snitch\n");
+    try session.debugCreateFile(created_note_path, 0o600);
+    try session.debugWriteFile(created_note_path, "hello from file-snitch\n");
+    try session.debugRenameFile(created_note_path, note_path);
 
     var readonly_session = try daemon.Session.init(allocator, .{
         .mount_path = mount_path,

@@ -73,6 +73,11 @@ const c = struct {
         buf: [*:0]const u8,
     ) c_int;
     extern fn fsn_fuse_debug_truncate_file(session: *OpaqueSession, path: [*:0]const u8, size: u64) c_int;
+    extern fn fsn_fuse_debug_rename_file(
+        session: *OpaqueSession,
+        from: [*:0]const u8,
+        to: [*:0]const u8,
+    ) c_int;
     extern fn fsn_fuse_debug_remove_file(session: *OpaqueSession, path: [*:0]const u8) c_int;
     extern fn fsn_fuse_debug_audit_count(session: *const OpaqueSession) u32;
     extern fn fsn_fuse_debug_audit_event_at(session: *const OpaqueSession, index: u32, out: *RawAuditEvent) c_int;
@@ -144,6 +149,7 @@ pub const Error = error{
     DebugCreateFailed,
     DebugWriteFailed,
     DebugTruncateFailed,
+    DebugRenameFailed,
     DebugRemoveFailed,
     DebugAuditFailed,
 };
@@ -295,6 +301,12 @@ pub fn debugWriteFile(session: *RawSession, path: [*:0]const u8, contents: [*:0]
 pub fn debugTruncateFile(session: *RawSession, path: [*:0]const u8, size: u64) Error!void {
     if (c.fsn_fuse_debug_truncate_file(session, path, size) != 0) {
         return error.DebugTruncateFailed;
+    }
+}
+
+pub fn debugRenameFile(session: *RawSession, from: [*:0]const u8, to: [*:0]const u8) Error!void {
+    if (c.fsn_fuse_debug_rename_file(session, from, to) != 0) {
+        return error.DebugRenameFailed;
     }
 }
 

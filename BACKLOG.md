@@ -56,6 +56,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Expose the in-memory audit trail as a readable synthetic file
 - `[x]` Seed one-level regular files from a host backing-store directory
 - `[x]` Persist one-level regular file mutations into the host backing-store directory
+- `[x]` Support one-level file rename with backing-store persistence
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:

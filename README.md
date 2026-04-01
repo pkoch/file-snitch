@@ -19,6 +19,7 @@ Current state:
 - the mount now seeds one-level regular files from a host backing-store directory
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - those one-level regular file mutations now write through into the host backing-store directory
+- one-level file rename now updates both the mounted view and the backing-store directory
 - mutating operations are now controlled by an explicit session policy flag
 - the demo now exercises both the allow and deny sides of that mutation policy
 - the session now records an in-memory audit trail for reads and mutations
