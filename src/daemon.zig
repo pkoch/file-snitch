@@ -14,6 +14,10 @@ pub const State = struct {
 
 pub const Description = fuse.SessionDescription;
 
+pub const ExecutionPlan = struct {
+    args: []const []const u8,
+};
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     state: *State,
@@ -53,6 +57,23 @@ pub const Session = struct {
 
     pub fn describe(self: Session) !Description {
         return try fuse.describeSession(self.handle);
+    }
+
+    pub fn executionPlan(self: Session, allocator: std.mem.Allocator) !ExecutionPlan {
+        const count = fuse.sessionArgumentCount(self.handle);
+        var args = try allocator.alloc([]const u8, count);
+        errdefer allocator.free(args);
+
+        for (0..count) |index| {
+            args[index] = try fuse.sessionArgument(self.handle, @intCast(index));
+        }
+
+        return .{ .args = args };
+    }
+
+    pub fn freeExecutionPlan(self: Session, allocator: std.mem.Allocator, plan: ExecutionPlan) void {
+        _ = self;
+        allocator.free(plan.args);
     }
 
     pub fn run(self: *Session) !void {

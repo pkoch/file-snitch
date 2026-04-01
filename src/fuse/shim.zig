@@ -22,12 +22,13 @@ const c = struct {
     pub const RawSessionInfo = extern struct {
         high_level_ops_size: usize,
         configured_operation_count: u32,
+        planned_argument_count: u32,
         mount_implemented: u8,
         has_session_state: u8,
         has_daemon_state: u8,
         has_init_callback: u8,
         run_in_foreground: u8,
-        reserved: [3]u8,
+        reserved: [7]u8,
     };
 
     extern fn fsn_fuse_probe(out: *RawEnvironment) c_int;
@@ -36,6 +37,8 @@ const c = struct {
     extern fn fsn_fuse_session_destroy(session: *OpaqueSession) void;
     extern fn fsn_fuse_session_describe(session: *const OpaqueSession, out: *RawSessionInfo) c_int;
     extern fn fsn_fuse_session_run(session: *OpaqueSession) c_int;
+    extern fn fsn_fuse_session_argument_count(session: *const OpaqueSession) u32;
+    extern fn fsn_fuse_session_argument_at(session: *const OpaqueSession, index: u32) ?[*:0]const u8;
     extern fn fsn_fuse_session_mount_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_session_backing_store_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_status_label(status: c_int) [*:0]const u8;
@@ -62,6 +65,7 @@ pub const SessionDescription = struct {
     backing_store_path: []const u8,
     high_level_ops_size: usize,
     configured_operation_count: u32,
+    planned_argument_count: u32,
     mount_implemented: bool,
     has_session_state: bool,
     has_daemon_state: bool,
@@ -74,8 +78,8 @@ pub const Error = error{
     SessionCreateFailed,
     SessionDescribeFailed,
     SessionRunFailed,
-    SessionRunNotImplemented,
     MissingSessionPath,
+    MissingSessionArgument,
 };
 
 pub const RawSession = c.OpaqueSession;
@@ -137,6 +141,7 @@ pub fn describeSession(session: *const RawSession) Error!SessionDescription {
         .backing_store_path = std.mem.span(backing_store_path),
         .high_level_ops_size = raw.high_level_ops_size,
         .configured_operation_count = raw.configured_operation_count,
+        .planned_argument_count = raw.planned_argument_count,
         .mount_implemented = raw.mount_implemented != 0,
         .has_session_state = raw.has_session_state != 0,
         .has_daemon_state = raw.has_daemon_state != 0,
@@ -149,9 +154,20 @@ pub fn runSession(session: *RawSession) Error!void {
     const result = c.fsn_fuse_session_run(session);
     switch (result) {
         0 => return,
-        -3 => return error.SessionRunNotImplemented,
         else => return error.SessionRunFailed,
     }
+}
+
+pub fn sessionArgumentCount(session: *const RawSession) u32 {
+    return c.fsn_fuse_session_argument_count(session);
+}
+
+pub fn sessionArgument(session: *const RawSession, index: u32) Error![]const u8 {
+    const value = c.fsn_fuse_session_argument_at(session, index) orelse {
+        return error.MissingSessionArgument;
+    };
+
+    return std.mem.span(value);
 }
 
 pub fn statusLabel(status: c_int) []const u8 {
