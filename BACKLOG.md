@@ -59,6 +59,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Support one-level file rename with backing-store persistence
 - `[x]` Support one-level file flush and fsync against the backing-store directory
 - `[x]` Mount one guarded directory backed by a simple store
+- `[x]` Verify rename-over-existing on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`
@@ -79,7 +80,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[ ]` Add a CLI prompt path with default-deny timeout behavior
 - `[ ]` Support allow-once decisions
 - `[ ]` Emit structured JSON audit logs
-- `[ ]` Test common editor temp-write and rename flows
+- `[~]` Test common editor temp-write and rename flows
 - `[ ]` Package a reproducible spike demo
 - `[ ]` Decide how v1 should handle macOS `._*` sidecar file traffic
 

@@ -66,8 +66,19 @@ if [[ ! -f "$store_dir/live-note-renamed.txt" ]]; then
   exit 1
 fi
 
+printf 'old note contents\n' >"$mount_dir/existing-note.txt"
+printf 'replacement note contents\n' >"$mount_dir/existing-note.txt.tmp"
+mv "$mount_dir/existing-note.txt.tmp" "$mount_dir/existing-note.txt"
+cat "$mount_dir/existing-note.txt"
+
+if [[ "$(cat "$store_dir/existing-note.txt")" != "replacement note contents" ]]; then
+  echo "expected replacement backing-store contents missing" >&2
+  exit 1
+fi
+
 grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
 grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
+grep -F 'existing-note.txt.tmp -> /existing-note.txt' "$mount_dir/file-snitch-audit"
 
 kill -INT "$daemon_pid"
 wait "$daemon_pid"
