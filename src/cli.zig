@@ -3,26 +3,72 @@ const daemon = @import("daemon.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    return run(args[1..]);
+}
+
 pub fn run(args: []const []const u8) !void {
+    switch (try parseCommand(args)) {
+        .help => printUsage(),
+        .mount => |command| {
+            defer command.deinit(std.heap.page_allocator);
+            var cli_prompt_context = prompt.CliContext{
+                .timeout_ms = command.prompt_timeout_ms,
+            };
+
+            try daemon.mount(std.heap.page_allocator, .{
+                .mount_path = command.mount_path,
+                .backing_store_path = command.backing_store_path,
+                .default_mutation_outcome = command.default_mutation_outcome,
+                .prompt_broker = if (command.default_mutation_outcome == .prompt)
+                    prompt.cliBroker(&cli_prompt_context)
+                else
+                    null,
+            });
+        },
+    }
+}
+
+const Command = union(enum) {
+    help,
+    mount: MountCommand,
+};
+
+const MountCommand = struct {
+    mount_path: []const u8,
+    backing_store_path: []const u8,
+    default_mutation_outcome: policy.Outcome,
+    prompt_timeout_ms: u32,
+
+    fn deinit(self: MountCommand, allocator: std.mem.Allocator) void {
+        allocator.free(self.mount_path);
+        allocator.free(self.backing_store_path);
+    }
+};
+
+fn parseCommand(args: []const []const u8) !Command {
     if (args.len == 0) {
         printUsage();
         return error.InvalidUsage;
     }
 
     if (std.mem.eql(u8, args[0], "mount")) {
-        return runMount(args[1..]);
+        return .{ .mount = try parseMountCommand(args[1..]) };
     }
 
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {
-        printUsage();
-        return;
+        return .help;
     }
 
     printUsage();
     return error.InvalidUsage;
 }
 
-fn runMount(args: []const []const u8) !void {
+fn parseMountCommand(args: []const []const u8) !MountCommand {
     if (args.len < 2 or args.len > 3) {
         printUsage();
         return error.InvalidUsage;
@@ -30,41 +76,19 @@ fn runMount(args: []const []const u8) !void {
 
     const allocator = std.heap.page_allocator;
     const mount_path = try std.fs.realpathAlloc(allocator, args[0]);
-    defer allocator.free(mount_path);
+    errdefer allocator.free(mount_path);
     const backing_store_path = try std.fs.realpathAlloc(allocator, args[1]);
-    defer allocator.free(backing_store_path);
-    const default_mutation_outcome = if (args.len == 3)
-        try parseMountPolicy(args[2])
-    else
-        policy.Outcome.deny;
-    var cli_prompt_context = prompt.CliContext{
-        .timeout_ms = try loadPromptTimeoutMs(),
-    };
+    errdefer allocator.free(backing_store_path);
 
-    try requireEmptyDirectory(mount_path);
-    try ensureDirectory(backing_store_path);
-
-    var session = try daemon.Session.init(allocator, .{
+    return .{
         .mount_path = mount_path,
         .backing_store_path = backing_store_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = default_mutation_outcome,
-        .prompt_broker = if (default_mutation_outcome == .prompt) prompt.cliBroker(&cli_prompt_context) else null,
-    });
-    defer session.deinit();
-
-    const description = try session.describe();
-    std.debug.print(
-        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
-        .{
-            description.mount_path,
-            description.backing_store_path,
-            description.configured_operation_count,
-            @tagName(description.default_mutation_outcome),
-        },
-    );
-
-    try session.run();
+        .default_mutation_outcome = if (args.len == 3)
+            try parseMountPolicy(args[2])
+        else
+            policy.Outcome.deny,
+        .prompt_timeout_ms = try loadPromptTimeoutMs(),
+    };
 }
 
 fn parseMountPolicy(arg: []const u8) !policy.Outcome {
@@ -93,21 +117,6 @@ fn loadPromptTimeoutMs() !u32 {
     defer allocator.free(raw_value);
 
     return std.fmt.parseInt(u32, raw_value, 10);
-}
-
-fn requireEmptyDirectory(path: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
-    defer dir.close();
-
-    var iterator = dir.iterate();
-    if (try iterator.next() != null) {
-        return error.MountPathNotEmpty;
-    }
-}
-
-fn ensureDirectory(path: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(path, .{});
-    dir.close();
 }
 
 fn printUsage() void {

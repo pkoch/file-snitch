@@ -227,6 +227,42 @@ pub const Session = struct {
     }
 };
 
+pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
+    try requireEmptyDirectory(config.mount_path);
+    try ensureDirectory(config.backing_store_path);
+
+    var session = try Session.init(allocator, config);
+    defer session.deinit();
+
+    const description = try session.describe();
+    std.debug.print(
+        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
+        .{
+            description.mount_path,
+            description.backing_store_path,
+            description.configured_operation_count,
+            @tagName(description.default_mutation_outcome),
+        },
+    );
+
+    try session.run();
+}
+
+fn requireEmptyDirectory(path: []const u8) !void {
+    var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    if (try iterator.next() != null) {
+        return error.MountPathNotEmpty;
+    }
+}
+
+fn ensureDirectory(path: []const u8) !void {
+    var dir = try std.fs.openDirAbsolute(path, .{});
+    dir.close();
+}
+
 fn stateFromOpaque(opaque_state: ?*anyopaque) ?*State {
     const ptr = opaque_state orelse return null;
     return @ptrCast(@alignCast(ptr));
