@@ -17,6 +17,7 @@ Current state:
 - the repo now has a debug inspection path for verifying synthetic filesystem behavior without mounting
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - mutating operations are now controlled by an explicit session policy flag
+- the demo now exercises both the allow and deny sides of that mutation policy
 - the demo app inspects the execution plan but does not invoke a live mount
 - actual mount behavior is not implemented yet
 

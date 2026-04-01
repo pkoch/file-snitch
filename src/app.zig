@@ -6,6 +6,7 @@ pub fn run() !void {
     const allocator = std.heap.page_allocator;
     const environment = try fuse.probe();
     const note_path = "/demo-note.txt";
+    const blocked_note_path = "/blocked-note.txt";
     const status_path = "/file-snitch-status";
     var session = try daemon.Session.init(allocator, .{
         .mount_path = "/tmp/file-snitch.mount",
@@ -14,6 +15,13 @@ pub fn run() !void {
         .allow_mutations = true,
     });
     defer session.deinit();
+    var readonly_session = try daemon.Session.init(allocator, .{
+        .mount_path = "/tmp/file-snitch-readonly.mount",
+        .backing_store_path = "/tmp/file-snitch-readonly.store",
+        .run_in_foreground = true,
+        .allow_mutations = false,
+    });
+    defer readonly_session.deinit();
 
     try session.debugCreateFile(note_path, 0o600);
     try session.debugWriteFile(note_path, "hello from file-snitch\n");
@@ -94,6 +102,14 @@ pub fn run() !void {
         "run path is implemented but not invoked from the demo app to avoid mounting side effects\n",
         .{},
     );
+
+    readonly_session.debugCreateFile(blocked_note_path, 0o600) catch |err| switch (err) {
+        error.DebugCreateFailed => std.debug.print(
+            "read-only session blocked create as expected (mutations={any})\n",
+            .{readonly_session.state.allow_mutations},
+        ),
+        else => return err,
+    };
 
     if (session.state.run_attempts != 0) {
         return error.Unexpected;
