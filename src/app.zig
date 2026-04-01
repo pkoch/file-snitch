@@ -2,6 +2,7 @@ const std = @import("std");
 const daemon = @import("daemon.zig");
 const fuse = @import("fuse/shim.zig");
 const policy = @import("policy.zig");
+const prompt = @import("prompt.zig");
 
 pub fn run(args: []const []const u8) !void {
     if (args.len == 0 or std.mem.eql(u8, args[0], "demo")) {
@@ -29,6 +30,7 @@ fn runDemo() !void {
     const note_path = "/renamed-note.txt";
     const blocked_note_path = "/blocked-note.txt";
     const prompted_note_path = "/prompted-note.txt";
+    const allowed_prompt_note_path = "/allowed-prompt-note.txt";
     const seed_path = "/seed-from-store.txt";
     const status_path = "/file-snitch-status";
     const run_id = std.time.nanoTimestamp();
@@ -76,6 +78,22 @@ fn runDemo() !void {
         },
     });
     defer policy_session.deinit();
+    var allow_prompt_context = prompt.ScriptedContext.init(&.{.allow});
+    var allowed_prompt_session = try daemon.Session.init(allocator, .{
+        .mount_path = mount_path,
+        .backing_store_path = backing_store.path,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .allow,
+        .policy_rules = &.{
+            .{
+                .path_prefix = allowed_prompt_note_path,
+                .access_class = .create,
+                .outcome = .prompt,
+            },
+        },
+        .prompt_broker = prompt.scriptedBroker(&allow_prompt_context),
+    });
+    defer allowed_prompt_session.deinit();
 
     const description = try session.describe();
     const plan = try session.executionPlan(allocator);
@@ -201,6 +219,12 @@ fn runDemo() !void {
         else => return err,
     };
 
+    try allowed_prompt_session.debugCreateFile(allowed_prompt_note_path, 0o600);
+    std.debug.print(
+        "scripted prompt allowed create for {s}\n",
+        .{allowed_prompt_note_path},
+    );
+
     const audit_events = try session.auditEvents(allocator);
     defer allocator.free(audit_events);
     const readonly_audit_events = try readonly_session.auditEvents(allocator);
@@ -249,6 +273,9 @@ fn runMount(args: []const []const u8) !void {
         try parseMountPolicy(args[2])
     else
         policy.Outcome.deny;
+    var cli_prompt_context = prompt.CliContext{
+        .timeout_ms = try loadPromptTimeoutMs(),
+    };
 
     try requireEmptyDirectory(mount_path);
     try ensureDirectory(backing_store_path);
@@ -258,6 +285,7 @@ fn runMount(args: []const []const u8) !void {
         .backing_store_path = backing_store_path,
         .run_in_foreground = true,
         .default_mutation_outcome = default_mutation_outcome,
+        .prompt_broker = if (default_mutation_outcome == .prompt) prompt.cliBroker(&cli_prompt_context) else null,
     });
     defer session.deinit();
 
@@ -290,6 +318,17 @@ fn parseMountPolicy(arg: []const u8) !policy.Outcome {
 
     printUsage();
     return error.InvalidUsage;
+}
+
+fn loadPromptTimeoutMs() !u32 {
+    const allocator = std.heap.page_allocator;
+    const raw_value = std.process.getEnvVarOwned(allocator, "FILE_SNITCH_PROMPT_TIMEOUT_MS") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return 5_000,
+        else => return err,
+    };
+    defer allocator.free(raw_value);
+
+    return std.fmt.parseInt(u32, raw_value, 10);
 }
 
 fn requireEmptyDirectory(path: []const u8) !void {

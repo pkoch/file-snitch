@@ -88,10 +88,11 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
   - `rmdir`
   - `truncate`
 - `[x]` Add an in-memory policy engine with allow, deny, and prompt outcomes
-- `[ ]` Add a CLI prompt path with default-deny timeout behavior
+- `[x]` Add a CLI prompt path with default-deny timeout behavior
 - `[ ]` Support allow-once decisions
 - `[ ]` Emit structured JSON audit logs
 - `[x]` Test common editor temp-write and rename flows
+- `[x]` Verify live prompt allow, deny, and timeout flows on macOS
 - `[ ]` Package a reproducible spike demo
 
 ## Phase 2: encryption layer

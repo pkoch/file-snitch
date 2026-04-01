@@ -2,6 +2,7 @@ const std = @import("std");
 const filesystem = @import("filesystem.zig");
 const fuse = @import("fuse/shim.zig");
 const policy = @import("policy.zig");
+const prompt = @import("prompt.zig");
 
 pub const Config = struct {
     mount_path: []const u8,
@@ -9,6 +10,7 @@ pub const Config = struct {
     run_in_foreground: bool = true,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
+    prompt_broker: ?prompt.Broker = null,
 };
 
 pub const Description = struct {
@@ -70,6 +72,7 @@ pub const Session = struct {
                 .backing_store_path = config.backing_store_path,
                 .default_mutation_outcome = config.default_mutation_outcome,
                 .policy_rules = config.policy_rules,
+                .prompt_broker = config.prompt_broker,
             }),
         };
         errdefer state.filesystem.deinit();

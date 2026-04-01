@@ -31,11 +31,13 @@ Current state:
 - the filesystem model, audit trail, and path semantics now live in Zig
 - the C shim now only owns `libfuse` ABI glue, mount execution, host-fd lock plumbing, and macOS xattr syscalls
 - the demo now exercises both the allow and deny sides of that mutation policy
-- the demo now also exercises rule-driven `prompt` and `deny` outcomes, with `prompt` currently defaulting to deny until a prompt broker exists
+- the daemon now has a CLI prompt broker with default-deny timeout behavior
+- the demo now exercises rule-driven `prompt` outcomes with both unavailable and scripted-allow brokers
 - the session now records an in-memory audit trail for reads and mutations
 - the synthetic audit file now renders that in-memory audit trail as mounted file content
 - the demo app still inspects the execution plan without mounting
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
+- a separate scripted macFUSE prompt smoke test now verifies live prompt allow, explicit deny, and timeout behavior
 - the live smoke test now also verifies temp-write replacement over an existing file
 - the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
 - the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
@@ -72,5 +74,12 @@ FUSE discovery:
 Current verification:
 - `zig build`
 - `zig build compile-commands`
+- `zig test src/prompt.zig -lc`
 - `./zig-out/bin/file-snitch demo`
 - `./scripts/live-mount-smoke.sh`
+- `./scripts/prompt-mount-smoke.sh`
+
+Prompt notes:
+- `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
+- prompt timeout defaults to 5 seconds and falls back to deny
+- set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing

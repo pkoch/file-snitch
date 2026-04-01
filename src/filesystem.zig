@@ -1,5 +1,6 @@
 const std = @import("std");
 const policy = @import("policy.zig");
+const prompt = @import("prompt.zig");
 const c = @cImport({
     @cInclude("unistd.h");
 });
@@ -93,6 +94,7 @@ pub const Config = struct {
     backing_store_path: []const u8,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
+    prompt_broker: ?prompt.Broker = null,
 };
 
 pub const Model = struct {
@@ -100,6 +102,7 @@ pub const Model = struct {
     mount_path: []u8,
     backing_store_path: []u8,
     policy_engine: policy.Engine,
+    prompt_broker: ?prompt.Broker,
     files: std.ArrayListUnmanaged(StoredFile) = .{},
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .{},
     next_inode: u64 = first_dynamic_inode,
@@ -115,6 +118,7 @@ pub const Model = struct {
                 config.default_mutation_outcome,
                 config.policy_rules,
             ),
+            .prompt_broker = config.prompt_broker,
         };
         errdefer model.deinit();
 
@@ -257,13 +261,14 @@ pub const Model = struct {
             .gid = context.gid,
         };
 
-        const outcome = self.policy_engine.evaluate(request);
-        if (outcome == .allow) {
-            return 0;
-        }
-
-        self.recordPolicyAudit(access_class, path, outcome);
-        return errnoCode(.ACCES);
+        return switch (self.policy_engine.evaluate(request)) {
+            .allow => 0,
+            .deny => blk: {
+                self.recordPolicyAudit(access_class, path, .deny);
+                break :blk errnoCode(.ACCES);
+            },
+            .prompt => self.resolvePromptDecision(request),
+        };
     }
 
     pub fn readInto(
@@ -903,6 +908,32 @@ pub const Model = struct {
         ) catch return;
         defer self.allocator.free(audit_event_path);
         self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome))) catch {};
+    }
+
+    fn resolvePromptDecision(self: *Model, request: policy.Request) i32 {
+        const audit_event_path = std.fmt.allocPrint(
+            self.allocator,
+            "{s} {s}",
+            .{ accessClassLabel(request.access_class), request.path },
+        ) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(audit_event_path);
+
+        const decision = if (self.prompt_broker) |broker|
+            broker.resolve(.{
+                .path = request.path,
+                .access_class = request.access_class,
+                .pid = request.pid,
+                .uid = request.uid,
+                .gid = request.gid,
+            })
+        else
+            prompt.Decision.unavailable;
+
+        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision)) catch {};
+        return switch (decision) {
+            .allow => 0,
+            .deny, .timeout, .unavailable => errnoCode(.ACCES),
+        };
     }
 
     fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32) void {
