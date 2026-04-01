@@ -65,10 +65,13 @@ struct fsn_fuse_session {
 static char *fsn_strdup(const char *value);
 static int fsn_is_root_path(const char *path);
 static int fsn_is_reserved_name(const char *name);
+static int fsn_is_transient_sidecar_name(const char *name);
 static int fsn_is_status_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_is_audit_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_is_reserved_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_is_user_file_path(const char *path);
+static int fsn_is_transient_sidecar_path(const char *path);
+static int fsn_should_persist_path(const char *path);
 static void fsn_fill_root_stat(struct stat *stbuf);
 static void fsn_fill_status_stat(const struct fsn_fuse_session *session, struct stat *stbuf);
 static void fsn_fill_audit_stat(const struct fsn_fuse_session *session, struct stat *stbuf);
@@ -294,6 +297,10 @@ static int fsn_is_reserved_name(const char *name) {
         (strcmp(name, "file-snitch-status") == 0 || strcmp(name, "file-snitch-audit") == 0);
 }
 
+static int fsn_is_transient_sidecar_name(const char *name) {
+    return name != NULL && strncmp(name, "._", 2) == 0;
+}
+
 static int fsn_is_user_file_path(const char *path) {
     const char *tail;
 
@@ -321,6 +328,14 @@ static int fsn_is_audit_path(const struct fsn_fuse_session *session, const char 
 
 static int fsn_is_reserved_path(const struct fsn_fuse_session *session, const char *path) {
     return fsn_is_status_path(session, path) || fsn_is_audit_path(session, path);
+}
+
+static int fsn_is_transient_sidecar_path(const char *path) {
+    return path != NULL && path[0] == '/' && fsn_is_transient_sidecar_name(path + 1);
+}
+
+static int fsn_should_persist_path(const char *path) {
+    return !fsn_is_transient_sidecar_path(path);
 }
 
 static void fsn_fill_root_stat(struct stat *stbuf) {
@@ -650,7 +665,7 @@ static int fsn_load_backing_store_files(struct fsn_fuse_session *session) {
             continue;
         }
 
-        if (fsn_is_reserved_name(entry->d_name)) {
+        if (fsn_is_reserved_name(entry->d_name) || fsn_is_transient_sidecar_name(entry->d_name)) {
             continue;
         }
 
@@ -809,6 +824,10 @@ static int fsn_sync_user_file_to_backing_store(
 
     if (session == NULL || file == NULL || file->path == NULL) {
         return -EINVAL;
+    }
+
+    if (!fsn_should_persist_path(file->path)) {
+        return 0;
     }
 
     if (file->size > 0 && file->content == NULL) {
@@ -1132,14 +1151,19 @@ static int fsn_change_user_file_mode_with_persistence(
         return -ENOENT;
     }
 
-    result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
-    if (result != 0) {
-        return result;
-    }
-
     previous_mode = file->mode;
     normalized_mode = (mode & 0777) == 0 ? previous_mode : (mode & 0777);
     file->mode = normalized_mode;
+
+    if (!fsn_should_persist_path(path)) {
+        return 0;
+    }
+
+    result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        file->mode = previous_mode;
+        return result;
+    }
 
     if (chmod(host_path, normalized_mode) != 0) {
         file->mode = previous_mode;
@@ -1214,6 +1238,10 @@ static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *sessio
         return -ENOENT;
     }
 
+    if (!fsn_should_persist_path(path)) {
+        return fsn_remove_user_file(session, path);
+    }
+
     result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
     if (result != 0) {
         return result;
@@ -1239,6 +1267,8 @@ static int fsn_rename_user_file_with_persistence(
     uint32_t target_index;
     uint32_t index;
     int found_target;
+    int source_persistent;
+    int target_persistent;
     struct fsn_virtual_file *file;
     int result;
 
@@ -1279,6 +1309,9 @@ static int fsn_rename_user_file_with_persistence(
         return -ENOENT;
     }
 
+    source_persistent = fsn_should_persist_path(from);
+    target_persistent = fsn_should_persist_path(to);
+
     target_name = fsn_strdup(to + 1);
     target_path = fsn_strdup(to);
     if (target_name == NULL || target_path == NULL) {
@@ -1287,24 +1320,38 @@ static int fsn_rename_user_file_with_persistence(
         return -ENOMEM;
     }
 
-    result = fsn_build_backing_store_file_path(session, from, source_host_path, sizeof(source_host_path));
-    if (result != 0) {
-        free(target_name);
-        free(target_path);
-        return result;
-    }
+    if (source_persistent || target_persistent) {
+        if (source_persistent) {
+            result = fsn_build_backing_store_file_path(session, from, source_host_path, sizeof(source_host_path));
+            if (result != 0) {
+                free(target_name);
+                free(target_path);
+                return result;
+            }
+        }
 
-    result = fsn_build_backing_store_file_path(session, to, target_host_path, sizeof(target_host_path));
-    if (result != 0) {
-        free(target_name);
-        free(target_path);
-        return result;
-    }
+        if (target_persistent) {
+            result = fsn_build_backing_store_file_path(session, to, target_host_path, sizeof(target_host_path));
+            if (result != 0) {
+                free(target_name);
+                free(target_path);
+                return result;
+            }
+        }
 
-    if (rename(source_host_path, target_host_path) != 0) {
-        free(target_name);
-        free(target_path);
-        return -errno;
+        if (source_persistent && target_persistent) {
+            if (rename(source_host_path, target_host_path) != 0) {
+                free(target_name);
+                free(target_path);
+                return -errno;
+            }
+        } else if (source_persistent && !target_persistent) {
+            if (unlink(source_host_path) != 0) {
+                free(target_name);
+                free(target_path);
+                return -errno;
+            }
+        }
     }
 
     if ((found_target & 1) != 0) {
@@ -1328,6 +1375,14 @@ static int fsn_rename_user_file_with_persistence(
     free(file->path);
     file->name = target_name;
     file->path = target_path;
+
+    if (!source_persistent && target_persistent) {
+        result = fsn_sync_user_file_to_backing_store(session, file);
+        if (result != 0) {
+            return result;
+        }
+    }
+
     return 0;
 }
 

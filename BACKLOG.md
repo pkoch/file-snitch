@@ -63,6 +63,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Verify rename-over-existing on the live mount path
 - `[x]` Verify hidden-temp and backup-style save flows on the live mount path
 - `[x]` Verify truncate-write, chmod, swap cleanup, and partial-overwrite flows on the live mount path
+- `[x]` Keep macOS `._*` sidecar files transient instead of persisting them
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`
@@ -85,7 +86,6 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[ ]` Emit structured JSON audit logs
 - `[x]` Test common editor temp-write and rename flows
 - `[ ]` Package a reproducible spike demo
-- `[ ]` Decide how v1 should handle macOS `._*` sidecar file traffic
 
 ## Phase 2: encryption layer
 

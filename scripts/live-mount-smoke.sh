@@ -140,6 +140,12 @@ if [[ "$(cat "$store_dir/partial-note.txt")" != "partial patchedte seed" ]]; the
   exit 1
 fi
 
+if find "$store_dir" -maxdepth 1 -name '._*' | grep . >/dev/null 2>&1; then
+  echo "expected macOS sidecar files to remain transient, but backing store contains ._* entries" >&2
+  find "$store_dir" -maxdepth 1 -name '._*' >&2
+  exit 1
+fi
+
 grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
 grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
 grep -F 'existing-note.txt.tmp -> /existing-note.txt' "$mount_dir/file-snitch-audit"

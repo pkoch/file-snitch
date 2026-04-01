@@ -21,6 +21,7 @@ Current state:
 - those one-level regular file mutations now write through into the host backing-store directory
 - one-level file rename now updates both the mounted view and the backing-store directory
 - one-level chmod now persists into the backing-store directory
+- macOS `._*` AppleDouble sidecars are treated as transient mount-only files and are not persisted into the backing store
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by an explicit session policy flag
