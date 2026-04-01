@@ -18,6 +18,8 @@ pub const ExecutionPlan = struct {
     args: []const []const u8,
 };
 
+pub const NodeInfo = fuse.NodeInfo;
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     state: *State,
@@ -74,6 +76,26 @@ pub const Session = struct {
     pub fn freeExecutionPlan(self: Session, allocator: std.mem.Allocator, plan: ExecutionPlan) void {
         _ = self;
         allocator.free(plan.args);
+    }
+
+    pub fn inspectPath(self: Session, path: [:0]const u8) !NodeInfo {
+        return try fuse.debugGetattr(self.handle, path.ptr);
+    }
+
+    pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
+        const count = fuse.debugRootEntryCount(self.handle);
+        var entries = try allocator.alloc([]const u8, count);
+        errdefer allocator.free(entries);
+
+        for (0..count) |index| {
+            entries[index] = try fuse.debugRootEntry(self.handle, @intCast(index));
+        }
+
+        return entries;
+    }
+
+    pub fn readPath(self: Session, allocator: std.mem.Allocator, path: [:0]const u8) ![]u8 {
+        return try fuse.debugRead(self.handle, path.ptr, allocator);
     }
 
     pub fn run(self: *Session) !void {

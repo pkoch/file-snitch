@@ -18,6 +18,12 @@ enum fsn_fuse_status {
     FSN_FUSE_STATUS_LOOP_FAILED = -6,
 };
 
+enum fsn_fuse_node_kind {
+    FSN_FUSE_NODE_MISSING = 0,
+    FSN_FUSE_NODE_DIRECTORY = 1,
+    FSN_FUSE_NODE_REGULAR_FILE = 2,
+};
+
 struct fsn_fuse_environment {
     uint32_t fuse_major_version;
     uint32_t fuse_minor_version;
@@ -48,6 +54,13 @@ struct fsn_fuse_session_info {
     uint8_t reserved[7];
 };
 
+struct fsn_fuse_node_info {
+    uint32_t kind;
+    uint32_t mode;
+    uint64_t size;
+    uint64_t inode;
+};
+
 int fsn_fuse_probe(struct fsn_fuse_environment *out);
 const char *fsn_fuse_backend_name(void);
 int fsn_fuse_session_create(
@@ -62,6 +75,20 @@ int fsn_fuse_session_describe(
 int fsn_fuse_session_run(struct fsn_fuse_session *session);
 uint32_t fsn_fuse_session_argument_count(const struct fsn_fuse_session *session);
 const char *fsn_fuse_session_argument_at(const struct fsn_fuse_session *session, uint32_t index);
+int fsn_fuse_debug_getattr(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    struct fsn_fuse_node_info *out
+);
+uint32_t fsn_fuse_debug_root_entry_count(const struct fsn_fuse_session *session);
+const char *fsn_fuse_debug_root_entry_at(const struct fsn_fuse_session *session, uint32_t index);
+int fsn_fuse_debug_read(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uint64_t offset,
+    size_t size,
+    char *buf
+);
 const char *fsn_fuse_session_mount_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_session_backing_store_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_status_label(int status);

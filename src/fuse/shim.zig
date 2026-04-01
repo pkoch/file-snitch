@@ -31,6 +31,13 @@ const c = struct {
         reserved: [7]u8,
     };
 
+    pub const RawNodeInfo = extern struct {
+        kind: u32,
+        mode: u32,
+        size: u64,
+        inode: u64,
+    };
+
     extern fn fsn_fuse_probe(out: *RawEnvironment) c_int;
     extern fn fsn_fuse_backend_name() [*:0]const u8;
     extern fn fsn_fuse_session_create(config: *const RawSessionConfig, out: *?*OpaqueSession) c_int;
@@ -39,6 +46,16 @@ const c = struct {
     extern fn fsn_fuse_session_run(session: *OpaqueSession) c_int;
     extern fn fsn_fuse_session_argument_count(session: *const OpaqueSession) u32;
     extern fn fsn_fuse_session_argument_at(session: *const OpaqueSession, index: u32) ?[*:0]const u8;
+    extern fn fsn_fuse_debug_getattr(session: *const OpaqueSession, path: [*:0]const u8, out: *RawNodeInfo) c_int;
+    extern fn fsn_fuse_debug_root_entry_count(session: *const OpaqueSession) u32;
+    extern fn fsn_fuse_debug_root_entry_at(session: *const OpaqueSession, index: u32) ?[*:0]const u8;
+    extern fn fsn_fuse_debug_read(
+        session: *const OpaqueSession,
+        path: [*:0]const u8,
+        offset: u64,
+        size: usize,
+        buf: [*]u8,
+    ) c_int;
     extern fn fsn_fuse_session_mount_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_session_backing_store_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_status_label(status: c_int) [*:0]const u8;
@@ -73,13 +90,29 @@ pub const SessionDescription = struct {
     run_in_foreground: bool,
 };
 
+pub const NodeKind = enum(u32) {
+    missing = 0,
+    directory = 1,
+    regular_file = 2,
+};
+
+pub const NodeInfo = struct {
+    kind: NodeKind,
+    mode: u32,
+    size: u64,
+    inode: u64,
+};
+
 pub const Error = error{
+    OutOfMemory,
     ProbeFailed,
     SessionCreateFailed,
     SessionDescribeFailed,
     SessionRunFailed,
     MissingSessionPath,
     MissingSessionArgument,
+    DebugInspectFailed,
+    DebugReadFailed,
 };
 
 pub const RawSession = c.OpaqueSession;
@@ -168,6 +201,46 @@ pub fn sessionArgument(session: *const RawSession, index: u32) Error![]const u8 
     };
 
     return std.mem.span(value);
+}
+
+pub fn debugGetattr(session: *const RawSession, path: [*:0]const u8) Error!NodeInfo {
+    var raw: c.RawNodeInfo = std.mem.zeroes(c.RawNodeInfo);
+    const result = c.fsn_fuse_debug_getattr(session, path, &raw);
+    if (result != 0) {
+        return error.DebugInspectFailed;
+    }
+
+    return .{
+        .kind = @enumFromInt(raw.kind),
+        .mode = raw.mode,
+        .size = raw.size,
+        .inode = raw.inode,
+    };
+}
+
+pub fn debugRootEntryCount(session: *const RawSession) u32 {
+    return c.fsn_fuse_debug_root_entry_count(session);
+}
+
+pub fn debugRootEntry(session: *const RawSession, index: u32) Error![]const u8 {
+    const value = c.fsn_fuse_debug_root_entry_at(session, index) orelse {
+        return error.MissingSessionArgument;
+    };
+
+    return std.mem.span(value);
+}
+
+pub fn debugRead(session: *const RawSession, path: [*:0]const u8, allocator: std.mem.Allocator) Error![]u8 {
+    const node = try debugGetattr(session, path);
+    const buffer = try allocator.alloc(u8, @intCast(node.size));
+    errdefer allocator.free(buffer);
+
+    const result = c.fsn_fuse_debug_read(session, path, 0, buffer.len, buffer.ptr);
+    if (result < 0) {
+        return error.DebugReadFailed;
+    }
+
+    return buffer[0..@intCast(result)];
 }
 
 pub fn statusLabel(status: c_int) []const u8 {

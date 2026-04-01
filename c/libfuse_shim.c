@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fuse.h>
+#include <limits.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -34,6 +35,7 @@ static void fsn_fill_root_stat(struct stat *stbuf);
 static void fsn_fill_status_stat(const struct fsn_fuse_session *session, struct stat *stbuf);
 static int fsn_build_status_file(struct fsn_fuse_session *session);
 static int fsn_copy_read_slice(const char *source, char *buf, size_t size, off_t off);
+static int fsn_fill_node_info_from_stat(uint32_t kind, const struct stat *stbuf, struct fsn_fuse_node_info *out);
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     (void)conn;
@@ -562,6 +564,71 @@ int fsn_fuse_session_run(struct fsn_fuse_session *session) {
     return FSN_FUSE_STATUS_OK;
 }
 
+int fsn_fuse_debug_getattr(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    struct fsn_fuse_node_info *out
+) {
+    struct stat stbuf;
+
+    if (session == NULL || path == NULL || out == NULL) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    memset(&stbuf, 0, sizeof(stbuf));
+    if (fsn_is_root_path(path)) {
+        fsn_fill_root_stat(&stbuf);
+        return fsn_fill_node_info_from_stat(FSN_FUSE_NODE_DIRECTORY, &stbuf, out);
+    }
+
+    if (fsn_is_status_path(session, path)) {
+        fsn_fill_status_stat(session, &stbuf);
+        return fsn_fill_node_info_from_stat(FSN_FUSE_NODE_REGULAR_FILE, &stbuf, out);
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->kind = FSN_FUSE_NODE_MISSING;
+    return FSN_FUSE_STATUS_OK;
+}
+
+uint32_t fsn_fuse_debug_root_entry_count(const struct fsn_fuse_session *session) {
+    if (session == NULL || session->status_file_name == NULL) {
+        return 0;
+    }
+
+    return 1;
+}
+
+const char *fsn_fuse_debug_root_entry_at(const struct fsn_fuse_session *session, uint32_t index) {
+    if (session == NULL || session->status_file_name == NULL || index != 0) {
+        return NULL;
+    }
+
+    return session->status_file_name;
+}
+
+int fsn_fuse_debug_read(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uint64_t offset,
+    size_t size,
+    char *buf
+) {
+    if (session == NULL || path == NULL || buf == NULL) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (!fsn_is_status_path(session, path)) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (offset > (uint64_t)LLONG_MAX) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    return fsn_copy_read_slice(session->status_file_content, buf, size, (off_t)offset);
+}
+
 uint32_t fsn_fuse_session_argument_count(const struct fsn_fuse_session *session) {
     if (session == NULL) {
         return 0;
@@ -613,4 +680,17 @@ const char *fsn_fuse_status_label(int status) {
         default:
             return "unknown_status";
     }
+}
+
+static int fsn_fill_node_info_from_stat(uint32_t kind, const struct stat *stbuf, struct fsn_fuse_node_info *out) {
+    if (stbuf == NULL || out == NULL) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->kind = kind;
+    out->mode = (uint32_t)stbuf->st_mode;
+    out->size = (uint64_t)stbuf->st_size;
+    out->inode = (uint64_t)stbuf->st_ino;
+    return FSN_FUSE_STATUS_OK;
 }

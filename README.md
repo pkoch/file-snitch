@@ -14,6 +14,7 @@ Current state:
 - the shim now builds real mount argv and a compiled `fuse_setup`/`fuse_loop` execution path
 - the synthetic root directory now answers `getattr` and `readdir` cleanly
 - the mount now exposes one readable synthetic status file
+- the repo now has a debug inspection path for verifying synthetic filesystem behavior without mounting
 - the demo app inspects the execution plan but does not invoke a live mount
 - actual mount behavior is not implemented yet
 
