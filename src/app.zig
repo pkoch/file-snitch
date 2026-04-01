@@ -43,6 +43,11 @@ pub fn run() !void {
         },
     );
 
+    std.debug.print(
+        "synthetic root directory is ready; file access still returns ENOENT\n",
+        .{},
+    );
+
     for (plan.args, 0..) |arg, index| {
         std.debug.print("argv[{d}]={s}\n", .{ index, arg });
     }

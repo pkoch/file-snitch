@@ -2,8 +2,12 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "libfuse_shim.h"
 
@@ -19,6 +23,8 @@ struct fsn_fuse_session {
 };
 
 static char *fsn_strdup(const char *value);
+static int fsn_is_root_path(const char *path);
+static void fsn_fill_root_stat(struct stat *stbuf);
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     (void)conn;
@@ -30,9 +36,30 @@ static void fsn_fuse_destroy(void *private_data) {
 }
 
 static int fsn_fuse_getattr(const char *path, struct stat *stbuf) {
-    (void)path;
-    (void)stbuf;
-    return -ENOENT;
+    if (path == NULL || stbuf == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_is_root_path(path)) {
+        return -ENOENT;
+    }
+
+    fsn_fill_root_stat(stbuf);
+    return 0;
+}
+
+static int fsn_fuse_opendir(const char *path, struct fuse_file_info *fi) {
+    (void)fi;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_is_root_path(path)) {
+        return -ENOENT;
+    }
+
+    return 0;
 }
 
 static int fsn_fuse_readdir(
@@ -42,12 +69,60 @@ static int fsn_fuse_readdir(
     off_t off,
     struct fuse_file_info *fi
 ) {
-    (void)path;
-    (void)buf;
-    (void)filler;
+    struct stat stbuf;
+
     (void)off;
     (void)fi;
-    return -ENOENT;
+
+    if (path == NULL || buf == NULL || filler == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_is_root_path(path)) {
+        return -ENOENT;
+    }
+
+    memset(&stbuf, 0, sizeof(stbuf));
+    fsn_fill_root_stat(&stbuf);
+    if (filler(buf, ".", &stbuf, 0) != 0) {
+        return 0;
+    }
+
+    if (filler(buf, "..", &stbuf, 0) != 0) {
+        return 0;
+    }
+
+    return 0;
+}
+
+static int fsn_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
+    (void)fi;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_is_root_path(path)) {
+        return -ENOENT;
+    }
+
+    return 0;
+}
+
+static int fsn_is_root_path(const char *path) {
+    return path != NULL && strcmp(path, "/") == 0;
+}
+
+static void fsn_fill_root_stat(struct stat *stbuf) {
+    memset(stbuf, 0, sizeof(*stbuf));
+    stbuf->st_mode = S_IFDIR | 0755;
+    stbuf->st_nlink = 2;
+    stbuf->st_uid = getuid();
+    stbuf->st_gid = getgid();
+    stbuf->st_atime = time(NULL);
+    stbuf->st_mtime = stbuf->st_atime;
+    stbuf->st_ctime = stbuf->st_atime;
+    stbuf->st_ino = 1;
 }
 
 static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
@@ -76,10 +151,12 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.init = fsn_fuse_init;
     session->operations.destroy = fsn_fuse_destroy;
     session->operations.getattr = fsn_fuse_getattr;
+    session->operations.opendir = fsn_fuse_opendir;
     session->operations.readdir = fsn_fuse_readdir;
+    session->operations.releasedir = fsn_fuse_releasedir;
     session->operations.open = fsn_fuse_open;
     session->operations.read = fsn_fuse_read;
-    session->configured_operation_count = 5;
+    session->configured_operation_count = 7;
 }
 
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session) {
