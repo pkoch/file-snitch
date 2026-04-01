@@ -89,6 +89,24 @@ int fsn_fuse_debug_read(
     size_t size,
     char *buf
 );
+int fsn_fuse_debug_create_file(
+    struct fsn_fuse_session *session,
+    const char *path,
+    uint32_t mode
+);
+int fsn_fuse_debug_write_file(
+    struct fsn_fuse_session *session,
+    const char *path,
+    uint64_t offset,
+    size_t size,
+    const char *buf
+);
+int fsn_fuse_debug_truncate_file(
+    struct fsn_fuse_session *session,
+    const char *path,
+    uint64_t size
+);
+int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *path);
 const char *fsn_fuse_session_mount_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_session_backing_store_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_status_label(int status);

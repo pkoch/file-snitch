@@ -56,6 +56,16 @@ const c = struct {
         size: usize,
         buf: [*]u8,
     ) c_int;
+    extern fn fsn_fuse_debug_create_file(session: *OpaqueSession, path: [*:0]const u8, mode: u32) c_int;
+    extern fn fsn_fuse_debug_write_file(
+        session: *OpaqueSession,
+        path: [*:0]const u8,
+        offset: u64,
+        size: usize,
+        buf: [*:0]const u8,
+    ) c_int;
+    extern fn fsn_fuse_debug_truncate_file(session: *OpaqueSession, path: [*:0]const u8, size: u64) c_int;
+    extern fn fsn_fuse_debug_remove_file(session: *OpaqueSession, path: [*:0]const u8) c_int;
     extern fn fsn_fuse_session_mount_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_session_backing_store_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_status_label(status: c_int) [*:0]const u8;
@@ -113,6 +123,10 @@ pub const Error = error{
     MissingSessionArgument,
     DebugInspectFailed,
     DebugReadFailed,
+    DebugCreateFailed,
+    DebugWriteFailed,
+    DebugTruncateFailed,
+    DebugRemoveFailed,
 };
 
 pub const RawSession = c.OpaqueSession;
@@ -241,6 +255,32 @@ pub fn debugRead(session: *const RawSession, path: [*:0]const u8, allocator: std
     }
 
     return buffer[0..@intCast(result)];
+}
+
+pub fn debugCreateFile(session: *RawSession, path: [*:0]const u8, mode: u32) Error!void {
+    if (c.fsn_fuse_debug_create_file(session, path, mode) != 0) {
+        return error.DebugCreateFailed;
+    }
+}
+
+pub fn debugWriteFile(session: *RawSession, path: [*:0]const u8, contents: [*:0]const u8) Error!void {
+    const length = std.mem.len(contents);
+    const result = c.fsn_fuse_debug_write_file(session, path, 0, length, contents);
+    if (result < 0) {
+        return error.DebugWriteFailed;
+    }
+}
+
+pub fn debugTruncateFile(session: *RawSession, path: [*:0]const u8, size: u64) Error!void {
+    if (c.fsn_fuse_debug_truncate_file(session, path, size) != 0) {
+        return error.DebugTruncateFailed;
+    }
+}
+
+pub fn debugRemoveFile(session: *RawSession, path: [*:0]const u8) Error!void {
+    if (c.fsn_fuse_debug_remove_file(session, path) != 0) {
+        return error.DebugRemoveFailed;
+    }
 }
 
 pub fn statusLabel(status: c_int) []const u8 {

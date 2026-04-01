@@ -98,6 +98,22 @@ pub const Session = struct {
         return try fuse.debugRead(self.handle, path.ptr, allocator);
     }
 
+    pub fn debugCreateFile(self: *Session, path: [:0]const u8, mode: u32) !void {
+        try fuse.debugCreateFile(self.handle, path.ptr, mode);
+    }
+
+    pub fn debugWriteFile(self: *Session, path: [:0]const u8, contents: [:0]const u8) !void {
+        try fuse.debugWriteFile(self.handle, path.ptr, contents.ptr);
+    }
+
+    pub fn debugTruncateFile(self: *Session, path: [:0]const u8, size: u64) !void {
+        try fuse.debugTruncateFile(self.handle, path.ptr, size);
+    }
+
+    pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
+        try fuse.debugRemoveFile(self.handle, path.ptr);
+    }
+
     pub fn run(self: *Session) !void {
         self.state.run_attempts += 1;
         try fuse.runSession(self.handle);
