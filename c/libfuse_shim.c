@@ -143,6 +143,11 @@ static int fsn_truncate_user_file_with_persistence(
     struct fsn_virtual_file *file,
     off_t size
 );
+static int fsn_change_user_file_mode_with_persistence(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    mode_t mode
+);
 static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path);
@@ -1099,6 +1104,51 @@ static int fsn_truncate_user_file_with_persistence(
     return 0;
 }
 
+static int fsn_change_user_file_mode_with_persistence(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    mode_t mode
+) {
+    struct fsn_virtual_file *file;
+    char host_path[PATH_MAX];
+    mode_t previous_mode;
+    mode_t normalized_mode;
+    int result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    if (fsn_is_reserved_path(session, path)) {
+        return -EACCES;
+    }
+
+    file = fsn_find_user_file((struct fsn_fuse_session *)session, path);
+    if (file == NULL) {
+        return -ENOENT;
+    }
+
+    result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        return result;
+    }
+
+    previous_mode = file->mode;
+    normalized_mode = (mode & 0777) == 0 ? previous_mode : (mode & 0777);
+    file->mode = normalized_mode;
+
+    if (chmod(host_path, normalized_mode) != 0) {
+        file->mode = previous_mode;
+        return -errno;
+    }
+
+    return 0;
+}
+
 static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path) {
     const struct fsn_virtual_file *file;
 
@@ -1468,6 +1518,19 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     }
 }
 
+static int fsn_fuse_chmod(const char *path, mode_t mode) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    result = fsn_change_user_file_mode_with_persistence(session, path, mode);
+    fsn_record_audit_event(session, "chmod", path, result);
+    return result;
+}
+
 static int fsn_fuse_flush(const char *path, struct fuse_file_info *fi) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
     int result;
@@ -1561,10 +1624,11 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.read = fsn_fuse_read;
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
+    session->operations.chmod = fsn_fuse_chmod;
     session->operations.flush = fsn_fuse_flush;
     session->operations.fsync = fsn_fuse_fsync;
     session->operations.rename = fsn_fuse_rename;
-    session->configured_operation_count = 15;
+    session->configured_operation_count = 16;
 }
 
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session) {

@@ -98,12 +98,57 @@ if [[ "$(cat "$store_dir/backup-note.txt")" != "backup replacement note" ]]; the
   exit 1
 fi
 
+printf 'truncate me down\n' >"$mount_dir/truncate-note.txt"
+printf 'trimmed\n' >"$mount_dir/truncate-note.txt"
+cat "$mount_dir/truncate-note.txt"
+
+if [[ "$(cat "$store_dir/truncate-note.txt")" != "trimmed" ]]; then
+  echo "expected truncate-write backing-store contents missing" >&2
+  exit 1
+fi
+
+printf 'chmod note\n' >"$mount_dir/mode-note.txt"
+chmod 600 "$mount_dir/mode-note.txt"
+mode_value="$(stat -f '%Lp' "$store_dir/mode-note.txt")"
+if [[ "$mode_value" != "600" ]]; then
+  echo "expected chmod result 600, got $mode_value" >&2
+  exit 1
+fi
+
+printf 'lock data\n' >"$mount_dir/lock-note.txt"
+printf 'swap contents\n' >"$mount_dir/.lock-note.txt.swp"
+rm "$mount_dir/.lock-note.txt.swp"
+rm "$mount_dir/lock-note.txt"
+
+if [[ -e "$store_dir/.lock-note.txt.swp" || -e "$store_dir/lock-note.txt" ]]; then
+  echo "expected lock/swap lifecycle files to be removed from backing store" >&2
+  exit 1
+fi
+
+printf 'partial overwrite seed\n' >"$mount_dir/partial-note.txt"
+python3 - <<PY
+from pathlib import Path
+path = Path("$mount_dir/partial-note.txt")
+with path.open("r+b") as fh:
+    fh.seek(8)
+    fh.write(b"patched")
+PY
+cat "$mount_dir/partial-note.txt"
+
+if [[ "$(cat "$store_dir/partial-note.txt")" != "partial patchedte seed" ]]; then
+  echo "expected partial-overwrite backing-store contents missing" >&2
+  exit 1
+fi
+
 grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
 grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
 grep -F 'existing-note.txt.tmp -> /existing-note.txt' "$mount_dir/file-snitch-audit"
 grep -F '.hidden-temp-note.txt.tmp -> /hidden-temp-note.txt' "$mount_dir/file-snitch-audit"
 grep -F '/backup-note.txt -> /backup-note.txt~' "$mount_dir/file-snitch-audit"
 grep -F '.backup-note.txt.swp -> /backup-note.txt' "$mount_dir/file-snitch-audit"
+grep -F '"action":"truncate"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"unlink"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"write","path":"/partial-note.txt"' "$mount_dir/file-snitch-audit"
 
 kill -INT "$daemon_pid"
 wait "$daemon_pid"

@@ -20,6 +20,7 @@ Current state:
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - those one-level regular file mutations now write through into the host backing-store directory
 - one-level file rename now updates both the mounted view and the backing-store directory
+- one-level chmod now persists into the backing-store directory
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by an explicit session policy flag
@@ -30,6 +31,7 @@ Current state:
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
 - the live smoke test now also verifies temp-write replacement over an existing file
 - the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
+- the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
 - directory mirroring is still limited to one-level regular files
 - the live macOS smoke test observed `._*` sidecar file traffic during rename/write flows
 
