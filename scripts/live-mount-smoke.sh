@@ -66,6 +66,25 @@ if [[ ! -f "$store_dir/live-note-renamed.txt" ]]; then
   exit 1
 fi
 
+xattr -w com.file-snitch.test "hello-xattr" "$mount_dir/live-note-renamed.txt"
+if [[ "$(xattr -p com.file-snitch.test "$mount_dir/live-note-renamed.txt")" != "hello-xattr" ]]; then
+  echo "expected mounted xattr round-trip value missing" >&2
+  exit 1
+fi
+if ! xattr "$mount_dir/live-note-renamed.txt" | grep -F 'com.file-snitch.test' >/dev/null 2>&1; then
+  echo "expected mounted xattr listing to include com.file-snitch.test" >&2
+  exit 1
+fi
+if [[ "$(xattr -p com.file-snitch.test "$store_dir/live-note-renamed.txt")" != "hello-xattr" ]]; then
+  echo "expected backing-store xattr round-trip value missing" >&2
+  exit 1
+fi
+xattr -d com.file-snitch.test "$mount_dir/live-note-renamed.txt"
+if xattr -p com.file-snitch.test "$store_dir/live-note-renamed.txt" >/dev/null 2>&1; then
+  echo "expected backing-store xattr removal to clear com.file-snitch.test" >&2
+  exit 1
+fi
+
 printf 'old note contents\n' >"$mount_dir/existing-note.txt"
 printf 'replacement note contents\n' >"$mount_dir/existing-note.txt.tmp"
 mv "$mount_dir/existing-note.txt.tmp" "$mount_dir/existing-note.txt"
@@ -147,6 +166,10 @@ if find "$store_dir" -maxdepth 1 -name '._*' | grep . >/dev/null 2>&1; then
 fi
 
 grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"setxattr"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"getxattr"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"listxattr"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"removexattr"' "$mount_dir/file-snitch-audit"
 grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
 grep -F 'existing-note.txt.tmp -> /existing-note.txt' "$mount_dir/file-snitch-audit"
 grep -F '.hidden-temp-note.txt.tmp -> /hidden-temp-note.txt' "$mount_dir/file-snitch-audit"

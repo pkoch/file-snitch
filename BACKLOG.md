@@ -59,11 +59,13 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Support one-level file rename with backing-store persistence
 - `[x]` Support one-level chmod with backing-store persistence
 - `[x]` Support one-level file flush and fsync against the backing-store directory
+- `[x]` Support one-level xattr passthrough against the backing-store directory on macOS
 - `[x]` Mount one guarded directory backed by a simple store
 - `[x]` Verify rename-over-existing on the live mount path
 - `[x]` Verify hidden-temp and backup-style save flows on the live mount path
 - `[x]` Verify truncate-write, chmod, swap cleanup, and partial-overwrite flows on the live mount path
 - `[x]` Keep macOS `._*` sidecar files transient instead of persisting them
+- `[x]` Verify xattr round-trips on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`

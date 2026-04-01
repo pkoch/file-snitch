@@ -22,6 +22,7 @@ Current state:
 - one-level file rename now updates both the mounted view and the backing-store directory
 - one-level chmod now persists into the backing-store directory
 - macOS `._*` AppleDouble sidecars are treated as transient mount-only files and are not persisted into the backing store
+- one-level xattrs now proxy to the backing-store file on macOS
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by an explicit session policy flag
@@ -33,8 +34,9 @@ Current state:
 - the live smoke test now also verifies temp-write replacement over an existing file
 - the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
 - the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
+- the live smoke test now covers xattr set/get/list/remove round-trips on mounted files
 - directory mirroring is still limited to one-level regular files
-- the live macOS smoke test observed `._*` sidecar file traffic during rename/write flows
+- the live macOS smoke test observed both `._*` sidecar traffic and aggressive xattr probing during normal file activity
 
 ## Layout
 

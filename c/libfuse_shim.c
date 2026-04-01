@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __APPLE__
+#include <sys/xattr.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -151,6 +154,42 @@ static int fsn_change_user_file_mode_with_persistence(
     const char *path,
     mode_t mode
 );
+static int fsn_get_backing_store_user_file_path(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    char *buf,
+    size_t buf_size
+);
+#ifdef __APPLE__
+static int fsn_setxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name,
+    const char *value,
+    size_t size,
+    int flags,
+    uint32_t position
+);
+static int fsn_getxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name,
+    char *value,
+    size_t size,
+    uint32_t position
+);
+static int fsn_listxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    char *list,
+    size_t size
+);
+static int fsn_removexattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name
+);
+#endif
 static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path);
@@ -1173,6 +1212,149 @@ static int fsn_change_user_file_mode_with_persistence(
     return 0;
 }
 
+static int fsn_get_backing_store_user_file_path(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    char *buf,
+    size_t buf_size
+) {
+    if (session == NULL || path == NULL || buf == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_is_reserved_path(session, path) || !fsn_is_user_file_path(path)) {
+        return -EACCES;
+    }
+
+    if (fsn_find_user_file_const(session, path) == NULL) {
+        return -ENOENT;
+    }
+
+    if (!fsn_should_persist_path(path)) {
+        return -ENOTSUP;
+    }
+
+    return fsn_build_backing_store_file_path(session, path, buf, buf_size);
+}
+
+#ifdef __APPLE__
+static int fsn_setxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name,
+    const char *value,
+    size_t size,
+    int flags,
+    uint32_t position
+) {
+    char host_path[PATH_MAX];
+    int result;
+
+    if (session == NULL || path == NULL || name == NULL || value == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        return result;
+    }
+
+    if (setxattr(host_path, name, value, size, position, flags) != 0) {
+        return -errno;
+    }
+
+    return 0;
+}
+
+static int fsn_getxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name,
+    char *value,
+    size_t size,
+    uint32_t position
+) {
+    char host_path[PATH_MAX];
+    ssize_t result;
+    int path_result;
+
+    if (session == NULL || path == NULL || name == NULL) {
+        return -EINVAL;
+    }
+
+    path_result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
+    if (path_result != 0) {
+        return path_result;
+    }
+
+    result = getxattr(host_path, name, value, size, position, 0);
+    if (result < 0) {
+        return -errno;
+    }
+
+    return (int)result;
+}
+
+static int fsn_listxattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    char *list,
+    size_t size
+) {
+    char host_path[PATH_MAX];
+    ssize_t result;
+    int path_result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    path_result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
+    if (path_result != 0) {
+        return path_result;
+    }
+
+    result = listxattr(host_path, list, size, 0);
+    if (result < 0) {
+        return -errno;
+    }
+
+    return (int)result;
+}
+
+static int fsn_removexattr_path(
+    struct fsn_fuse_session *session,
+    const char *path,
+    const char *name
+) {
+    char host_path[PATH_MAX];
+    int result;
+
+    if (session == NULL || path == NULL || name == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        return result;
+    }
+
+    if (removexattr(host_path, name, 0) != 0) {
+        return -errno;
+    }
+
+    return 0;
+}
+#endif
+
 static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path) {
     const struct fsn_virtual_file *file;
 
@@ -1586,6 +1768,49 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
     return result;
 }
 
+#ifdef __APPLE__
+static int fsn_fuse_setxattr(
+    const char *path,
+    const char *name,
+    const char *value,
+    size_t size,
+    int flags,
+    uint32_t position
+) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result = fsn_setxattr_path(session, path, name, value, size, flags, position);
+    fsn_record_audit_event(session, "setxattr", path, result);
+    return result;
+}
+
+static int fsn_fuse_getxattr(
+    const char *path,
+    const char *name,
+    char *value,
+    size_t size,
+    uint32_t position
+) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result = fsn_getxattr_path(session, path, name, value, size, position);
+    fsn_record_audit_event(session, "getxattr", path, result);
+    return result;
+}
+
+static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result = fsn_listxattr_path(session, path, list, size);
+    fsn_record_audit_event(session, "listxattr", path, result);
+    return result;
+}
+
+static int fsn_fuse_removexattr(const char *path, const char *name) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result = fsn_removexattr_path(session, path, name);
+    fsn_record_audit_event(session, "removexattr", path, result);
+    return result;
+}
+#endif
+
 static int fsn_fuse_flush(const char *path, struct fuse_file_info *fi) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
     int result;
@@ -1680,10 +1905,18 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
     session->operations.chmod = fsn_fuse_chmod;
+#ifdef __APPLE__
+    session->operations.setxattr = fsn_fuse_setxattr;
+    session->operations.getxattr = fsn_fuse_getxattr;
+    session->operations.listxattr = fsn_fuse_listxattr;
+    session->operations.removexattr = fsn_fuse_removexattr;
+    session->configured_operation_count = 20;
+#else
+    session->configured_operation_count = 16;
+#endif
     session->operations.flush = fsn_fuse_flush;
     session->operations.fsync = fsn_fuse_fsync;
     session->operations.rename = fsn_fuse_rename;
-    session->configured_operation_count = 16;
 }
 
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session) {
