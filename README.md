@@ -14,13 +14,15 @@ Current state:
 - the shim now builds real mount argv and a compiled `fuse_setup`/`fuse_loop` execution path
 - the synthetic root directory now answers `getattr` and `readdir` cleanly
 - the mount now exposes one readable synthetic status file
+- the mount now exposes one readable synthetic audit file
 - the repo now has a debug inspection path for verifying synthetic filesystem behavior without mounting
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - mutating operations are now controlled by an explicit session policy flag
 - the demo now exercises both the allow and deny sides of that mutation policy
 - the session now records an in-memory audit trail for reads and mutations
+- the synthetic audit file now renders that in-memory audit trail as mounted file content
 - the demo app inspects the execution plan but does not invoke a live mount
-- actual mount behavior is not implemented yet
+- the live mount path is compiled, but the demo intentionally avoids invoking it
 
 ## Layout
 

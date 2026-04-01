@@ -5,6 +5,7 @@ const fuse = @import("fuse/shim.zig");
 pub fn run() !void {
     const allocator = std.heap.page_allocator;
     const environment = try fuse.probe();
+    const audit_path = "/file-snitch-audit";
     const note_path = "/demo-note.txt";
     const blocked_note_path = "/blocked-note.txt";
     const status_path = "/file-snitch-status";
@@ -30,12 +31,15 @@ pub fn run() !void {
     const plan = try session.executionPlan(allocator);
     defer session.freeExecutionPlan(allocator, plan);
     const root = try session.inspectPath("/");
+    const audit = try session.inspectPath(audit_path);
     const status = try session.inspectPath(status_path);
     const note = try session.inspectPath(note_path);
     const entries = try session.rootEntries(allocator);
     defer allocator.free(entries);
     const status_content = try session.readPath(allocator, status_path);
     defer allocator.free(status_content);
+    const audit_content = try session.readPath(allocator, audit_path);
+    defer allocator.free(audit_content);
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
 
@@ -68,10 +72,13 @@ pub fn run() !void {
     );
 
     std.debug.print(
-        "debug inspect: root(kind={s} inode={d}) status(kind={s} size={d} inode={d}) note(kind={s} size={d} inode={d}) entries={d}\n",
+        "debug inspect: root(kind={s} inode={d}) audit(kind={s} size={d} inode={d}) status(kind={s} size={d} inode={d}) note(kind={s} size={d} inode={d}) entries={d}\n",
         .{
             @tagName(root.kind),
             root.inode,
+            @tagName(audit.kind),
+            audit.size,
+            audit.inode,
             @tagName(status.kind),
             status.size,
             status.inode,
@@ -92,6 +99,7 @@ pub fn run() !void {
     );
 
     std.debug.print("status file contents:\n{s}", .{status_content});
+    std.debug.print("audit file contents:\n{s}", .{audit_content});
     std.debug.print("note file contents:\n{s}", .{note_content});
 
     for (plan.args, 0..) |arg, index| {

@@ -53,6 +53,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Add an explicit mutation policy flag to the session model
 - `[x]` Verify the deny path for the mutation policy without mounting
 - `[x]` Record a minimal in-memory audit trail for reads and mutations
+- `[x]` Expose the in-memory audit trail as a readable synthetic file
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:
