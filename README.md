@@ -65,7 +65,7 @@ FUSE discovery:
 - Linux falls back to standard `fuse3` system locations if `pkg-config` is absent
 - macOS falls back to standard macFUSE locations under `/usr/local` and `/opt/homebrew` if `pkg-config` is absent
 - `zig build compile-commands` now writes `compile_commands.json` for clangd from the same discovery logic
-- `.clangd` remains as a fallback for editor parsing when the compilation database has not been generated yet; `build.zig` remains the source of truth
+- after cloning or changing build flags, run `zig build compile-commands` so clangd picks up the correct C flags; `build.zig` remains the source of truth
 
 Current verification:
 - `zig build`
