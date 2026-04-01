@@ -27,6 +27,7 @@ fn runDemo() !void {
     const created_note_path = "/demo-note.txt";
     const note_path = "/renamed-note.txt";
     const blocked_note_path = "/blocked-note.txt";
+    const prompted_note_path = "/prompted-note.txt";
     const seed_path = "/seed-from-store.txt";
     const status_path = "/file-snitch-status";
     const run_id = std.time.nanoTimestamp();
@@ -54,6 +55,26 @@ fn runDemo() !void {
         .allow_mutations = false,
     });
     defer readonly_session.deinit();
+
+    var policy_session = try daemon.Session.init(allocator, .{
+        .mount_path = mount_path,
+        .backing_store_path = backing_store.path,
+        .run_in_foreground = true,
+        .allow_mutations = true,
+        .policy_rules = &.{
+            .{
+                .path_prefix = note_path,
+                .access_class = .read,
+                .outcome = .prompt,
+            },
+            .{
+                .path_prefix = prompted_note_path,
+                .access_class = .create,
+                .outcome = .deny,
+            },
+        },
+    });
+    defer policy_session.deinit();
 
     const description = try session.describe();
     const plan = try session.executionPlan(allocator);
@@ -163,10 +184,28 @@ fn runDemo() !void {
         else => return err,
     };
 
+    _ = policy_session.readPath(allocator, note_path) catch |err| switch (err) {
+        error.DebugReadFailed => std.debug.print(
+            "policy session converted prompt-on-read into default deny for {s}\n",
+            .{note_path},
+        ),
+        else => return err,
+    };
+
+    policy_session.debugCreateFile(prompted_note_path, 0o600) catch |err| switch (err) {
+        error.DebugCreateFailed => std.debug.print(
+            "policy session denied create by rule for {s}\n",
+            .{prompted_note_path},
+        ),
+        else => return err,
+    };
+
     const audit_events = try session.auditEvents(allocator);
     defer allocator.free(audit_events);
     const readonly_audit_events = try readonly_session.auditEvents(allocator);
     defer allocator.free(readonly_audit_events);
+    const policy_audit_events = try policy_session.auditEvents(allocator);
+    defer allocator.free(policy_audit_events);
 
     for (audit_events, 0..) |event, index| {
         std.debug.print(
@@ -178,6 +217,13 @@ fn runDemo() !void {
     for (readonly_audit_events, 0..) |event, index| {
         std.debug.print(
             "readonly_audit[{d}] action={s} path={s} result={d}\n",
+            .{ index, event.action, event.path, event.result },
+        );
+    }
+
+    for (policy_audit_events, 0..) |event, index| {
+        std.debug.print(
+            "policy_audit[{d}] action={s} path={s} result={d}\n",
             .{ index, event.action, event.path, event.result },
         );
     }

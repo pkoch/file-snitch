@@ -26,6 +26,33 @@ enum {
     FSN_FIRST_DYNAMIC_INODE = 16,
 };
 
+enum fsn_access_class {
+    FSN_ACCESS_READ = 1,
+    FSN_ACCESS_CREATE = 2,
+    FSN_ACCESS_WRITE = 3,
+    FSN_ACCESS_RENAME = 4,
+    FSN_ACCESS_DELETE = 5,
+    FSN_ACCESS_METADATA = 6,
+    FSN_ACCESS_XATTR = 7,
+};
+
+enum fsn_policy_outcome {
+    FSN_POLICY_ALLOW = 1,
+    FSN_POLICY_DENY = 2,
+    FSN_POLICY_PROMPT = 3,
+};
+
+struct fsn_policy_request {
+    const char *path;
+    uint32_t access_class;
+    uint32_t pid;
+    uint32_t uid;
+    uint32_t gid;
+    uint8_t reserved[4];
+};
+
+extern int fsn_policy_evaluate(void *daemon_state, const struct fsn_policy_request *request, uint32_t *outcome_out);
+
 struct fsn_virtual_file {
     char *name;
     char *path;
@@ -114,6 +141,25 @@ static int fsn_mutations_allowed(const struct fsn_fuse_session *session);
 static int fsn_ensure_audit_capacity(struct fsn_fuse_session *session, uint32_t target);
 static void fsn_free_audit_event(struct fsn_audit_event *event);
 static void fsn_record_audit_event(struct fsn_fuse_session *session, const char *action, const char *path, int32_t result);
+static const char *fsn_access_class_label(uint32_t access_class);
+static void fsn_record_policy_audit_event(
+    struct fsn_fuse_session *session,
+    uint32_t access_class,
+    const char *path,
+    uint32_t outcome
+);
+static int fsn_authorize_access(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uint32_t access_class,
+    int use_fuse_context
+);
+static int fsn_authorize_rename_access(
+    const struct fsn_fuse_session *session,
+    const char *from,
+    const char *to,
+    int use_fuse_context
+);
 static struct fsn_file_handle *fsn_create_file_handle(void);
 static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
 static void fsn_clear_file_handle(struct fuse_file_info *fi);
@@ -627,7 +673,10 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         return -EINVAL;
     }
 
-    result = fsn_persist_created_user_file(session, path, mode);
+    result = fsn_authorize_access(session, path, FSN_ACCESS_CREATE, 1);
+    if (result == 0) {
+        result = fsn_persist_created_user_file(session, path, mode);
+    }
     fsn_record_audit_event(session, "create", path, result);
     if (result != 0) {
         return result;
@@ -1068,10 +1117,6 @@ static int fsn_create_user_file(struct fsn_fuse_session *session, const char *pa
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
-    }
-
     return fsn_append_user_file(session, path, mode, NULL);
 }
 
@@ -1082,10 +1127,6 @@ static int fsn_persist_created_user_file(struct fsn_fuse_session *session, const
 
     if (session == NULL || path == NULL) {
         return -EINVAL;
-    }
-
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
     }
 
     result = fsn_append_user_file(session, path, mode, &file);
@@ -1254,10 +1295,6 @@ static int fsn_change_user_file_mode_with_persistence(
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
-    }
-
     if (fsn_is_reserved_path(session, path)) {
         return -EACCES;
     }
@@ -1305,10 +1342,6 @@ static int fsn_change_user_file_owner_with_persistence(
 
     if (session == NULL || path == NULL) {
         return -EINVAL;
-    }
-
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
     }
 
     if (fsn_is_reserved_path(session, path)) {
@@ -1393,10 +1426,6 @@ static int fsn_setxattr_path(
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
-    }
-
     result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
     if (result != 0) {
         return result;
@@ -1477,10 +1506,6 @@ static int fsn_removexattr_path(
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
-    }
-
     result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
     if (result != 0) {
         return result;
@@ -1520,10 +1545,6 @@ static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *pa
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
-    }
-
     for (index = 0; index < session->user_file_count; index += 1) {
         if (strcmp(session->user_files[index].path, path) == 0) {
             fsn_free_virtual_file(&session->user_files[index]);
@@ -1549,10 +1570,6 @@ static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *sessio
 
     if (session == NULL || path == NULL) {
         return -EINVAL;
-    }
-
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
     }
 
     if (fsn_find_user_file(session, path) == NULL) {
@@ -1595,10 +1612,6 @@ static int fsn_rename_user_file_with_persistence(
 
     if (session == NULL || from == NULL || to == NULL) {
         return -EINVAL;
-    }
-
-    if (!fsn_mutations_allowed(session)) {
-        return -EACCES;
     }
 
     if (!fsn_is_user_file_path(from) || !fsn_is_user_file_path(to)) {
@@ -1768,6 +1781,106 @@ static void fsn_record_audit_event(struct fsn_fuse_session *session, const char 
     session->audit_event_count += 1;
 }
 
+static const char *fsn_access_class_label(uint32_t access_class) {
+    switch (access_class) {
+        case FSN_ACCESS_READ:
+            return "read";
+        case FSN_ACCESS_CREATE:
+            return "create";
+        case FSN_ACCESS_WRITE:
+            return "write";
+        case FSN_ACCESS_RENAME:
+            return "rename";
+        case FSN_ACCESS_DELETE:
+            return "delete";
+        case FSN_ACCESS_METADATA:
+            return "metadata";
+        case FSN_ACCESS_XATTR:
+            return "xattr";
+        default:
+            return "unknown";
+    }
+}
+
+static void fsn_record_policy_audit_event(
+    struct fsn_fuse_session *session,
+    uint32_t access_class,
+    const char *path,
+    uint32_t outcome
+) {
+    char audit_path[PATH_MAX + 32];
+    int written;
+
+    if (session == NULL || path == NULL) {
+        return;
+    }
+
+    written = snprintf(audit_path, sizeof(audit_path), "%s %s", fsn_access_class_label(access_class), path);
+    if (written < 0 || (size_t)written >= sizeof(audit_path)) {
+        strcpy(audit_path, "<policy>");
+    }
+
+    fsn_record_audit_event(session, "policy", audit_path, (int32_t)outcome);
+}
+
+static int fsn_authorize_access(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uint32_t access_class,
+    int use_fuse_context
+) {
+    struct fsn_policy_request request;
+    struct fuse_context *context;
+    uint32_t outcome;
+    int eval_result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.path = path;
+    request.access_class = access_class;
+    if (use_fuse_context) {
+        context = fuse_get_context();
+        if (context != NULL) {
+            request.pid = (uint32_t)context->pid;
+            request.uid = (uint32_t)context->uid;
+            request.gid = (uint32_t)context->gid;
+        }
+    }
+
+    if (session->daemon_state == NULL) {
+        return access_class == FSN_ACCESS_READ || fsn_mutations_allowed(session) ? 0 : -EACCES;
+    }
+
+    eval_result = fsn_policy_evaluate(session->daemon_state, &request, &outcome);
+    if (eval_result != 0) {
+        return -EIO;
+    }
+
+    if (outcome == FSN_POLICY_ALLOW) {
+        return 0;
+    }
+
+    fsn_record_policy_audit_event((struct fsn_fuse_session *)session, access_class, path, outcome);
+    return -EACCES;
+}
+
+static int fsn_authorize_rename_access(
+    const struct fsn_fuse_session *session,
+    const char *from,
+    const char *to,
+    int use_fuse_context
+) {
+    int result = fsn_authorize_access(session, from, FSN_ACCESS_RENAME, use_fuse_context);
+    if (result != 0) {
+        return result;
+    }
+
+    return fsn_authorize_access(session, to, FSN_ACCESS_RENAME, use_fuse_context);
+}
+
 static struct fsn_file_handle *fsn_create_file_handle(void) {
     struct fsn_file_handle *handle = calloc(1, sizeof(*handle));
 
@@ -1853,6 +1966,14 @@ static int fsn_fuse_read(
     }
 
     session = fuse_get_context()->private_data;
+    {
+        int authorization = fsn_authorize_access(session, path, FSN_ACCESS_READ, 1);
+        if (authorization != 0) {
+            fsn_record_audit_event(session, "read", path, authorization);
+            return authorization;
+        }
+    }
+
     if (fsn_is_status_path(session, path)) {
         char *content = fsn_render_status_content(session);
 
@@ -1919,11 +2040,6 @@ static int fsn_fuse_write(
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        fsn_record_audit_event(session, "write", path, -EACCES);
-        return -EACCES;
-    }
-
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         fsn_record_audit_event(session, "write", path, -ENOENT);
@@ -1931,7 +2047,10 @@ static int fsn_fuse_write(
     }
 
     {
-        int result = fsn_write_user_file_with_persistence(session, file, buf, size, off);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_WRITE, 1);
+        if (result == 0) {
+            result = fsn_write_user_file_with_persistence(session, file, buf, size, off);
+        }
         fsn_record_audit_event(session, "write", path, result);
         return result;
     }
@@ -1945,11 +2064,6 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
         return -EINVAL;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        fsn_record_audit_event(session, "truncate", path, -EACCES);
-        return -EACCES;
-    }
-
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         fsn_record_audit_event(session, "truncate", path, -ENOENT);
@@ -1957,7 +2071,10 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     }
 
     {
-        int result = fsn_truncate_user_file_with_persistence(session, file, size);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_WRITE, 1);
+        if (result == 0) {
+            result = fsn_truncate_user_file_with_persistence(session, file, size);
+        }
         fsn_record_audit_event(session, "truncate", path, result);
         return result;
     }
@@ -1971,14 +2088,20 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
         return -EINVAL;
     }
 
-    result = fsn_change_user_file_mode_with_persistence(session, path, mode);
+    result = fsn_authorize_access(session, path, FSN_ACCESS_METADATA, 1);
+    if (result == 0) {
+        result = fsn_change_user_file_mode_with_persistence(session, path, mode);
+    }
     fsn_record_audit_event(session, "chmod", path, result);
     return result;
 }
 
 static int fsn_fuse_chown(const char *path, uid_t uid, gid_t gid) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
-    int result = fsn_change_user_file_owner_with_persistence(session, path, uid, gid);
+    int result = fsn_authorize_access(session, path, FSN_ACCESS_METADATA, 1);
+    if (result == 0) {
+        result = fsn_change_user_file_owner_with_persistence(session, path, uid, gid);
+    }
     fsn_record_audit_event(session, "chown", path, result);
     return result;
 }
@@ -2047,7 +2170,10 @@ static int fsn_fuse_setxattr(
     uint32_t position
 ) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
-    int result = fsn_setxattr_path(session, path, name, value, size, flags, position);
+    int result = fsn_authorize_access(session, path, FSN_ACCESS_XATTR, 1);
+    if (result == 0) {
+        result = fsn_setxattr_path(session, path, name, value, size, flags, position);
+    }
     fsn_record_audit_event(session, "setxattr", path, result);
     return result;
 }
@@ -2060,21 +2186,30 @@ static int fsn_fuse_getxattr(
     uint32_t position
 ) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
-    int result = fsn_getxattr_path(session, path, name, value, size, position);
+    int result = fsn_authorize_access(session, path, FSN_ACCESS_XATTR, 1);
+    if (result == 0) {
+        result = fsn_getxattr_path(session, path, name, value, size, position);
+    }
     fsn_record_audit_event(session, "getxattr", path, result);
     return result;
 }
 
 static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
-    int result = fsn_listxattr_path(session, path, list, size);
+    int result = fsn_authorize_access(session, path, FSN_ACCESS_XATTR, 1);
+    if (result == 0) {
+        result = fsn_listxattr_path(session, path, list, size);
+    }
     fsn_record_audit_event(session, "listxattr", path, result);
     return result;
 }
 
 static int fsn_fuse_removexattr(const char *path, const char *name) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
-    int result = fsn_removexattr_path(session, path, name);
+    int result = fsn_authorize_access(session, path, FSN_ACCESS_XATTR, 1);
+    if (result == 0) {
+        result = fsn_removexattr_path(session, path, name);
+    }
     fsn_record_audit_event(session, "removexattr", path, result);
     return result;
 }
@@ -2124,7 +2259,10 @@ static int fsn_fuse_unlink(const char *path) {
     }
 
     {
-        int result = fsn_remove_user_file_with_persistence(session, path);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_DELETE, 1);
+        if (result == 0) {
+            result = fsn_remove_user_file_with_persistence(session, path);
+        }
         fsn_record_audit_event(session, "unlink", path, result);
         return result;
     }
@@ -2149,7 +2287,10 @@ static int fsn_fuse_rename(const char *from, const char *to) {
         return -EACCES;
     }
 
-    result = fsn_rename_user_file_with_persistence(session, from, to);
+    result = fsn_authorize_rename_access(session, from, to, 1);
+    if (result == 0) {
+        result = fsn_rename_user_file_with_persistence(session, from, to);
+    }
     written = snprintf(audit_path, sizeof(audit_path), "%s -> %s", from, to);
     if (written < 0 || (size_t)written >= sizeof(audit_path)) {
         strcpy(audit_path, "<rename>");
@@ -2561,6 +2702,14 @@ int fsn_fuse_debug_read(
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
+    {
+        int authorization = fsn_authorize_access(session, path, FSN_ACCESS_READ, 0);
+        if (authorization != 0) {
+            fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, authorization);
+            return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+        }
+    }
+
     if (fsn_is_status_path(session, path)) {
         char *content = fsn_render_status_content(session);
 
@@ -2633,7 +2782,10 @@ int fsn_fuse_debug_create_file(struct fsn_fuse_session *session, const char *pat
     }
 
     {
-        int result = fsn_persist_created_user_file(session, path, (mode_t)mode);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_CREATE, 0);
+        if (result == 0) {
+            result = fsn_persist_created_user_file(session, path, (mode_t)mode);
+        }
         fsn_record_audit_event(session, "create", path, result);
         return result;
     }
@@ -2652,11 +2804,6 @@ int fsn_fuse_debug_write_file(
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        fsn_record_audit_event(session, "write", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
-        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
-    }
-
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         fsn_record_audit_event(session, "write", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
@@ -2664,7 +2811,10 @@ int fsn_fuse_debug_write_file(
     }
 
     {
-        int result = fsn_write_user_file_with_persistence(session, file, buf, size, (off_t)offset);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_WRITE, 0);
+        if (result == 0) {
+            result = fsn_write_user_file_with_persistence(session, file, buf, size, (off_t)offset);
+        }
         fsn_record_audit_event(session, "write", path, result);
         return result;
     }
@@ -2677,11 +2827,6 @@ int fsn_fuse_debug_truncate_file(struct fsn_fuse_session *session, const char *p
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
-    if (!fsn_mutations_allowed(session)) {
-        fsn_record_audit_event(session, "truncate", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
-        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
-    }
-
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         fsn_record_audit_event(session, "truncate", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
@@ -2689,7 +2834,10 @@ int fsn_fuse_debug_truncate_file(struct fsn_fuse_session *session, const char *p
     }
 
     {
-        int result = fsn_truncate_user_file_with_persistence(session, file, (off_t)size);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_WRITE, 0);
+        if (result == 0) {
+            result = fsn_truncate_user_file_with_persistence(session, file, (off_t)size);
+        }
         fsn_record_audit_event(session, "truncate", path, result);
         return result;
     }
@@ -2704,7 +2852,10 @@ int fsn_fuse_debug_rename_file(struct fsn_fuse_session *session, const char *fro
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
-    result = fsn_rename_user_file_with_persistence(session, from, to);
+    result = fsn_authorize_rename_access(session, from, to, 0);
+    if (result == 0) {
+        result = fsn_rename_user_file_with_persistence(session, from, to);
+    }
     written = snprintf(audit_path, sizeof(audit_path), "%s -> %s", from, to);
     if (written < 0 || (size_t)written >= sizeof(audit_path)) {
         strcpy(audit_path, "<rename>");
@@ -2733,7 +2884,10 @@ int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *pat
     }
 
     {
-        int result = fsn_remove_user_file_with_persistence(session, path);
+        int result = fsn_authorize_access(session, path, FSN_ACCESS_DELETE, 0);
+        if (result == 0) {
+            result = fsn_remove_user_file_with_persistence(session, path);
+        }
         fsn_record_audit_event(session, "unlink", path, result);
         return result;
     }

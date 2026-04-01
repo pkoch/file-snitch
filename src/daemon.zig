@@ -1,17 +1,20 @@
 const std = @import("std");
 const fuse = @import("fuse/shim.zig");
+const policy = @import("policy.zig");
 
 pub const Config = struct {
     mount_path: []const u8,
     backing_store_path: []const u8,
     run_in_foreground: bool = true,
     allow_mutations: bool = false,
+    policy_rules: []const policy.Rule = &.{},
 };
 
 pub const State = struct {
     run_attempts: usize = 0,
     run_in_foreground: bool,
     allow_mutations: bool,
+    policy_engine: policy.Engine,
 };
 
 pub const Description = fuse.SessionDescription;
@@ -37,9 +40,16 @@ pub const Session = struct {
 
         const state = try allocator.create(State);
         errdefer allocator.destroy(state);
+        var policy_engine = try policy.Engine.init(
+            allocator,
+            if (config.allow_mutations) .allow else .deny,
+            config.policy_rules,
+        );
+        errdefer policy_engine.deinit();
         state.* = .{
             .run_in_foreground = config.run_in_foreground,
             .allow_mutations = config.allow_mutations,
+            .policy_engine = policy_engine,
         };
 
         const handle = try fuse.createSession(.{
@@ -59,6 +69,7 @@ pub const Session = struct {
 
     pub fn deinit(self: Session) void {
         fuse.destroySession(self.handle);
+        self.state.policy_engine.deinit();
         self.allocator.destroy(self.state);
     }
 
@@ -144,3 +155,15 @@ pub const Session = struct {
         try fuse.runSession(self.handle);
     }
 };
+
+pub export fn fsn_policy_evaluate(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    outcome_out: *u32,
+) c_int {
+    const state_ptr = daemon_state orelse return -1;
+    const state: *State = @ptrCast(@alignCast(state_ptr));
+    const request = policy.requestFromRaw(raw_request) catch return -1;
+    outcome_out.* = @intFromEnum(state.policy_engine.evaluate(request));
+    return 0;
+}

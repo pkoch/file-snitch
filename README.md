@@ -27,7 +27,10 @@ Current state:
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by an explicit session policy flag
+- the daemon now owns an in-memory policy engine with path-prefix rules and `allow` / `deny` / `prompt` outcomes
+- the C shim now consults that policy engine for read and mutation decisions through the Zig daemon state
 - the demo now exercises both the allow and deny sides of that mutation policy
+- the demo now also exercises rule-driven `prompt` and `deny` outcomes, with `prompt` currently defaulting to deny until a prompt broker exists
 - the session now records an in-memory audit trail for reads and mutations
 - the synthetic audit file now renders that in-memory audit trail as mounted file content
 - the demo app still inspects the execution plan without mounting

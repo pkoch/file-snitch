@@ -85,7 +85,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
   - `mkdir`
   - `rmdir`
   - `truncate`
-- `[ ]` Add an in-memory policy engine with allow, deny, and prompt outcomes
+- `[x]` Add an in-memory policy engine with allow, deny, and prompt outcomes
 - `[ ]` Add a CLI prompt path with default-deny timeout behavior
 - `[ ]` Support allow-once decisions
 - `[ ]` Emit structured JSON audit logs
