@@ -74,11 +74,18 @@ static void fsn_fill_status_stat(const struct fsn_fuse_session *session, struct 
 static void fsn_fill_audit_stat(const struct fsn_fuse_session *session, struct stat *stbuf);
 static void fsn_fill_user_file_stat(const struct fsn_virtual_file *file, struct stat *stbuf);
 static int fsn_build_status_file(struct fsn_fuse_session *session);
+static char *fsn_render_status_content(const struct fsn_fuse_session *session);
 static int fsn_build_audit_file(struct fsn_fuse_session *session);
 static char *fsn_render_audit_content(const struct fsn_fuse_session *session);
 static int fsn_copy_buffer_slice(const char *source, size_t available, char *buf, size_t size, off_t off);
 static int fsn_copy_read_slice(const char *source, char *buf, size_t size, off_t off);
 static int fsn_ensure_backing_store_directory(const char *path);
+static int fsn_build_backing_store_file_path(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    char *buf,
+    size_t buf_size
+);
 static int fsn_load_backing_store_files(struct fsn_fuse_session *session);
 static int fsn_import_backing_store_file(
     struct fsn_fuse_session *session,
@@ -99,6 +106,16 @@ static const struct fsn_virtual_file *fsn_find_user_file_const(
 );
 static int fsn_ensure_user_file_capacity(struct fsn_fuse_session *session, uint32_t target);
 static void fsn_free_virtual_file(struct fsn_virtual_file *file);
+static int fsn_sync_user_file_to_backing_store(
+    const struct fsn_fuse_session *session,
+    const struct fsn_virtual_file *file
+);
+static int fsn_snapshot_user_file(
+    const struct fsn_virtual_file *file,
+    char **out_content,
+    size_t *out_size
+);
+static void fsn_restore_user_file(struct fsn_virtual_file *file, char *content, size_t size);
 static int fsn_append_user_file(
     struct fsn_fuse_session *session,
     const char *path,
@@ -106,14 +123,28 @@ static int fsn_append_user_file(
     struct fsn_virtual_file **out_file
 );
 static int fsn_create_user_file(struct fsn_fuse_session *session, const char *path, mode_t mode);
+static int fsn_persist_created_user_file(struct fsn_fuse_session *session, const char *path, mode_t mode);
 static int fsn_write_user_file(
     struct fsn_virtual_file *file,
     const char *buf,
     size_t size,
     off_t off
 );
+static int fsn_write_user_file_with_persistence(
+    const struct fsn_fuse_session *session,
+    struct fsn_virtual_file *file,
+    const char *buf,
+    size_t size,
+    off_t off
+);
 static int fsn_truncate_user_file(struct fsn_virtual_file *file, off_t size);
+static int fsn_truncate_user_file_with_persistence(
+    const struct fsn_fuse_session *session,
+    struct fsn_virtual_file *file,
+    off_t size
+);
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path);
+static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path);
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     (void)conn;
@@ -294,17 +325,19 @@ static void fsn_fill_root_stat(struct stat *stbuf) {
 }
 
 static void fsn_fill_status_stat(const struct fsn_fuse_session *session, struct stat *stbuf) {
+    char *content = fsn_render_status_content(session);
+
     memset(stbuf, 0, sizeof(*stbuf));
     stbuf->st_mode = S_IFREG | 0444;
     stbuf->st_nlink = 1;
     stbuf->st_uid = getuid();
     stbuf->st_gid = getgid();
-    stbuf->st_size = session != NULL && session->status_file_content != NULL ?
-        (off_t)strlen(session->status_file_content) : 0;
+    stbuf->st_size = content != NULL ? (off_t)strlen(content) : 0;
     stbuf->st_atime = time(NULL);
     stbuf->st_mtime = stbuf->st_atime;
     stbuf->st_ctime = stbuf->st_atime;
     stbuf->st_ino = FSN_STATUS_INODE;
+    free(content);
 }
 
 static void fsn_fill_user_file_stat(const struct fsn_virtual_file *file, struct stat *stbuf) {
@@ -338,8 +371,6 @@ static void fsn_fill_audit_stat(const struct fsn_fuse_session *session, struct s
 
 static int fsn_build_status_file(struct fsn_fuse_session *session) {
     const char *name = "file-snitch-status";
-    int written;
-    size_t content_size;
 
     free(session->status_file_name);
     free(session->status_file_path);
@@ -354,14 +385,31 @@ static int fsn_build_status_file(struct fsn_fuse_session *session) {
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
     }
 
-    content_size = strlen(session->mount_path) + strlen(session->backing_store_path) + 320;
-    session->status_file_content = calloc(content_size, sizeof(char));
+    session->status_file_content = fsn_render_status_content(session);
     if (session->status_file_content == NULL) {
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
     }
 
+    return FSN_FUSE_STATUS_OK;
+}
+
+static char *fsn_render_status_content(const struct fsn_fuse_session *session) {
+    char *content;
+    int written;
+    size_t content_size;
+
+    if (session == NULL) {
+        return NULL;
+    }
+
+    content_size = strlen(session->mount_path) + strlen(session->backing_store_path) + 320;
+    content = calloc(content_size, sizeof(char));
+    if (content == NULL) {
+        return NULL;
+    }
+
     written = snprintf(
-        session->status_file_content,
+        content,
         content_size,
         "backend=libfuse\nmount_path=%s\nbacking_store=%s\nconfigured_ops=%u\nplanned_args=%u\nbacking_files=%u\n",
         session->mount_path,
@@ -371,10 +419,11 @@ static int fsn_build_status_file(struct fsn_fuse_session *session) {
         session->user_file_count
     );
     if (written < 0 || (size_t)written >= content_size) {
-        return FSN_FUSE_STATUS_PLAN_BUILD_FAILED;
+        free(content);
+        return NULL;
     }
 
-    return FSN_FUSE_STATUS_OK;
+    return content;
 }
 
 static int fsn_build_audit_file(struct fsn_fuse_session *session) {
@@ -468,7 +517,7 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         return -EINVAL;
     }
 
-    result = fsn_create_user_file(session, path, mode);
+    result = fsn_persist_created_user_file(session, path, mode);
     fsn_record_audit_event(session, "create", path, result);
     if (result != 0) {
         return result;
@@ -542,6 +591,26 @@ static int fsn_ensure_backing_store_directory(const char *path) {
     }
 
     return FSN_FUSE_STATUS_OK;
+}
+
+static int fsn_build_backing_store_file_path(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    char *buf,
+    size_t buf_size
+) {
+    int written;
+
+    if (session == NULL || path == NULL || buf == NULL || buf_size == 0 || !fsn_is_user_file_path(path)) {
+        return -EINVAL;
+    }
+
+    written = snprintf(buf, buf_size, "%s/%s", session->backing_store_path, path + 1);
+    if (written < 0 || (size_t)written >= buf_size) {
+        return -ENAMETOOLONG;
+    }
+
+    return 0;
 }
 
 static int fsn_load_backing_store_files(struct fsn_fuse_session *session) {
@@ -720,6 +789,91 @@ static void fsn_free_virtual_file(struct fsn_virtual_file *file) {
     memset(file, 0, sizeof(*file));
 }
 
+static int fsn_sync_user_file_to_backing_store(
+    const struct fsn_fuse_session *session,
+    const struct fsn_virtual_file *file
+) {
+    char host_path[PATH_MAX];
+    FILE *stream;
+
+    if (session == NULL || file == NULL || file->path == NULL) {
+        return -EINVAL;
+    }
+
+    if (file->size > 0 && file->content == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_build_backing_store_file_path(session, file->path, host_path, sizeof(host_path)) != 0) {
+        return -ENAMETOOLONG;
+    }
+
+    stream = fopen(host_path, "wb");
+    if (stream == NULL) {
+        return -errno;
+    }
+
+    if (file->size > 0 && fwrite(file->content, 1, file->size, stream) != file->size) {
+        int write_error = ferror(stream) != 0 ? errno : EIO;
+
+        fclose(stream);
+        return -write_error;
+    }
+
+    if (fclose(stream) != 0) {
+        return -errno;
+    }
+
+    if (chmod(host_path, file->mode) != 0) {
+        return -errno;
+    }
+
+    return 0;
+}
+
+static int fsn_snapshot_user_file(
+    const struct fsn_virtual_file *file,
+    char **out_content,
+    size_t *out_size
+) {
+    char *copy;
+
+    if (file == NULL || out_content == NULL || out_size == NULL) {
+        return -EINVAL;
+    }
+
+    *out_content = NULL;
+    *out_size = file->size;
+    if (file->size == 0) {
+        return 0;
+    }
+
+    if (file->content == NULL) {
+        return -EINVAL;
+    }
+
+    copy = malloc(file->size);
+    if (copy == NULL) {
+        return -ENOMEM;
+    }
+
+    memcpy(copy, file->content, file->size);
+    *out_content = copy;
+    return 0;
+}
+
+static void fsn_restore_user_file(struct fsn_virtual_file *file, char *content, size_t size) {
+    if (file == NULL) {
+        free(content);
+        return;
+    }
+
+    free(file->content);
+    file->content = content;
+    file->size = size;
+    file->capacity = size;
+}
+
 static int fsn_append_user_file(
     struct fsn_fuse_session *session,
     const char *path,
@@ -775,6 +929,37 @@ static int fsn_create_user_file(struct fsn_fuse_session *session, const char *pa
     return fsn_append_user_file(session, path, mode, NULL);
 }
 
+static int fsn_persist_created_user_file(struct fsn_fuse_session *session, const char *path, mode_t mode) {
+    struct fsn_virtual_file *file;
+    char host_path[PATH_MAX];
+    int result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    result = fsn_append_user_file(session, path, mode, &file);
+    if (result != 0) {
+        return result;
+    }
+
+    result = fsn_sync_user_file_to_backing_store(session, file);
+    if (result != 0) {
+        if (fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path)) == 0) {
+            unlink(host_path);
+        }
+        fsn_free_virtual_file(file);
+        session->user_file_count -= 1;
+        return result;
+    }
+
+    return 0;
+}
+
 static int fsn_write_user_file(
     struct fsn_virtual_file *file,
     const char *buf,
@@ -816,6 +1001,40 @@ static int fsn_write_user_file(
     return (int)size;
 }
 
+static int fsn_write_user_file_with_persistence(
+    const struct fsn_fuse_session *session,
+    struct fsn_virtual_file *file,
+    const char *buf,
+    size_t size,
+    off_t off
+) {
+    char *snapshot_content;
+    size_t snapshot_size;
+    int result;
+    int sync_result;
+
+    result = fsn_snapshot_user_file(file, &snapshot_content, &snapshot_size);
+    if (result != 0) {
+        return result;
+    }
+
+    result = fsn_write_user_file(file, buf, size, off);
+    if (result < 0) {
+        free(snapshot_content);
+        return result;
+    }
+
+    sync_result = fsn_sync_user_file_to_backing_store(session, file);
+    if (sync_result != 0) {
+        fsn_restore_user_file(file, snapshot_content, snapshot_size);
+        fsn_sync_user_file_to_backing_store(session, file);
+        return sync_result;
+    }
+
+    free(snapshot_content);
+    return result;
+}
+
 static int fsn_truncate_user_file(struct fsn_virtual_file *file, off_t size) {
     char *content;
 
@@ -839,6 +1058,38 @@ static int fsn_truncate_user_file(struct fsn_virtual_file *file, off_t size) {
     }
 
     file->size = (size_t)size;
+    return 0;
+}
+
+static int fsn_truncate_user_file_with_persistence(
+    const struct fsn_fuse_session *session,
+    struct fsn_virtual_file *file,
+    off_t size
+) {
+    char *snapshot_content;
+    size_t snapshot_size;
+    int result;
+    int sync_result;
+
+    result = fsn_snapshot_user_file(file, &snapshot_content, &snapshot_size);
+    if (result != 0) {
+        return result;
+    }
+
+    result = fsn_truncate_user_file(file, size);
+    if (result != 0) {
+        free(snapshot_content);
+        return result;
+    }
+
+    sync_result = fsn_sync_user_file_to_backing_store(session, file);
+    if (sync_result != 0) {
+        fsn_restore_user_file(file, snapshot_content, snapshot_size);
+        fsn_sync_user_file_to_backing_store(session, file);
+        return sync_result;
+    }
+
+    free(snapshot_content);
     return 0;
 }
 
@@ -870,6 +1121,34 @@ static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *pa
     }
 
     return -ENOENT;
+}
+
+static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path) {
+    char host_path[PATH_MAX];
+    int result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    if (fsn_find_user_file(session, path) == NULL) {
+        return -ENOENT;
+    }
+
+    result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        return result;
+    }
+
+    if (unlink(host_path) != 0) {
+        return -errno;
+    }
+
+    return fsn_remove_user_file(session, path);
 }
 
 static int fsn_mutations_allowed(const struct fsn_fuse_session *session) {
@@ -950,8 +1229,16 @@ static int fsn_fuse_read(
 
     session = fuse_get_context()->private_data;
     if (fsn_is_status_path(session, path)) {
+        char *content = fsn_render_status_content(session);
+
+        if (content == NULL) {
+            fsn_record_audit_event(session, "read", path, -ENOMEM);
+            return -ENOMEM;
+        }
+
         {
-            int result = fsn_copy_read_slice(session->status_file_content, buf, size, off);
+            int result = fsn_copy_read_slice(content, buf, size, off);
+            free(content);
             fsn_record_audit_event(session, "read", path, result);
             return result;
         }
@@ -1021,7 +1308,7 @@ static int fsn_fuse_write(
     }
 
     {
-        int result = fsn_write_user_file(file, buf, size, off);
+        int result = fsn_write_user_file_with_persistence(session, file, buf, size, off);
         fsn_record_audit_event(session, "write", path, result);
         return result;
     }
@@ -1047,7 +1334,7 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     }
 
     {
-        int result = fsn_truncate_user_file(file, size);
+        int result = fsn_truncate_user_file_with_persistence(session, file, size);
         fsn_record_audit_event(session, "truncate", path, result);
         return result;
     }
@@ -1066,7 +1353,7 @@ static int fsn_fuse_unlink(const char *path) {
     }
 
     {
-        int result = fsn_remove_user_file(session, path);
+        int result = fsn_remove_user_file_with_persistence(session, path);
         fsn_record_audit_event(session, "unlink", path, result);
         return result;
     }
@@ -1461,13 +1748,22 @@ int fsn_fuse_debug_read(
     }
 
     if (fsn_is_status_path(session, path)) {
+        char *content = fsn_render_status_content(session);
+
+        if (content == NULL) {
+            fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
+            return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+        }
+
         if (offset > (uint64_t)LLONG_MAX) {
+            free(content);
             fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
             return FSN_FUSE_STATUS_INVALID_ARGUMENT;
         }
 
         {
-            int result = fsn_copy_read_slice(session->status_file_content, buf, size, (off_t)offset);
+            int result = fsn_copy_read_slice(content, buf, size, (off_t)offset);
+            free(content);
             fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, result);
             return result;
         }
@@ -1526,7 +1822,7 @@ int fsn_fuse_debug_create_file(struct fsn_fuse_session *session, const char *pat
     }
 
     {
-        int result = fsn_create_user_file(session, path, (mode_t)mode);
+        int result = fsn_persist_created_user_file(session, path, (mode_t)mode);
         fsn_record_audit_event(session, "create", path, result);
         return result;
     }
@@ -1557,7 +1853,7 @@ int fsn_fuse_debug_write_file(
     }
 
     {
-        int result = fsn_write_user_file(file, buf, size, (off_t)offset);
+        int result = fsn_write_user_file_with_persistence(session, file, buf, size, (off_t)offset);
         fsn_record_audit_event(session, "write", path, result);
         return result;
     }
@@ -1582,7 +1878,7 @@ int fsn_fuse_debug_truncate_file(struct fsn_fuse_session *session, const char *p
     }
 
     {
-        int result = fsn_truncate_user_file(file, (off_t)size);
+        int result = fsn_truncate_user_file_with_persistence(session, file, (off_t)size);
         fsn_record_audit_event(session, "truncate", path, result);
         return result;
     }
@@ -1594,7 +1890,7 @@ int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *pat
     }
 
     {
-        int result = fsn_remove_user_file(session, path);
+        int result = fsn_remove_user_file_with_persistence(session, path);
         fsn_record_audit_event(session, "unlink", path, result);
         return result;
     }

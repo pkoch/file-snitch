@@ -22,6 +22,10 @@ pub fn run() !void {
         .allow_mutations = true,
     });
     defer session.deinit();
+
+    try session.debugCreateFile(note_path, 0o600);
+    try session.debugWriteFile(note_path, "hello from file-snitch\n");
+
     var readonly_session = try daemon.Session.init(allocator, .{
         .mount_path = mount_path,
         .backing_store_path = backing_store.path,
@@ -30,14 +34,12 @@ pub fn run() !void {
     });
     defer readonly_session.deinit();
 
-    try session.debugCreateFile(note_path, 0o600);
-    try session.debugWriteFile(note_path, "hello from file-snitch\n");
-
     const description = try session.describe();
     const plan = try session.executionPlan(allocator);
     defer session.freeExecutionPlan(allocator, plan);
     const root = try session.inspectPath("/");
     const audit = try session.inspectPath(audit_path);
+    const readonly_note = try readonly_session.inspectPath(note_path);
     const seed = try session.inspectPath(seed_path);
     const status = try session.inspectPath(status_path);
     const note = try session.inspectPath(note_path);
@@ -51,6 +53,8 @@ pub fn run() !void {
     defer allocator.free(audit_content);
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
+    const readonly_note_content = try readonly_session.readPath(allocator, note_path);
+    defer allocator.free(readonly_note_content);
 
     std.debug.print(
         "file-snitch scaffold: backend={s} fuse={d}.{d} env_ops={d} c_shim={any}\n",
@@ -78,6 +82,11 @@ pub fn run() !void {
             description.run_in_foreground,
             description.allow_mutations,
         },
+    );
+
+    std.debug.print(
+        "reloaded session: note(kind={s} size={d} inode={d})\n",
+        .{ @tagName(readonly_note.kind), readonly_note.size, readonly_note.inode },
     );
 
     std.debug.print(
@@ -114,6 +123,7 @@ pub fn run() !void {
     std.debug.print("status file contents:\n{s}", .{status_content});
     std.debug.print("audit file contents:\n{s}", .{audit_content});
     std.debug.print("note file contents:\n{s}", .{note_content});
+    std.debug.print("reloaded note contents:\n{s}", .{readonly_note_content});
 
     for (plan.args, 0..) |arg, index| {
         std.debug.print("argv[{d}]={s}\n", .{ index, arg });
