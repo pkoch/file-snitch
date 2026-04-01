@@ -47,6 +47,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Wire a minimal high-level `fuse_operations` table before implementing real filesystem behavior
 - `[x]` Build mount argv and a real `fuse_setup`/`fuse_loop` execution path
 - `[x]` Implement the first safe filesystem behavior instead of all-ENOENT stubs
+- `[x]` Expose one readable synthetic file from the mounted root
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:

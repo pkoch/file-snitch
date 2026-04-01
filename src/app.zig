@@ -44,7 +44,7 @@ pub fn run() !void {
     );
 
     std.debug.print(
-        "synthetic root directory is ready; file access still returns ENOENT\n",
+        "synthetic root directory and status file are ready; other file access still returns ENOENT\n",
         .{},
     );
 
