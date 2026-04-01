@@ -2,7 +2,25 @@ const std = @import("std");
 const daemon = @import("daemon.zig");
 const fuse = @import("fuse/shim.zig");
 
-pub fn run() !void {
+pub fn run(args: []const []const u8) !void {
+    if (args.len == 0 or std.mem.eql(u8, args[0], "demo")) {
+        return runDemo();
+    }
+
+    if (std.mem.eql(u8, args[0], "mount")) {
+        return runMount(args[1..]);
+    }
+
+    if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {
+        printUsage();
+        return;
+    }
+
+    printUsage();
+    return error.InvalidUsage;
+}
+
+fn runDemo() !void {
     const allocator = std.heap.page_allocator;
     const environment = try fuse.probe();
     const audit_path = "/file-snitch-audit";
@@ -167,6 +185,89 @@ pub fn run() !void {
     if (session.state.run_attempts != 0) {
         return error.Unexpected;
     }
+}
+
+fn runMount(args: []const []const u8) !void {
+    if (args.len < 2 or args.len > 3) {
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    const allocator = std.heap.page_allocator;
+    const mount_path = try std.fs.realpathAlloc(allocator, args[0]);
+    defer allocator.free(mount_path);
+    const backing_store_path = try std.fs.realpathAlloc(allocator, args[1]);
+    defer allocator.free(backing_store_path);
+    const allow_mutations = if (args.len == 3)
+        try parseMountPolicy(args[2])
+    else
+        false;
+
+    try requireEmptyDirectory(mount_path);
+    try ensureDirectory(backing_store_path);
+
+    var session = try daemon.Session.init(allocator, .{
+        .mount_path = mount_path,
+        .backing_store_path = backing_store_path,
+        .run_in_foreground = true,
+        .allow_mutations = allow_mutations,
+    });
+    defer session.deinit();
+
+    const description = try session.describe();
+    std.debug.print(
+        "mounting file-snitch: mount={s} backing={s} configured_ops={d} mutations={any}\n",
+        .{
+            description.mount_path,
+            description.backing_store_path,
+            description.configured_operation_count,
+            description.allow_mutations,
+        },
+    );
+
+    try session.run();
+}
+
+fn parseMountPolicy(arg: []const u8) !bool {
+    if (std.mem.eql(u8, arg, "mutable")) {
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "readonly")) {
+        return false;
+    }
+
+    printUsage();
+    return error.InvalidUsage;
+}
+
+fn requireEmptyDirectory(path: []const u8) !void {
+    var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    if (try iterator.next() != null) {
+        return error.MountPathNotEmpty;
+    }
+}
+
+fn ensureDirectory(path: []const u8) !void {
+    var dir = try std.fs.openDirAbsolute(path, .{});
+    dir.close();
+}
+
+fn printUsage() void {
+    std.debug.print(
+        \\usage:
+        \\  file-snitch [demo]
+        \\  file-snitch mount <mount-path> <backing-store-path> [mutable|readonly]
+        \\
+        \\notes:
+        \\  - `demo` is the side-effect-free dry-run inspection path
+        \\  - `mount` requires an existing empty mount directory
+        \\  - `mount` defaults to `readonly` unless `mutable` is specified
+        \\
+    , .{});
 }
 
 const BackingStoreFixture = struct {

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp_root="/private/tmp"
+mount_dir="$(mktemp -d "$tmp_root/file-snitch.mount.XXXXXX")"
+store_dir="$(mktemp -d "$tmp_root/file-snitch.store.XXXXXX")"
+log_file="$(mktemp "$tmp_root/file-snitch.mount-log.XXXXXX")"
+daemon_pid=""
+
+cleanup() {
+  local status=0
+
+  if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
+    kill -INT "$daemon_pid" 2>/dev/null || true
+    wait "$daemon_pid" || status=$?
+  fi
+
+  if mount | grep -F "on $mount_dir " >/dev/null 2>&1; then
+    umount "$mount_dir" || true
+  fi
+
+  rm -rf "$mount_dir" "$store_dir" "$log_file"
+  return "$status"
+}
+
+trap cleanup EXIT
+
+printf 'seeded from backing store\n' >"$store_dir/seed-from-store.txt"
+
+"$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" mutable >"$log_file" 2>&1 &
+daemon_pid="$!"
+
+for _ in $(seq 1 50); do
+  if [[ -f "$mount_dir/file-snitch-status" ]]; then
+    break
+  fi
+
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    echo "mount process exited early" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
+
+  sleep 0.1
+done
+
+if [[ ! -f "$mount_dir/file-snitch-status" ]]; then
+  echo "mount did not become ready" >&2
+  mount | grep 'file-snitch' >&2 || true
+  ls -la "$mount_dir" >&2 || true
+  cat "$log_file" >&2
+  exit 1
+fi
+
+ls -1 "$mount_dir"
+cat "$mount_dir/file-snitch-status"
+cat "$mount_dir/seed-from-store.txt"
+
+printf 'hello from live mount\n' >"$mount_dir/live-note.txt"
+mv "$mount_dir/live-note.txt" "$mount_dir/live-note-renamed.txt"
+cat "$mount_dir/live-note-renamed.txt"
+
+if [[ ! -f "$store_dir/live-note-renamed.txt" ]]; then
+  echo "expected renamed backing-store file missing" >&2
+  exit 1
+fi
+
+grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
+grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
+
+kill -INT "$daemon_pid"
+wait "$daemon_pid"
+daemon_pid=""

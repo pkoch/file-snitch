@@ -21,13 +21,15 @@ Current state:
 - those one-level regular file mutations now write through into the host backing-store directory
 - one-level file rename now updates both the mounted view and the backing-store directory
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
+- the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by an explicit session policy flag
 - the demo now exercises both the allow and deny sides of that mutation policy
 - the session now records an in-memory audit trail for reads and mutations
 - the synthetic audit file now renders that in-memory audit trail as mounted file content
-- the demo app inspects the execution plan but does not invoke a live mount
-- the live mount path is compiled, but the demo intentionally avoids invoking it
+- the demo app still inspects the execution plan without mounting
+- a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
 - directory mirroring is still limited to one-level regular files
+- the live macOS smoke test observed `._*` sidecar file traffic during rename/write flows
 
 ## Layout
 
@@ -35,6 +37,7 @@ Current state:
 - `src/`: Zig application code
 - `c/`: thin C boundary that owns `libfuse` interop
 - `docs/`: brief and research notes
+- `scripts/`: verification helpers including live-mount smoke tests
 
 ## Build notes
 
@@ -45,4 +48,5 @@ This scaffold expects:
 
 Current verification:
 - `zig build`
-- `./zig-out/bin/file-snitch`
+- `./zig-out/bin/file-snitch demo`
+- `./scripts/live-mount-smoke.sh`

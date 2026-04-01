@@ -1379,13 +1379,11 @@ static int fsn_fuse_read(
         int result;
 
         if (content == NULL) {
-            fsn_record_audit_event(session, "read", path, -ENOMEM);
             return -ENOMEM;
         }
 
         result = fsn_copy_read_slice(content, buf, size, off);
         free(content);
-        fsn_record_audit_event(session, "read", path, result);
         return result;
     }
 
@@ -1843,7 +1841,7 @@ int fsn_fuse_session_run(struct fsn_fuse_session *session) {
         sizeof(session->operations),
         &mountpoint,
         &multithreaded,
-        session->daemon_state
+        session
     );
     fsn_free_argument_vector(argv, session->planned_argument_count);
 
@@ -1966,19 +1964,16 @@ int fsn_fuse_debug_read(
         int result;
 
         if (content == NULL) {
-            fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
             return FSN_FUSE_STATUS_INVALID_ARGUMENT;
         }
 
         if (offset > (uint64_t)LLONG_MAX) {
             free(content);
-            fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, FSN_FUSE_STATUS_INVALID_ARGUMENT);
             return FSN_FUSE_STATUS_INVALID_ARGUMENT;
         }
 
         result = fsn_copy_read_slice(content, buf, size, (off_t)offset);
         free(content);
-        fsn_record_audit_event((struct fsn_fuse_session *)session, "read", path, result);
         return result;
     }
 

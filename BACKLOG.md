@@ -58,8 +58,8 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Persist one-level regular file mutations into the host backing-store directory
 - `[x]` Support one-level file rename with backing-store persistence
 - `[x]` Support one-level file flush and fsync against the backing-store directory
+- `[x]` Mount one guarded directory backed by a simple store
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
-- `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`
   - `readdir`
@@ -81,6 +81,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[ ]` Emit structured JSON audit logs
 - `[ ]` Test common editor temp-write and rename flows
 - `[ ]` Package a reproducible spike demo
+- `[ ]` Decide how v1 should handle macOS `._*` sidecar file traffic
 
 ## Phase 2: encryption layer
 
