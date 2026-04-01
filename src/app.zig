@@ -1,17 +1,38 @@
 const std = @import("std");
+const daemon = @import("daemon.zig");
 const fuse = @import("fuse/shim.zig");
 
 pub fn run() !void {
     const environment = try fuse.probe();
+    const session = try daemon.Session.init(std.heap.page_allocator, .{
+        .mount_path = "/tmp/file-snitch.mount",
+        .backing_store_path = "/tmp/file-snitch.store",
+        .run_in_foreground = true,
+    });
+    defer session.deinit();
+
+    const description = try session.describe();
 
     std.debug.print(
-        "file-snitch scaffold: backend={s} fuse={d}.{d} ops_size={d} c_shim={any}\n",
+        "file-snitch scaffold: backend={s} fuse={d}.{d} env_ops={d} c_shim={any}\n",
         .{
             environment.backend_name,
             environment.fuse_major_version,
             environment.fuse_minor_version,
             environment.high_level_ops_size,
             environment.uses_c_shim,
+        },
+    );
+
+    std.debug.print(
+        "prepared session: mount={s} backing={s} session_ops={d} state={any} mount_impl={any} foreground={any}\n",
+        .{
+            description.mount_path,
+            description.backing_store_path,
+            description.high_level_ops_size,
+            description.has_session_state,
+            description.mount_implemented,
+            description.run_in_foreground,
         },
     );
 }

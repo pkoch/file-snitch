@@ -9,6 +9,7 @@ The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 Current state:
 - phase-0 research docs and backlog are in place
 - the repo now has an initial Zig scaffold with a thin C `libfuse` shim
+- the shim exposes a stub session lifecycle that Zig can create, inspect, and destroy
 - actual mount behavior is not implemented yet
 
 ## Layout

@@ -43,6 +43,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 
 - `[x]` Commit to a Zig core with a thin C `libfuse` shim for the spike
 - `[~]` Create repo structure for daemon, policy engine, and prompt broker
+- `[~]` Define a stub daemon-to-`libfuse` session lifecycle before implementing mount behavior
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`
