@@ -12,7 +12,7 @@ Status:
 
 - `[~]` Convert the brief into a concrete execution backlog
 - `[~]` Build a phase-0 research matrix for target apps and file IO patterns
-- `[~]` Finalize the Linux spike implementation boundary around Zig plus a thin C `libfuse` shim
+- `[x]` Stand up the initial Zig project scaffold and thin C `libfuse` boundary
 - `[ ]` Narrow the v1 mediated operation set based on observed write patterns
 - `[ ]` Define the smallest end-to-end Linux spike demo
 
@@ -41,8 +41,8 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 
 Goal: a single guarded directory with in-memory policy and a CLI prompt.
 
-- `[~]` Commit to a Zig core with a thin C `libfuse` shim for the spike
-- `[ ]` Create repo structure for daemon, policy engine, and prompt broker
+- `[x]` Commit to a Zig core with a thin C `libfuse` shim for the spike
+- `[~]` Create repo structure for daemon, policy engine, and prompt broker
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`
