@@ -10,6 +10,7 @@ Current state:
 - phase-0 research docs and backlog are in place
 - the repo now has an initial Zig scaffold with a thin C `libfuse` shim
 - the shim exposes a stub session lifecycle that Zig can create, inspect, and destroy
+- the shim now owns a real high-level `fuse_operations` table shape and a stub run path
 - actual mount behavior is not implemented yet
 
 ## Layout
