@@ -39,7 +39,8 @@ struct fsn_fuse_session_config {
     const char *backing_store_path;
     void *daemon_state;
     uint8_t run_in_foreground;
-    uint8_t reserved[3];
+    uint8_t allow_mutations;
+    uint8_t reserved[2];
 };
 
 struct fsn_fuse_session_info {
@@ -51,7 +52,8 @@ struct fsn_fuse_session_info {
     uint8_t has_daemon_state;
     uint8_t has_init_callback;
     uint8_t run_in_foreground;
-    uint8_t reserved[7];
+    uint8_t allow_mutations;
+    uint8_t reserved[6];
 };
 
 struct fsn_fuse_node_info {

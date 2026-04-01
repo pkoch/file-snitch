@@ -5,11 +5,13 @@ pub const Config = struct {
     mount_path: []const u8,
     backing_store_path: []const u8,
     run_in_foreground: bool = true,
+    allow_mutations: bool = false,
 };
 
 pub const State = struct {
     run_attempts: usize = 0,
     run_in_foreground: bool,
+    allow_mutations: bool,
 };
 
 pub const Description = fuse.SessionDescription;
@@ -36,6 +38,7 @@ pub const Session = struct {
         errdefer allocator.destroy(state);
         state.* = .{
             .run_in_foreground = config.run_in_foreground,
+            .allow_mutations = config.allow_mutations,
         };
 
         const handle = try fuse.createSession(.{
@@ -43,6 +46,7 @@ pub const Session = struct {
             .backing_store_path = backing_store_path,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
+            .allow_mutations = config.allow_mutations,
         });
 
         return .{

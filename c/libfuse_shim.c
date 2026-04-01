@@ -36,6 +36,7 @@ struct fsn_fuse_session {
     uint64_t next_inode;
     void *daemon_state;
     uint8_t run_in_foreground;
+    uint8_t allow_mutations;
     uint32_t configured_operation_count;
     uint32_t planned_argument_count;
     char **planned_arguments;
@@ -52,6 +53,7 @@ static void fsn_fill_user_file_stat(const struct fsn_virtual_file *file, struct 
 static int fsn_build_status_file(struct fsn_fuse_session *session);
 static int fsn_copy_read_slice(const char *source, char *buf, size_t size, off_t off);
 static int fsn_fill_node_info_from_stat(uint32_t kind, const struct stat *stbuf, struct fsn_fuse_node_info *out);
+static int fsn_mutations_allowed(const struct fsn_fuse_session *session);
 static struct fsn_virtual_file *fsn_find_user_file(struct fsn_fuse_session *session, const char *path);
 static const struct fsn_virtual_file *fsn_find_user_file_const(
     const struct fsn_fuse_session *session,
@@ -431,6 +433,10 @@ static int fsn_create_user_file(struct fsn_fuse_session *session, const char *pa
         return -EINVAL;
     }
 
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
     if (!fsn_is_user_file_path(path) || fsn_is_status_path(session, path)) {
         return -EINVAL;
     }
@@ -532,6 +538,10 @@ static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *pa
         return -EINVAL;
     }
 
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
     for (index = 0; index < session->user_file_count; index += 1) {
         if (strcmp(session->user_files[index].path, path) == 0) {
             fsn_free_virtual_file(&session->user_files[index]);
@@ -549,6 +559,10 @@ static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *pa
     }
 
     return -ENOENT;
+}
+
+static int fsn_mutations_allowed(const struct fsn_fuse_session *session) {
+    return session != NULL && session->allow_mutations != 0;
 }
 
 static int fsn_fuse_read(
@@ -595,6 +609,10 @@ static int fsn_fuse_write(
         return -EINVAL;
     }
 
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         return -ENOENT;
@@ -609,6 +627,10 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
 
     if (path == NULL) {
         return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
     }
 
     file = fsn_find_user_file(session, path);
@@ -823,6 +845,7 @@ int fsn_fuse_session_create(
 
     session->daemon_state = config->daemon_state;
     session->run_in_foreground = config->run_in_foreground != 0 ? 1 : 0;
+    session->allow_mutations = config->allow_mutations != 0 ? 1 : 0;
     session->next_inode = 3;
     fsn_fuse_configure_operations(session);
     if (fsn_build_execution_plan(session) != FSN_FUSE_STATUS_OK) {
@@ -877,6 +900,7 @@ int fsn_fuse_session_describe(
     out->has_daemon_state = session->daemon_state != NULL ? 1 : 0;
     out->has_init_callback = session->operations.init != NULL ? 1 : 0;
     out->run_in_foreground = session->run_in_foreground;
+    out->allow_mutations = session->allow_mutations;
     return FSN_FUSE_STATUS_OK;
 }
 
@@ -1035,6 +1059,10 @@ int fsn_fuse_debug_write_file(
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
+    if (!fsn_mutations_allowed(session)) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
     file = fsn_find_user_file(session, path);
     if (file == NULL) {
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
@@ -1047,6 +1075,10 @@ int fsn_fuse_debug_truncate_file(struct fsn_fuse_session *session, const char *p
     struct fsn_virtual_file *file;
 
     if (session == NULL || path == NULL || size > (uint64_t)LLONG_MAX) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 

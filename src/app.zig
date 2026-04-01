@@ -11,6 +11,7 @@ pub fn run() !void {
         .mount_path = "/tmp/file-snitch.mount",
         .backing_store_path = "/tmp/file-snitch.store",
         .run_in_foreground = true,
+        .allow_mutations = true,
     });
     defer session.deinit();
 
@@ -42,7 +43,7 @@ pub fn run() !void {
     );
 
     std.debug.print(
-        "prepared session: mount={s} backing={s} session_ops={d} configured_ops={d} argv={d} state={any} daemon_state={any} init_cb={any} mount_impl={any} foreground={any}\n",
+        "prepared session: mount={s} backing={s} session_ops={d} configured_ops={d} argv={d} state={any} daemon_state={any} init_cb={any} mount_impl={any} foreground={any} mutations={any}\n",
         .{
             description.mount_path,
             description.backing_store_path,
@@ -54,6 +55,7 @@ pub fn run() !void {
             description.has_init_callback,
             description.mount_implemented,
             description.run_in_foreground,
+            description.allow_mutations,
         },
     );
 

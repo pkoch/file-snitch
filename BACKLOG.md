@@ -50,6 +50,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Expose one readable synthetic file from the mounted root
 - `[x]` Add a dry-run inspection path for synthetic filesystem behavior
 - `[x]` Support one-level in-memory regular files under the mounted root
+- `[x]` Add an explicit mutation policy flag to the session model
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Mount one guarded directory backed by a simple store
 - `[ ]` Implement the minimum FUSE operations:

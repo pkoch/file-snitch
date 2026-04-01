@@ -16,7 +16,8 @@ const c = struct {
         backing_store_path: [*:0]const u8,
         daemon_state: ?*anyopaque,
         run_in_foreground: u8,
-        reserved: [3]u8,
+        allow_mutations: u8,
+        reserved: [2]u8,
     };
 
     pub const RawSessionInfo = extern struct {
@@ -28,7 +29,8 @@ const c = struct {
         has_daemon_state: u8,
         has_init_callback: u8,
         run_in_foreground: u8,
-        reserved: [7]u8,
+        allow_mutations: u8,
+        reserved: [6]u8,
     };
 
     pub const RawNodeInfo = extern struct {
@@ -84,6 +86,7 @@ pub const SessionConfig = struct {
     backing_store_path: [*:0]const u8,
     daemon_state: ?*anyopaque = null,
     run_in_foreground: bool,
+    allow_mutations: bool = false,
 };
 
 pub const SessionDescription = struct {
@@ -98,6 +101,7 @@ pub const SessionDescription = struct {
     has_daemon_state: bool,
     has_init_callback: bool,
     run_in_foreground: bool,
+    allow_mutations: bool,
 };
 
 pub const NodeKind = enum(u32) {
@@ -153,7 +157,8 @@ pub fn createSession(config: SessionConfig) Error!*RawSession {
         .backing_store_path = config.backing_store_path,
         .daemon_state = config.daemon_state,
         .run_in_foreground = @intFromBool(config.run_in_foreground),
-        .reserved = std.mem.zeroes([3]u8),
+        .allow_mutations = @intFromBool(config.allow_mutations),
+        .reserved = std.mem.zeroes([2]u8),
     };
     var session: ?*RawSession = null;
     const result = c.fsn_fuse_session_create(&raw_config, &session);
@@ -194,6 +199,7 @@ pub fn describeSession(session: *const RawSession) Error!SessionDescription {
         .has_daemon_state = raw.has_daemon_state != 0,
         .has_init_callback = raw.has_init_callback != 0,
         .run_in_foreground = raw.run_in_foreground != 0,
+        .allow_mutations = raw.allow_mutations != 0,
     };
 }
 
