@@ -26,9 +26,10 @@ Current state:
 - one-level xattrs now proxy to the backing-store file on macOS
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
-- mutating operations are now controlled by an explicit session policy flag
+- mutating operations are now controlled by a Zig-owned default mutation outcome instead of a C-owned session flag
 - the daemon now owns an in-memory policy engine with path-prefix rules and `allow` / `deny` / `prompt` outcomes
-- the C shim now consults that policy engine for read and mutation decisions through the Zig daemon state
+- the filesystem model, audit trail, and path semantics now live in Zig
+- the C shim now only owns `libfuse` ABI glue, mount execution, host-fd lock plumbing, and macOS xattr syscalls
 - the demo now exercises both the allow and deny sides of that mutation policy
 - the demo now also exercises rule-driven `prompt` and `deny` outcomes, with `prompt` currently defaulting to deny until a prompt broker exists
 - the session now records an in-memory audit trail for reads and mutations
@@ -49,7 +50,8 @@ Current state:
 
 - `build.zig`: Zig build entrypoint
 - `src/`: Zig application code
-- `c/`: thin C boundary that owns `libfuse` interop
+- `src/filesystem.zig`: Zig-owned guarded-directory model and backing-store behavior
+- `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
 - `scripts/`: verification helpers including live-mount smoke tests
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const daemon = @import("daemon.zig");
 const fuse = @import("fuse/shim.zig");
+const policy = @import("policy.zig");
 
 pub fn run(args: []const []const u8) !void {
     if (args.len == 0 or std.mem.eql(u8, args[0], "demo")) {
@@ -39,7 +40,7 @@ fn runDemo() !void {
         .mount_path = mount_path,
         .backing_store_path = backing_store.path,
         .run_in_foreground = true,
-        .allow_mutations = true,
+        .default_mutation_outcome = .allow,
     });
     defer session.deinit();
 
@@ -52,7 +53,7 @@ fn runDemo() !void {
         .mount_path = mount_path,
         .backing_store_path = backing_store.path,
         .run_in_foreground = true,
-        .allow_mutations = false,
+        .default_mutation_outcome = .deny,
     });
     defer readonly_session.deinit();
 
@@ -60,7 +61,7 @@ fn runDemo() !void {
         .mount_path = mount_path,
         .backing_store_path = backing_store.path,
         .run_in_foreground = true,
-        .allow_mutations = true,
+        .default_mutation_outcome = .allow,
         .policy_rules = &.{
             .{
                 .path_prefix = note_path,
@@ -110,7 +111,7 @@ fn runDemo() !void {
     );
 
     std.debug.print(
-        "prepared session: mount={s} backing={s} session_ops={d} configured_ops={d} argv={d} state={any} daemon_state={any} init_cb={any} mount_impl={any} foreground={any} mutations={any}\n",
+        "prepared session: mount={s} backing={s} session_ops={d} configured_ops={d} argv={d} state={any} daemon_state={any} init_cb={any} mount_impl={any} foreground={any} default_mutation={s}\n",
         .{
             description.mount_path,
             description.backing_store_path,
@@ -122,7 +123,7 @@ fn runDemo() !void {
             description.has_init_callback,
             description.mount_implemented,
             description.run_in_foreground,
-            description.allow_mutations,
+            @tagName(description.default_mutation_outcome),
         },
     );
 
@@ -178,8 +179,8 @@ fn runDemo() !void {
 
     readonly_session.debugCreateFile(blocked_note_path, 0o600) catch |err| switch (err) {
         error.DebugCreateFailed => std.debug.print(
-            "read-only session blocked create as expected (mutations={any})\n",
-            .{readonly_session.state.allow_mutations},
+            "read-only session blocked create as expected (default_mutation={s})\n",
+            .{@tagName(readonly_session.state.filesystem.defaultMutationOutcome())},
         ),
         else => return err,
     };
@@ -244,10 +245,10 @@ fn runMount(args: []const []const u8) !void {
     defer allocator.free(mount_path);
     const backing_store_path = try std.fs.realpathAlloc(allocator, args[1]);
     defer allocator.free(backing_store_path);
-    const allow_mutations = if (args.len == 3)
+    const default_mutation_outcome = if (args.len == 3)
         try parseMountPolicy(args[2])
     else
-        false;
+        policy.Outcome.deny;
 
     try requireEmptyDirectory(mount_path);
     try ensureDirectory(backing_store_path);
@@ -256,31 +257,35 @@ fn runMount(args: []const []const u8) !void {
         .mount_path = mount_path,
         .backing_store_path = backing_store_path,
         .run_in_foreground = true,
-        .allow_mutations = allow_mutations,
+        .default_mutation_outcome = default_mutation_outcome,
     });
     defer session.deinit();
 
     const description = try session.describe();
     std.debug.print(
-        "mounting file-snitch: mount={s} backing={s} configured_ops={d} mutations={any}\n",
+        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
         .{
             description.mount_path,
             description.backing_store_path,
             description.configured_operation_count,
-            description.allow_mutations,
+            @tagName(description.default_mutation_outcome),
         },
     );
 
     try session.run();
 }
 
-fn parseMountPolicy(arg: []const u8) !bool {
+fn parseMountPolicy(arg: []const u8) !policy.Outcome {
     if (std.mem.eql(u8, arg, "mutable")) {
-        return true;
+        return .allow;
     }
 
     if (std.mem.eql(u8, arg, "readonly")) {
-        return false;
+        return .deny;
+    }
+
+    if (std.mem.eql(u8, arg, "prompt")) {
+        return .prompt;
     }
 
     printUsage();
@@ -306,12 +311,12 @@ fn printUsage() void {
     std.debug.print(
         \\usage:
         \\  file-snitch [demo]
-        \\  file-snitch mount <mount-path> <backing-store-path> [mutable|readonly]
+        \\  file-snitch mount <mount-path> <backing-store-path> [mutable|readonly|prompt]
         \\
         \\notes:
         \\  - `demo` is the side-effect-free dry-run inspection path
         \\  - `mount` requires an existing empty mount directory
-        \\  - `mount` defaults to `readonly` unless `mutable` is specified
+        \\  - `mount` defaults to `readonly` unless another policy is specified
         \\
     , .{});
 }

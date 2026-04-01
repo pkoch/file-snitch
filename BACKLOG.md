@@ -61,6 +61,8 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Support one-level `chown` handling consistent with the backing-store view
 - `[x]` Support one-level file flush and fsync against the backing-store directory
 - `[x]` Support one-level xattr passthrough against the backing-store directory on macOS
+- `[x]` Move the guarded-directory model out of the C shim and into Zig-owned daemon state
+- `[x]` Replace the C-owned mutation flag with a Zig-owned default mutation outcome
 - `[x]` Mount one guarded directory backed by a simple store
 - `[x]` Verify rename-over-existing on the live mount path
 - `[x]` Verify hidden-temp and backup-style save flows on the live mount path
@@ -130,7 +132,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 
 ## Open decisions
 
-- `[~]` Exact Zig/C boundary for `libfuse` interop
+- `[~]` Exact Zig/C boundary for `libfuse` interop after the current model/ABI split cleanup
 - `[ ]` Exact v1 protected scope: per-file enrollment vs path-based trees only
 - `[ ]` Exact v1 approval cache key
 - `[ ]` Whether reads and writes need separate approval classes in v1
