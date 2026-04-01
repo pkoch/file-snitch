@@ -6,6 +6,7 @@
 #include <fuse.h>
 #include <limits.h>
 #include <stdio.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #ifdef __APPLE__
@@ -39,6 +40,10 @@ struct fsn_audit_event {
     char *action;
     char *path;
     int32_t result;
+};
+
+struct fsn_file_handle {
+    int backing_fd;
 };
 
 struct fsn_fuse_session {
@@ -105,6 +110,14 @@ static int fsn_mutations_allowed(const struct fsn_fuse_session *session);
 static int fsn_ensure_audit_capacity(struct fsn_fuse_session *session, uint32_t target);
 static void fsn_free_audit_event(struct fsn_audit_event *event);
 static void fsn_record_audit_event(struct fsn_fuse_session *session, const char *action, const char *path, int32_t result);
+static struct fsn_file_handle *fsn_create_file_handle(void);
+static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
+static void fsn_clear_file_handle(struct fuse_file_info *fi);
+static int fsn_open_backing_store_fd(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    int requested_flags
+);
 static struct fsn_virtual_file *fsn_find_user_file(struct fsn_fuse_session *session, const char *path);
 static const struct fsn_virtual_file *fsn_find_user_file_const(
     const struct fsn_fuse_session *session,
@@ -200,7 +213,11 @@ static int fsn_rename_user_file_with_persistence(
 );
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
-    (void)conn;
+    if (conn != NULL) {
+        conn->want |= FUSE_CAP_POSIX_LOCKS;
+        conn->want |= FUSE_CAP_FLOCK_LOCKS;
+    }
+
     return fuse_get_context()->private_data;
 }
 
@@ -569,6 +586,24 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
         return -ENOENT;
     }
 
+    if (fsn_should_persist_path(path)) {
+        struct fsn_file_handle *handle = fsn_create_file_handle();
+        int backing_fd;
+
+        if (handle == NULL) {
+            return -ENOMEM;
+        }
+
+        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags);
+        if (backing_fd < 0) {
+            free(handle);
+            return backing_fd;
+        }
+
+        handle->backing_fd = backing_fd;
+        fi->fh = (uint64_t)(uintptr_t)handle;
+    }
+
     fi->direct_io = 1;
     fi->keep_cache = 0;
     return 0;
@@ -588,14 +623,30 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         return result;
     }
 
+    if (fsn_should_persist_path(path)) {
+        struct fsn_file_handle *handle = fsn_create_file_handle();
+        int backing_fd;
+
+        if (handle == NULL) {
+            return -ENOMEM;
+        }
+
+        backing_fd = fsn_open_backing_store_fd(session, path, O_RDWR);
+        if (backing_fd < 0) {
+            free(handle);
+            return backing_fd;
+        }
+
+        handle->backing_fd = backing_fd;
+        fi->fh = (uint64_t)(uintptr_t)handle;
+    }
+
     fi->direct_io = 1;
     fi->keep_cache = 0;
     return 0;
 }
 
 static int fsn_fuse_release(const char *path, struct fuse_file_info *fi) {
-    (void)fi;
-
     if (path == NULL) {
         return -EINVAL;
     }
@@ -605,6 +656,7 @@ static int fsn_fuse_release(const char *path, struct fuse_file_info *fi) {
         return -ENOENT;
     }
 
+    fsn_clear_file_handle(fi);
     return 0;
 }
 
@@ -1629,6 +1681,75 @@ static void fsn_record_audit_event(struct fsn_fuse_session *session, const char 
     session->audit_event_count += 1;
 }
 
+static struct fsn_file_handle *fsn_create_file_handle(void) {
+    struct fsn_file_handle *handle = calloc(1, sizeof(*handle));
+
+    if (handle == NULL) {
+        return NULL;
+    }
+
+    handle->backing_fd = -1;
+    return handle;
+}
+
+static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi) {
+    if (fi == NULL || fi->fh == 0) {
+        return NULL;
+    }
+
+    return (struct fsn_file_handle *)(uintptr_t)fi->fh;
+}
+
+static void fsn_clear_file_handle(struct fuse_file_info *fi) {
+    struct fsn_file_handle *handle;
+
+    if (fi == NULL) {
+        return;
+    }
+
+    handle = fsn_get_file_handle(fi);
+    if (handle == NULL) {
+        return;
+    }
+
+    if (handle->backing_fd >= 0) {
+        close(handle->backing_fd);
+    }
+
+    free(handle);
+    fi->fh = 0;
+}
+
+static int fsn_open_backing_store_fd(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    int requested_flags
+) {
+    char host_path[PATH_MAX];
+    int access_mode;
+    int open_flags;
+    int path_result;
+    int descriptor;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    path_result = fsn_get_backing_store_user_file_path(session, path, host_path, sizeof(host_path));
+    if (path_result != 0) {
+        return path_result;
+    }
+
+    access_mode = requested_flags & O_ACCMODE;
+    open_flags = access_mode == O_RDONLY ? O_RDONLY : O_RDWR;
+    descriptor = open(host_path, open_flags);
+    if (descriptor < 0) {
+        return -errno;
+    }
+
+    return descriptor;
+}
+
 static int fsn_fuse_read(
     const char *path,
     char *buf,
@@ -1765,6 +1886,60 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
 
     result = fsn_change_user_file_mode_with_persistence(session, path, mode);
     fsn_record_audit_event(session, "chmod", path, result);
+    return result;
+}
+
+static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock) {
+    struct fsn_file_handle *handle = fsn_get_file_handle(fi);
+    int result;
+
+    if (path == NULL || fi == NULL || lock == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_find_user_file(fuse_get_context()->private_data, path) == NULL) {
+        fsn_record_audit_event(fuse_get_context()->private_data, "lock", path, -ENOENT);
+        return -ENOENT;
+    }
+
+    if (handle == NULL) {
+        fsn_record_audit_event(fuse_get_context()->private_data, "lock", path, -EBADF);
+        return -EBADF;
+    }
+
+    result = fcntl(handle->backing_fd, cmd, lock);
+    if (result != 0) {
+        result = -errno;
+    }
+
+    fsn_record_audit_event(fuse_get_context()->private_data, "lock", path, result);
+    return result;
+}
+
+static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
+    struct fsn_file_handle *handle = fsn_get_file_handle(fi);
+    int result;
+
+    if (path == NULL || fi == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_find_user_file(fuse_get_context()->private_data, path) == NULL) {
+        fsn_record_audit_event(fuse_get_context()->private_data, "flock", path, -ENOENT);
+        return -ENOENT;
+    }
+
+    if (handle == NULL) {
+        fsn_record_audit_event(fuse_get_context()->private_data, "flock", path, -EBADF);
+        return -EBADF;
+    }
+
+    result = flock(handle->backing_fd, op);
+    if (result != 0) {
+        result = -errno;
+    }
+
+    fsn_record_audit_event(fuse_get_context()->private_data, "flock", path, result);
     return result;
 }
 
@@ -1905,14 +2080,16 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
     session->operations.chmod = fsn_fuse_chmod;
+    session->operations.lock = fsn_fuse_lock;
+    session->operations.flock = fsn_fuse_flock;
 #ifdef __APPLE__
     session->operations.setxattr = fsn_fuse_setxattr;
     session->operations.getxattr = fsn_fuse_getxattr;
     session->operations.listxattr = fsn_fuse_listxattr;
     session->operations.removexattr = fsn_fuse_removexattr;
-    session->configured_operation_count = 20;
+    session->configured_operation_count = 22;
 #else
-    session->configured_operation_count = 16;
+    session->configured_operation_count = 18;
 #endif
     session->operations.flush = fsn_fuse_flush;
     session->operations.fsync = fsn_fuse_fsync;

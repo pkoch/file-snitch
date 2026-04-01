@@ -35,8 +35,10 @@ Current state:
 - the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
 - the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
 - the live smoke test now covers xattr set/get/list/remove round-trips on mounted files
+- the live smoke test now covers BSD `flock` and POSIX lock contention/release on mounted files
 - directory mirroring is still limited to one-level regular files
 - the live macOS smoke test observed both `._*` sidecar traffic and aggressive xattr probing during normal file activity
+- the same macOS smoke path treats behavioral lock contention/release as the main signal, because callback visibility is partial and style-dependent on macFUSE
 
 ## Layout
 

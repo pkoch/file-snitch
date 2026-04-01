@@ -66,6 +66,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Verify truncate-write, chmod, swap cleanup, and partial-overwrite flows on the live mount path
 - `[x]` Keep macOS `._*` sidecar files transient instead of persisting them
 - `[x]` Verify xattr round-trips on the live mount path
+- `[x]` Verify BSD `flock` and POSIX lock contention on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`

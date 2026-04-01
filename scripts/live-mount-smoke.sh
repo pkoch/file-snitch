@@ -135,6 +135,84 @@ if [[ "$mode_value" != "600" ]]; then
 fi
 
 printf 'lock data\n' >"$mount_dir/lock-note.txt"
+python3 - <<PY &
+import fcntl
+import time
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    time.sleep(2)
+PY
+flock_holder_pid="$!"
+sleep 0.2
+python3 - <<PY
+import errno
+import fcntl
+import sys
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            sys.exit(0)
+        raise
+
+    raise SystemExit("expected flock contention")
+PY
+wait "$flock_holder_pid"
+python3 - <<PY
+import fcntl
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.flock(fh, fcntl.LOCK_UN)
+PY
+python3 - <<PY &
+import fcntl
+import time
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    fcntl.lockf(fh, fcntl.LOCK_EX)
+    time.sleep(2)
+PY
+posix_lock_holder_pid="$!"
+sleep 0.2
+python3 - <<PY
+import errno
+import fcntl
+import sys
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    try:
+        fcntl.lockf(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            sys.exit(0)
+        raise
+
+    raise SystemExit("expected POSIX lock contention")
+PY
+wait "$posix_lock_holder_pid"
+python3 - <<PY
+import fcntl
+from pathlib import Path
+
+path = Path("$mount_dir/lock-note.txt")
+with path.open("r+") as fh:
+    fcntl.lockf(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.lockf(fh, fcntl.LOCK_UN)
+PY
 printf 'swap contents\n' >"$mount_dir/.lock-note.txt.swp"
 rm "$mount_dir/.lock-note.txt.swp"
 rm "$mount_dir/lock-note.txt"
