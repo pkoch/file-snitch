@@ -185,6 +185,12 @@ pub const Session = struct {
         }
     }
 
+    pub fn debugCreateDirectory(self: *Session, path: [:0]const u8, mode: u32) !void {
+        if (self.state.filesystem.createDirectory(path, mode, .{}) != 0) {
+            return error.DebugMkdirFailed;
+        }
+    }
+
     pub fn debugWriteFile(self: *Session, path: [:0]const u8, contents: [:0]const u8) !void {
         if (self.state.filesystem.writeFile(path, 0, contents[0..contents.len], .{}) < 0) {
             return error.DebugWriteFailed;
@@ -212,6 +218,12 @@ pub const Session = struct {
     pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
         if (self.state.filesystem.removeFile(path, .{}) != 0) {
             return error.DebugRemoveFailed;
+        }
+    }
+
+    pub fn debugRemoveDirectory(self: *Session, path: [:0]const u8) !void {
+        if (self.state.filesystem.removeDirectory(path, .{}) != 0) {
+            return error.DebugRmdirFailed;
         }
     }
 
@@ -377,6 +389,15 @@ pub export fn fsn_daemon_create(
     return @intCast(request.state.filesystem.createFile(request.path, mode, request.context));
 }
 
+pub export fn fsn_daemon_mkdir(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    mode: u32,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.createDirectory(request.path, mode, request.context));
+}
+
 pub export fn fsn_daemon_write(
     daemon_state: ?*anyopaque,
     raw_request: *const policy.RawRequest,
@@ -431,6 +452,14 @@ pub export fn fsn_daemon_unlink(
 ) c_int {
     const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.removeFile(request.path, request.context));
+}
+
+pub export fn fsn_daemon_rmdir(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.removeDirectory(request.path, request.context));
 }
 
 pub export fn fsn_daemon_rename(

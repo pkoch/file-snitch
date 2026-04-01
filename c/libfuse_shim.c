@@ -76,6 +76,7 @@ extern int fsn_daemon_read(
     char *buf
 );
 extern int fsn_daemon_create(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
+extern int fsn_daemon_mkdir(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
 extern int fsn_daemon_write(
     void *daemon_state,
     const struct fsn_bridge_request *request,
@@ -88,6 +89,7 @@ extern int fsn_daemon_chmod(void *daemon_state, const struct fsn_bridge_request 
 extern int fsn_daemon_chown(void *daemon_state, const struct fsn_bridge_request *request, uint32_t uid, uint32_t gid);
 extern int fsn_daemon_sync(void *daemon_state, const struct fsn_bridge_request *request, uint8_t datasync);
 extern int fsn_daemon_unlink(void *daemon_state, const struct fsn_bridge_request *request);
+extern int fsn_daemon_rmdir(void *daemon_state, const struct fsn_bridge_request *request);
 extern int fsn_daemon_rename(void *daemon_state, const struct fsn_bridge_request *request, const char *to_path);
 extern int fsn_daemon_record_audit(void *daemon_state, const char *action, const char *path, int32_t result);
 
@@ -205,6 +207,7 @@ static int fsn_fuse_readdir(
     struct fuse_file_info *fi
 ) {
     struct stat stbuf;
+    struct fsn_bridge_lookup directory_lookup;
     struct fsn_fuse_session *session;
     uint32_t count;
     uint32_t index;
@@ -216,19 +219,17 @@ static int fsn_fuse_readdir(
         return -EINVAL;
     }
 
-    if (!fsn_is_root_path(path)) {
+    session = fuse_get_context()->private_data;
+    if (fsn_lookup_path(session, path, &directory_lookup) != 0) {
+        return -EIO;
+    }
+
+    if (directory_lookup.open_kind != FSN_OPEN_DIRECTORY) {
         return -ENOENT;
     }
 
     memset(&stbuf, 0, sizeof(stbuf));
-    stbuf.st_mode = S_IFDIR | 0755;
-    stbuf.st_nlink = 2;
-    stbuf.st_uid = getuid();
-    stbuf.st_gid = getgid();
-    stbuf.st_atime = time(NULL);
-    stbuf.st_mtime = stbuf.st_atime;
-    stbuf.st_ctime = stbuf.st_atime;
-    stbuf.st_ino = 1;
+    fsn_fill_stat_from_lookup(&directory_lookup, &stbuf);
     if (filler(buf, ".", &stbuf, 0) != 0) {
         return 0;
     }
@@ -237,7 +238,10 @@ static int fsn_fuse_readdir(
         return 0;
     }
 
-    session = fuse_get_context()->private_data;
+    if (!fsn_is_root_path(path)) {
+        return 0;
+    }
+
     count = fsn_daemon_root_entry_count(session->daemon_state);
     for (index = 0; index < count; index += 1) {
         const char *name = fsn_daemon_root_entry_name_at(session->daemon_state, index);
@@ -267,8 +271,19 @@ static int fsn_fuse_readdir(
 }
 
 static int fsn_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
+    struct fsn_bridge_lookup lookup;
+
     (void)fi;
-    return fsn_is_root_path(path) ? 0 : -ENOENT;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_lookup_path(fuse_get_context()->private_data, path, &lookup) != 0) {
+        return -EIO;
+    }
+
+    return lookup.open_kind == FSN_OPEN_DIRECTORY ? 0 : -ENOENT;
 }
 
 static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
@@ -366,6 +381,22 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
     fi->direct_io = 1;
     fi->keep_cache = 0;
     return 0;
+}
+
+static int fsn_fuse_mkdir(const char *path, mode_t mode) {
+    struct fsn_bridge_request request;
+    struct fsn_fuse_session *session;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    session = fuse_get_context()->private_data;
+    if (fsn_build_request(&request, path, FSN_ACCESS_CREATE, 1) != 0) {
+        return -EINVAL;
+    }
+
+    return fsn_daemon_mkdir(session->daemon_state, &request, (uint32_t)mode);
 }
 
 static int fsn_fuse_release(const char *path, struct fuse_file_info *fi) {
@@ -754,6 +785,22 @@ static int fsn_fuse_unlink(const char *path) {
     return fsn_daemon_unlink(session->daemon_state, &request);
 }
 
+static int fsn_fuse_rmdir(const char *path) {
+    struct fsn_bridge_request request;
+    struct fsn_fuse_session *session;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    session = fuse_get_context()->private_data;
+    if (fsn_build_request(&request, path, FSN_ACCESS_DELETE, 1) != 0) {
+        return -EINVAL;
+    }
+
+    return fsn_daemon_rmdir(session->daemon_state, &request);
+}
+
 static int fsn_fuse_rename(const char *from, const char *to) {
     struct fsn_bridge_request request;
     struct fsn_fuse_session *session;
@@ -779,7 +826,9 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.readdir = fsn_fuse_readdir;
     session->operations.releasedir = fsn_fuse_releasedir;
     session->operations.create = fsn_fuse_create;
+    session->operations.mkdir = fsn_fuse_mkdir;
     session->operations.unlink = fsn_fuse_unlink;
+    session->operations.rmdir = fsn_fuse_rmdir;
     session->operations.open = fsn_fuse_open;
     session->operations.release = fsn_fuse_release;
     session->operations.read = fsn_fuse_read;
@@ -794,9 +843,9 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.getxattr = fsn_fuse_getxattr;
     session->operations.listxattr = fsn_fuse_listxattr;
     session->operations.removexattr = fsn_fuse_removexattr;
-    session->configured_operation_count = 23;
+    session->configured_operation_count = 25;
 #else
-    session->configured_operation_count = 19;
+    session->configured_operation_count = 21;
 #endif
     session->operations.flush = fsn_fuse_flush;
     session->operations.fsync = fsn_fuse_fsync;

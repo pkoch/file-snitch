@@ -53,6 +53,20 @@ assert_file_missing() {
   [[ ! -e "$path" ]] || fail "$message"
 }
 
+assert_dir_exists() {
+  local path="$1"
+  local message="$2"
+
+  [[ -d "$path" ]] || fail "$message"
+}
+
+assert_dir_missing() {
+  local path="$1"
+  local message="$2"
+
+  [[ ! -e "$path" ]] || fail "$message"
+}
+
 assert_store_file_contents() {
   local path="$1"
   local expected="$2"
@@ -107,6 +121,26 @@ verify_simple_rename_flow() {
   assert_file_exists \
     "$store_dir/live-note-renamed.txt" \
     "expected renamed backing-store file missing"
+}
+
+verify_directory_lifecycle() {
+  mkdir "$mount_dir/empty-dir"
+
+  assert_dir_exists \
+    "$mount_dir/empty-dir" \
+    "expected mounted directory to exist after mkdir"
+  assert_dir_exists \
+    "$store_dir/empty-dir" \
+    "expected backing-store directory to exist after mkdir"
+
+  rmdir "$mount_dir/empty-dir"
+
+  assert_dir_missing \
+    "$mount_dir/empty-dir" \
+    "expected mounted directory to be removed after rmdir"
+  assert_dir_missing \
+    "$store_dir/empty-dir" \
+    "expected backing-store directory to be removed after rmdir"
 }
 
 verify_xattr_round_trip() {
@@ -356,6 +390,8 @@ verify_transient_sidecars() {
 
 verify_audit_log() {
   local -a audit_patterns=(
+    '"action":"mkdir"'
+    '"action":"rmdir"'
     '"action":"rename"'
     '"action":"setxattr"'
     '"action":"getxattr"'
@@ -389,6 +425,7 @@ main() {
   start_mount
   show_mount_state
 
+  verify_directory_lifecycle
   verify_simple_rename_flow
   verify_xattr_round_trip
   verify_replace_existing_flow

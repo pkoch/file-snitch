@@ -78,6 +78,16 @@ expect_create_denied() {
   fi
 }
 
+queue_prompt_answers() {
+  local answer="$1"
+  local count="$2"
+  local i=""
+
+  for i in $(seq 1 "$count"); do
+    printf '%s\n' "$answer" >&3
+  done
+}
+
 wait_for_mount_ready() {
   local status_path="$mount_dir/file-snitch-status"
 
@@ -114,7 +124,7 @@ start_prompt_mount() {
 verify_allow_case() {
   start_prompt_mount
 
-  printf 'yes\nyes\nyes\nyes\nyes\nyes\n' >&3
+  queue_prompt_answers yes 32
   printf 'allowed through prompt\n' >"$mount_dir/allowed-note.txt"
 
   assert_file_exists \
@@ -135,7 +145,7 @@ verify_allow_case() {
 verify_deny_case() {
   start_prompt_mount
 
-  printf 'no\nno\nno\nno\nno\nno\n' >&3
+  queue_prompt_answers no 32
   expect_create_denied \
     "$mount_dir/denied-note.txt" \
     "expected prompt deny to block file creation"

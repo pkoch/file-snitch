@@ -31,7 +31,7 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
   - file locking behavior
 - `[ ]` Summarize which filesystem operations v1 must mediate
 - `[x]` Compare Linux spike implementation options and record a recommendation
-- `[~]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
+- `[x]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
 - `[ ]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
 - `[ ]` Verify caller attribution assumptions on macOS with macFUSE
 - `[ ]` Document prompt latency constraints and timeout assumptions
@@ -42,7 +42,7 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 Goal: a single guarded directory with in-memory policy and a CLI prompt.
 
 - `[x]` Commit to a Zig core with a thin C `libfuse` shim for the spike
-- `[~]` Create repo structure for daemon, policy engine, and prompt broker
+- `[x]` Create repo structure for daemon, policy engine, and prompt broker
 - `[x]` Define a stub daemon-to-`libfuse` session lifecycle before implementing mount behavior
 - `[x]` Wire a minimal high-level `fuse_operations` table before implementing real filesystem behavior
 - `[x]` Build mount argv and a real `fuse_setup`/`fuse_loop` execution path
@@ -72,7 +72,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Verify BSD `flock` and POSIX lock contention on the live mount path
 - `[x]` Verify self-`chown` on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
-- `[ ]` Implement the minimum FUSE operations:
+- `[x]` Implement the minimum FUSE operations for the current one-level model:
   - `getattr`
   - `readdir`
   - `open`
@@ -87,13 +87,14 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
   - `mkdir`
   - `rmdir`
   - `truncate`
+- `[~]` Keep directory support limited to one-level empty directories until the data model grows beyond the current spike scope
 - `[x]` Add an in-memory policy engine with allow, deny, and prompt outcomes
 - `[x]` Add a CLI prompt path with default-deny timeout behavior
 - `[ ]` Support allow-once decisions
 - `[ ]` Emit structured JSON audit logs
 - `[x]` Test common editor temp-write and rename flows
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
-- `[ ]` Package a reproducible spike demo
+- `[ ]` Package a reproducible spike workflow
 
 ## Phase 2: encryption layer
 
@@ -133,7 +134,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 
 ## Open decisions
 
-- `[~]` Exact Zig/C boundary for `libfuse` interop after the current model/ABI split cleanup
+- `[x]` Exact Zig/C boundary for `libfuse` interop after the current model/ABI split cleanup
 - `[ ]` Exact v1 protected scope: per-file enrollment vs path-based trees only
 - `[ ]` Exact v1 approval cache key
 - `[ ]` Whether reads and writes need separate approval classes in v1
