@@ -246,6 +246,39 @@ test "policy and prompt paths are covered by integration assertions" {
     try std.testing.expectEqualStrings("", allowed_note);
 }
 
+test "transient rename rollback keeps source entry when persist fails" {
+    const allocator = std.testing.allocator;
+    const fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    var session = try daemon.Session.init(allocator, .{
+        .mount_path = fixture.mount_path,
+        .backing_store_path = fixture.backing_store_path,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .allow,
+    });
+    defer session.deinit();
+
+    try session.debugCreateFile("/._rename-source.txt", 0o600);
+    try session.debugWriteFile("/._rename-source.txt", "transient contents");
+
+    try std.fs.deleteTreeAbsolute(fixture.backing_store_path);
+
+    try std.testing.expectError(
+        error.DebugRenameFailed,
+        session.debugRenameFile("/._rename-source.txt", "/rename-target.txt"),
+    );
+
+    const source = try session.readPath(allocator, "/._rename-source.txt");
+    defer allocator.free(source);
+    try std.testing.expectEqualStrings("transient contents", source);
+
+    try std.testing.expectEqual(
+        filesystem.NodeKind.missing,
+        (try session.inspectPath("/rename-target.txt")).kind,
+    );
+}
+
 fn expectAuditEvent(
     events: []const daemon.AuditEvent,
     action: []const u8,

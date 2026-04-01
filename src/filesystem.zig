@@ -89,6 +89,20 @@ const StoredFile = struct {
     }
 };
 
+const MetadataSnapshot = struct {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+};
+
+const RenameMutation = struct {
+    source_index: usize,
+    original_name: [:0]u8,
+    original_path: [:0]u8,
+    replaced_target_index: ?usize,
+    replaced_target: ?StoredFile,
+};
+
 pub const Config = struct {
     mount_path: []const u8,
     backing_store_path: []const u8,
@@ -122,8 +136,53 @@ pub const Model = struct {
         };
         errdefer model.deinit();
 
-        try model.loadBackingStoreFiles();
         return model;
+    }
+
+    pub fn loadBackingStore(self: *Model) !void {
+        if (self.files.items.len != 0) {
+            return error.BackingStoreAlreadyLoaded;
+        }
+
+        try ensureBackingStoreDirectory(self.backing_store_path);
+
+        var directory = try std.fs.openDirAbsolute(self.backing_store_path, .{ .iterate = true });
+        defer directory.close();
+
+        var iterator = directory.iterate();
+        while (try iterator.next()) |entry| {
+            if (entry.kind != .file) {
+                continue;
+            }
+
+            if (isReservedName(entry.name) or isTransientSidecarName(entry.name)) {
+                continue;
+            }
+
+            var file = try directory.openFile(entry.name, .{ .mode = .read_only });
+            defer file.close();
+
+            const stat = try file.stat();
+            const posix_stat = try std.posix.fstat(file.handle);
+            const virtual_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.name});
+            defer self.allocator.free(virtual_path);
+
+            const imported = try self.appendFile(
+                virtual_path,
+                stat.mode & 0o777,
+                @intCast(posix_stat.uid),
+                @intCast(posix_stat.gid),
+            );
+
+            if (stat.size > 0) {
+                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
+                imported.content.items.len = @intCast(stat.size);
+                const read_count = try file.readAll(imported.content.items);
+                if (read_count != imported.content.items.len) {
+                    return error.UnexpectedEof;
+                }
+            }
+        }
     }
 
     pub fn deinit(self: *Model) void {
@@ -487,25 +546,14 @@ pub const Model = struct {
         }
 
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
-        const snapshot = self.allocator.dupe(u8, file.content.items) catch |err| return mapFsError(err);
+        const snapshot = self.snapshotFileContent(file) catch |err| return mapFsError(err);
         defer self.allocator.free(snapshot);
 
         writeIntoArrayList(self.allocator, &file.content, @intCast(offset), bytes) catch |err| {
             return mapFsError(err);
         };
 
-        if (!shouldPersistPath(path)) {
-            return @intCast(bytes.len);
-        }
-
-        const persist_result = self.syncFileToBackingStore(file);
-        if (persist_result != 0) {
-            file.content.clearRetainingCapacity();
-            file.content.appendSlice(self.allocator, snapshot) catch unreachable;
-            return persist_result;
-        }
-
-        return @intCast(bytes.len);
+        return self.finishContentMutation(path, file, snapshot, @intCast(bytes.len));
     }
 
     fn truncateFileInternal(
@@ -524,25 +572,14 @@ pub const Model = struct {
         }
 
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
-        const snapshot = self.allocator.dupe(u8, file.content.items) catch |err| return mapFsError(err);
+        const snapshot = self.snapshotFileContent(file) catch |err| return mapFsError(err);
         defer self.allocator.free(snapshot);
 
         resizeArrayList(self.allocator, &file.content, @intCast(size)) catch |err| {
             return mapFsError(err);
         };
 
-        if (!shouldPersistPath(path)) {
-            return 0;
-        }
-
-        const persist_result = self.syncFileToBackingStore(file);
-        if (persist_result != 0) {
-            file.content.clearRetainingCapacity();
-            file.content.appendSlice(self.allocator, snapshot) catch unreachable;
-            return persist_result;
-        }
-
-        return 0;
+        return self.finishContentMutation(path, file, snapshot, 0);
     }
 
     fn chmodFileInternal(
@@ -557,28 +594,10 @@ pub const Model = struct {
         }
 
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
-        const previous_mode = file.mode;
+        const snapshot = snapshotFileMetadata(file);
         file.mode = mode & 0o777;
 
-        if (!shouldPersistPath(path)) {
-            return 0;
-        }
-
-        const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-        defer self.allocator.free(host_path);
-
-        var host_file = std.fs.openFileAbsolute(host_path, .{ .mode = .read_write }) catch |err| {
-            file.mode = previous_mode;
-            return mapFsError(err);
-        };
-        defer host_file.close();
-
-        host_file.chmod(@intCast(file.mode)) catch |err| {
-            file.mode = previous_mode;
-            return mapFsError(err);
-        };
-
-        return 0;
+        return self.finishMetadataMutation(path, file, snapshot, applyModeToHost);
     }
 
     fn chownFileInternal(
@@ -594,32 +613,11 @@ pub const Model = struct {
         }
 
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
-        const previous_uid = file.uid;
-        const previous_gid = file.gid;
+        const snapshot = snapshotFileMetadata(file);
         file.uid = uid;
         file.gid = gid;
 
-        if (!shouldPersistPath(path)) {
-            return 0;
-        }
-
-        const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-        defer self.allocator.free(host_path);
-
-        var host_file = std.fs.openFileAbsolute(host_path, .{ .mode = .read_write }) catch |err| {
-            file.uid = previous_uid;
-            file.gid = previous_gid;
-            return mapFsError(err);
-        };
-        defer host_file.close();
-
-        host_file.chown(uid, gid) catch |err| {
-            file.uid = previous_uid;
-            file.gid = previous_gid;
-            return mapFsError(err);
-        };
-
-        return 0;
+        return self.finishMetadataMutation(path, file, snapshot, applyOwnershipToHost);
     }
 
     fn syncPathInternal(self: *Model, path: []const u8) i32 {
@@ -693,6 +691,111 @@ pub const Model = struct {
         const source_persistent = shouldPersistPath(from);
         const target_persistent = shouldPersistPath(to);
 
+        const persist_result = self.applyRenameBackingStoreTransition(from, to, source_persistent, target_persistent);
+        if (persist_result != 0) {
+            return persist_result;
+        }
+
+        const rename_mutation = self.renameStoredFile(source_index, target_index, to) catch |err| {
+            return mapFsError(err);
+        };
+        var rename_committed = false;
+        defer if (!rename_committed) self.rollbackRenameMutation(rename_mutation);
+
+        if (!source_persistent and target_persistent) {
+            const file = &self.files.items[rename_mutation.source_index];
+            const sync_result = self.syncFileToBackingStore(file);
+            if (sync_result != 0) {
+                return sync_result;
+            }
+        }
+
+        self.commitRenameMutation(rename_mutation);
+        rename_committed = true;
+        return 0;
+    }
+
+    fn snapshotFileContent(self: *Model, file: *const StoredFile) ![]u8 {
+        return self.allocator.dupe(u8, file.content.items);
+    }
+
+    fn snapshotFileMetadata(file: *const StoredFile) MetadataSnapshot {
+        return .{
+            .mode = file.mode,
+            .uid = file.uid,
+            .gid = file.gid,
+        };
+    }
+
+    fn finishContentMutation(
+        self: *Model,
+        path: []const u8,
+        file: *StoredFile,
+        snapshot: []const u8,
+        success_result: i32,
+    ) i32 {
+        if (!shouldPersistPath(path)) {
+            return success_result;
+        }
+
+        const persist_result = self.syncFileToBackingStore(file);
+        if (persist_result != 0) {
+            self.restoreFileContent(file, snapshot);
+            return persist_result;
+        }
+
+        return success_result;
+    }
+
+    fn restoreFileContent(self: *Model, file: *StoredFile, snapshot: []const u8) void {
+        file.content.clearRetainingCapacity();
+        file.content.appendSlice(self.allocator, snapshot) catch unreachable;
+    }
+
+    fn finishMetadataMutation(
+        self: *Model,
+        path: []const u8,
+        file: *StoredFile,
+        snapshot: MetadataSnapshot,
+        apply_to_host: *const fn (*std.fs.File, *const StoredFile) anyerror!void,
+    ) i32 {
+        if (!shouldPersistPath(path)) {
+            return 0;
+        }
+
+        const host_path = self.hostPathAlloc(path) catch |err| {
+            restoreFileMetadata(file, snapshot);
+            return mapFsError(err);
+        };
+        defer self.allocator.free(host_path);
+
+        var host_file = std.fs.openFileAbsolute(host_path, .{ .mode = .read_write }) catch |err| {
+            restoreFileMetadata(file, snapshot);
+            return mapFsError(err);
+        };
+        defer host_file.close();
+
+        apply_to_host(&host_file, file) catch |err| {
+            restoreFileMetadata(file, snapshot);
+            return mapFsError(err);
+        };
+
+        return 0;
+    }
+
+    fn restoreFileMetadata(file: *StoredFile, snapshot: MetadataSnapshot) void {
+        file.mode = snapshot.mode;
+        file.uid = snapshot.uid;
+        file.gid = snapshot.gid;
+    }
+
+    fn applyRenameBackingStoreTransition(
+        self: *Model,
+        from: []const u8,
+        to: []const u8,
+        source_persistent: bool,
+        target_persistent: bool,
+    ) i32 {
         if (source_persistent and target_persistent) {
             const from_host_path = self.hostPathAlloc(from) catch |err| return mapFsError(err);
             defer self.allocator.free(from_host_path);
@@ -700,81 +803,79 @@ pub const Model = struct {
             defer self.allocator.free(to_host_path);
 
             std.fs.renameAbsolute(from_host_path, to_host_path) catch |err| return mapFsError(err);
-        } else if (source_persistent and !target_persistent) {
+            return 0;
+        }
+
+        if (source_persistent and !target_persistent) {
             const from_host_path = self.hostPathAlloc(from) catch |err| return mapFsError(err);
             defer self.allocator.free(from_host_path);
+
             std.fs.deleteFileAbsolute(from_host_path) catch |err| return mapFsError(err);
         }
 
+        return 0;
+    }
+
+    fn renameStoredFile(
+        self: *Model,
+        source_index: usize,
+        target_index: ?usize,
+        to: []const u8,
+    ) !RenameMutation {
+        const new_name = try self.allocator.dupeZ(u8, to[1..]);
+        errdefer self.allocator.free(new_name);
+        const new_path = try self.allocator.dupeZ(u8, to);
+        errdefer self.allocator.free(new_path);
+
         var adjusted_source_index = source_index;
+        var replaced_target: ?StoredFile = null;
         if (target_index) |index| {
-            self.removeFileAtIndex(index);
+            replaced_target = self.takeFileAtIndex(index);
             if (index < adjusted_source_index) {
                 adjusted_source_index -= 1;
             }
         }
 
         const file = &self.files.items[adjusted_source_index];
-        const new_name = self.allocator.dupeZ(u8, to[1..]) catch |err| return mapFsError(err);
-        errdefer self.allocator.free(new_name);
-        const new_path = self.allocator.dupeZ(u8, to) catch |err| return mapFsError(err);
-        errdefer self.allocator.free(new_path);
-
-        self.allocator.free(file.name);
-        self.allocator.free(file.path);
+        const mutation: RenameMutation = .{
+            .source_index = adjusted_source_index,
+            .original_name = file.name,
+            .original_path = file.path,
+            .replaced_target_index = target_index,
+            .replaced_target = replaced_target,
+        };
         file.name = new_name;
         file.path = new_path;
-
-        if (!source_persistent and target_persistent) {
-            const persist_result = self.syncFileToBackingStore(file);
-            if (persist_result != 0) {
-                return persist_result;
-            }
-        }
-
-        return 0;
+        return mutation;
     }
 
-    fn loadBackingStoreFiles(self: *Model) !void {
-        try ensureBackingStoreDirectory(self.backing_store_path);
+    fn rollbackRenameMutation(self: *Model, mutation: RenameMutation) void {
+        const file = &self.files.items[mutation.source_index];
+        self.allocator.free(file.name);
+        self.allocator.free(file.path);
+        file.name = mutation.original_name;
+        file.path = mutation.original_path;
 
-        var directory = try std.fs.openDirAbsolute(self.backing_store_path, .{ .iterate = true });
-        defer directory.close();
-
-        var iterator = directory.iterate();
-        while (try iterator.next()) |entry| {
-            if (entry.kind != .file) {
-                continue;
-            }
-
-            if (isReservedName(entry.name) or isTransientSidecarName(entry.name)) {
-                continue;
-            }
-
-            var file = try directory.openFile(entry.name, .{ .mode = .read_only });
-            defer file.close();
-
-            const stat = try file.stat();
-            const posix_stat = try std.posix.fstat(file.handle);
-            const virtual_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.name});
-            defer self.allocator.free(virtual_path);
-
-            const imported = try self.appendFile(
-                virtual_path,
-                stat.mode & 0o777,
-                @intCast(posix_stat.uid),
-                @intCast(posix_stat.gid),
-            );
-
-            if (stat.size > 0) {
-                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
-                imported.content.items.len = @intCast(stat.size);
-                const read_count = try file.readAll(imported.content.items);
-                if (read_count != imported.content.items.len) {
-                    return error.UnexpectedEof;
-                }
-            }
+        if (mutation.replaced_target_index) |index| {
+            self.files.insert(self.allocator, index, mutation.replaced_target.?) catch unreachable;
         }
+    }
+
+    fn commitRenameMutation(self: *Model, mutation: RenameMutation) void {
+        self.allocator.free(mutation.original_name);
+        self.allocator.free(mutation.original_path);
+        if (mutation.replaced_target) |file| {
+            var removed = file;
+            removed.deinit(self.allocator);
+        }
+    }
+
+    fn applyModeToHost(host_file: *std.fs.File, file: *const StoredFile) !void {
+        try host_file.chmod(@intCast(file.mode));
+    }
+
+    fn applyOwnershipToHost(host_file: *std.fs.File, file: *const StoredFile) !void {
+        try host_file.chown(file.uid, file.gid);
     }
 
     fn appendFile(
@@ -807,6 +908,15 @@ pub const Model = struct {
             std.mem.copyBackwards(StoredFile, self.files.items[index .. self.files.items.len - 1], self.files.items[index + 1 ..]);
         }
         self.files.items.len -= 1;
+    }
+
+    fn takeFileAtIndex(self: *Model, index: usize) StoredFile {
+        const removed = self.files.items[index];
+        if (index + 1 < self.files.items.len) {
+            std.mem.copyBackwards(StoredFile, self.files.items[index .. self.files.items.len - 1], self.files.items[index + 1 ..]);
+        }
+        self.files.items.len -= 1;
+        return removed;
     }
 
     fn findFile(self: *const Model, path: []const u8) ?*StoredFile {

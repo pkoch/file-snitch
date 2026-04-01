@@ -47,6 +47,13 @@ pub const RawLookup = extern struct {
     reserved: [6]u8,
 };
 
+const DecodedRequest = struct {
+    state: *State,
+    path: []const u8,
+    access_class: policy.AccessClass,
+    context: filesystem.AccessContext,
+};
+
 pub const State = struct {
     run_attempts: usize = 0,
     filesystem: filesystem.Model,
@@ -76,6 +83,7 @@ pub const Session = struct {
             }),
         };
         errdefer state.filesystem.deinit();
+        try state.filesystem.loadBackingStore();
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
@@ -263,12 +271,12 @@ fn ensureDirectory(path: []const u8) !void {
     dir.close();
 }
 
-fn stateFromOpaque(opaque_state: ?*anyopaque) ?*State {
+fn requireState(opaque_state: ?*anyopaque) ?*State {
     const ptr = opaque_state orelse return null;
     return @ptrCast(@alignCast(ptr));
 }
 
-fn pathFromRaw(raw_path: ?[*:0]const u8) ?[]const u8 {
+fn requirePath(raw_path: ?[*:0]const u8) ?[]const u8 {
     const path = raw_path orelse return null;
     return std.mem.span(path);
 }
@@ -290,6 +298,20 @@ fn requestFromRaw(raw_request: *const policy.RawRequest) ?struct {
     };
 }
 
+fn requireDecodedRequest(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+) ?DecodedRequest {
+    const state = requireState(daemon_state) orelse return null;
+    const request = requestFromRaw(raw_request) orelse return null;
+    return .{
+        .state = state,
+        .path = request.path,
+        .access_class = request.access_class,
+        .context = request.context,
+    };
+}
+
 fn errnoCode(err: std.posix.E) c_int {
     return -@as(c_int, @intFromEnum(err));
 }
@@ -299,8 +321,8 @@ pub export fn fsn_daemon_lookup_path(
     raw_path: ?[*:0]const u8,
     out: *RawLookup,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const path = pathFromRaw(raw_path) orelse return errnoCode(.INVAL);
+    const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
+    const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
     const lookup = state.filesystem.lookupPath(path);
 
     out.* = .{
@@ -318,12 +340,12 @@ pub export fn fsn_daemon_lookup_path(
 }
 
 pub export fn fsn_daemon_root_entry_count(daemon_state: ?*anyopaque) u32 {
-    const state = stateFromOpaque(daemon_state) orelse return 0;
+    const state = requireState(daemon_state) orelse return 0;
     return state.filesystem.rootEntryCount();
 }
 
 pub export fn fsn_daemon_root_entry_name_at(daemon_state: ?*anyopaque, index: u32) ?[*:0]const u8 {
-    const state = stateFromOpaque(daemon_state) orelse return null;
+    const state = requireState(daemon_state) orelse return null;
     return state.filesystem.rootEntryNameAt(index);
 }
 
@@ -331,9 +353,8 @@ pub export fn fsn_daemon_authorize_access(
     daemon_state: ?*anyopaque,
     raw_request: *const policy.RawRequest,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.authorizeAccess(request.path, request.access_class, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.authorizeAccess(request.path, request.access_class, request.context));
 }
 
 pub export fn fsn_daemon_read(
@@ -343,9 +364,8 @@ pub export fn fsn_daemon_read(
     size: usize,
     buf: [*]u8,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.readInto(request.path, offset, buf[0..size], request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.readInto(request.path, offset, buf[0..size], request.context));
 }
 
 pub export fn fsn_daemon_create(
@@ -353,9 +373,8 @@ pub export fn fsn_daemon_create(
     raw_request: *const policy.RawRequest,
     mode: u32,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.createFile(request.path, mode, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.createFile(request.path, mode, request.context));
 }
 
 pub export fn fsn_daemon_write(
@@ -365,9 +384,8 @@ pub export fn fsn_daemon_write(
     size: usize,
     buf: [*]const u8,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.writeFile(request.path, offset, buf[0..size], request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.writeFile(request.path, offset, buf[0..size], request.context));
 }
 
 pub export fn fsn_daemon_truncate(
@@ -375,9 +393,8 @@ pub export fn fsn_daemon_truncate(
     raw_request: *const policy.RawRequest,
     size: u64,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.truncateFile(request.path, size, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.truncateFile(request.path, size, request.context));
 }
 
 pub export fn fsn_daemon_chmod(
@@ -385,9 +402,8 @@ pub export fn fsn_daemon_chmod(
     raw_request: *const policy.RawRequest,
     mode: u32,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.chmodFile(request.path, mode, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.chmodFile(request.path, mode, request.context));
 }
 
 pub export fn fsn_daemon_chown(
@@ -396,9 +412,8 @@ pub export fn fsn_daemon_chown(
     uid: u32,
     gid: u32,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.chownFile(request.path, uid, gid, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.chownFile(request.path, uid, gid, request.context));
 }
 
 pub export fn fsn_daemon_sync(
@@ -406,18 +421,16 @@ pub export fn fsn_daemon_sync(
     raw_request: *const policy.RawRequest,
     datasync: u8,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.syncPath(request.path, datasync != 0));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.syncPath(request.path, datasync != 0));
 }
 
 pub export fn fsn_daemon_unlink(
     daemon_state: ?*anyopaque,
     raw_request: *const policy.RawRequest,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.removeFile(request.path, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.removeFile(request.path, request.context));
 }
 
 pub export fn fsn_daemon_rename(
@@ -425,10 +438,9 @@ pub export fn fsn_daemon_rename(
     raw_request: *const policy.RawRequest,
     raw_to_path: ?[*:0]const u8,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const request = requestFromRaw(raw_request) orelse return errnoCode(.INVAL);
-    const to_path = pathFromRaw(raw_to_path) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.renameFile(request.path, to_path, request.context));
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const to_path = requirePath(raw_to_path) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.renameFile(request.path, to_path, request.context));
 }
 
 pub export fn fsn_daemon_record_audit(
@@ -437,9 +449,9 @@ pub export fn fsn_daemon_record_audit(
     raw_path: ?[*:0]const u8,
     result: i32,
 ) c_int {
-    const state = stateFromOpaque(daemon_state) orelse return errnoCode(.INVAL);
-    const action = pathFromRaw(raw_action) orelse return errnoCode(.INVAL);
-    const path = pathFromRaw(raw_path) orelse return errnoCode(.INVAL);
+    const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
+    const action = requirePath(raw_action) orelse return errnoCode(.INVAL);
+    const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
     state.filesystem.recordPlatformAudit(action, path, result);
     return 0;
 }
