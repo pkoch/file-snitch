@@ -92,6 +92,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Add a CLI prompt path with default-deny timeout behavior
 - `[ ]` Support allow-once decisions
 - `[ ]` Emit structured JSON audit logs
+- `[ ]` Revisit xattr mediation beyond the current resource-fork exception path
 - `[x]` Test common editor temp-write and rename flows
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
 - `[ ]` Package a reproducible spike workflow

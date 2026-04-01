@@ -69,6 +69,14 @@ assert_file_missing() {
   [[ ! -e "$path" ]] || fail "$message"
 }
 
+assert_no_xattr_prompts() {
+  local message="$1"
+
+  if grep -F 'file-snitch prompt: xattr ' "$log_file" >/dev/null 2>&1; then
+    fail "$message"
+  fi
+}
+
 expect_create_denied() {
   local path="$1"
   local message="$2"
@@ -138,6 +146,7 @@ verify_allow_case() {
   if ! grep -F '"action":"prompt","path":"create /allowed-note.txt","result":1' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
     fail "expected prompt audit for allowed create missing"
   fi
+  assert_no_xattr_prompts "expected ordinary xattr traffic to bypass the prompt path"
 
   cleanup_case
 }
@@ -157,6 +166,7 @@ verify_deny_case() {
   if ! grep -F '"action":"prompt","path":"create /denied-note.txt","result":2' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
     fail "expected prompt audit for denied create missing"
   fi
+  assert_no_xattr_prompts "expected denied case to avoid xattr prompts"
 
   cleanup_case
 }
@@ -175,6 +185,7 @@ verify_timeout_case() {
   if ! grep -F '"action":"prompt","path":"create /timed-out-note.txt","result":3' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
     fail "expected prompt audit for timed-out create missing"
   fi
+  assert_no_xattr_prompts "expected timeout case to avoid xattr prompts"
 
   cleanup_case
 }

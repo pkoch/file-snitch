@@ -150,6 +150,14 @@ static int fsn_push_argument(struct fsn_fuse_session *session, const char *value
 static int fsn_build_execution_plan(struct fsn_fuse_session *session);
 static char **fsn_duplicate_argument_vector(const struct fsn_fuse_session *session);
 static void fsn_free_argument_vector(char **argv, uint32_t argc);
+#ifdef __APPLE__
+static int fsn_xattr_requires_policy(const char *name);
+static int fsn_authorize_xattr(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    const char *name
+);
+#endif
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     if (conn != NULL) {
@@ -575,6 +583,37 @@ static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
 }
 
 #ifdef __APPLE__
+static int fsn_xattr_requires_policy(const char *name) {
+    if (name == NULL) {
+        return 0;
+    }
+
+    return strcmp(name, XATTR_RESOURCEFORK_NAME) == 0;
+}
+
+static int fsn_authorize_xattr(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    const char *name
+) {
+    struct fsn_bridge_request request;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    /* Keep the policy hook for resource forks, but let ordinary xattrs flow. */
+    if (!fsn_xattr_requires_policy(name)) {
+        return 0;
+    }
+
+    if (fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1) != 0) {
+        return -EINVAL;
+    }
+
+    return fsn_daemon_authorize_access(session->daemon_state, &request);
+}
+
 static int fsn_fuse_setxattr(
     const char *path,
     const char *name,
@@ -583,7 +622,6 @@ static int fsn_fuse_setxattr(
     int flags,
     uint32_t position
 ) {
-    struct fsn_bridge_request request;
     struct fsn_bridge_lookup lookup;
     struct fsn_fuse_session *session;
     char host_path[PATH_MAX];
@@ -594,11 +632,7 @@ static int fsn_fuse_setxattr(
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1) != 0) {
-        return -EINVAL;
-    }
-
-    result = fsn_daemon_authorize_access(session->daemon_state, &request);
+    result = fsn_authorize_xattr(session, path, name);
     if (result == 0) {
         if (fsn_lookup_path(session, path, &lookup) != 0) {
             result = -EIO;
@@ -622,7 +656,6 @@ static int fsn_fuse_getxattr(
     size_t size,
     uint32_t position
 ) {
-    struct fsn_bridge_request request;
     struct fsn_bridge_lookup lookup;
     struct fsn_fuse_session *session;
     char host_path[PATH_MAX];
@@ -633,11 +666,7 @@ static int fsn_fuse_getxattr(
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1) != 0) {
-        return -EINVAL;
-    }
-
-    result = fsn_daemon_authorize_access(session->daemon_state, &request);
+    result = fsn_authorize_xattr(session, path, name);
     if (result != 0) {
         fsn_record_audit(session, "getxattr", path, (int32_t)result);
         return (int)result;
@@ -661,7 +690,6 @@ static int fsn_fuse_getxattr(
 }
 
 static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
-    struct fsn_bridge_request request;
     struct fsn_bridge_lookup lookup;
     struct fsn_fuse_session *session;
     char host_path[PATH_MAX];
@@ -672,11 +700,7 @@ static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1) != 0) {
-        return -EINVAL;
-    }
-
-    result = fsn_daemon_authorize_access(session->daemon_state, &request);
+    result = fsn_authorize_xattr(session, path, NULL);
     if (result != 0) {
         fsn_record_audit(session, "listxattr", path, (int32_t)result);
         return (int)result;
@@ -700,7 +724,6 @@ static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
 }
 
 static int fsn_fuse_removexattr(const char *path, const char *name) {
-    struct fsn_bridge_request request;
     struct fsn_bridge_lookup lookup;
     struct fsn_fuse_session *session;
     char host_path[PATH_MAX];
@@ -711,11 +734,7 @@ static int fsn_fuse_removexattr(const char *path, const char *name) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1) != 0) {
-        return -EINVAL;
-    }
-
-    result = fsn_daemon_authorize_access(session->daemon_state, &request);
+    result = fsn_authorize_xattr(session, path, name);
     if (result == 0) {
         if (fsn_lookup_path(session, path, &lookup) != 0) {
             result = -EIO;
