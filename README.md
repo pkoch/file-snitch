@@ -18,6 +18,7 @@ Current state:
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - mutating operations are now controlled by an explicit session policy flag
 - the demo now exercises both the allow and deny sides of that mutation policy
+- the session now records an in-memory audit trail for reads and mutations
 - the demo app inspects the execution plan but does not invoke a live mount
 - actual mount behavior is not implemented yet
 

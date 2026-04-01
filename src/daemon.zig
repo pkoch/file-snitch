@@ -21,6 +21,7 @@ pub const ExecutionPlan = struct {
 };
 
 pub const NodeInfo = fuse.NodeInfo;
+pub const AuditEvent = fuse.AuditEvent;
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
@@ -116,6 +117,18 @@ pub const Session = struct {
 
     pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
         try fuse.debugRemoveFile(self.handle, path.ptr);
+    }
+
+    pub fn auditEvents(self: Session, allocator: std.mem.Allocator) ![]AuditEvent {
+        const count = fuse.debugAuditCount(self.handle);
+        var events = try allocator.alloc(AuditEvent, count);
+        errdefer allocator.free(events);
+
+        for (0..count) |index| {
+            events[index] = try fuse.debugAuditEvent(self.handle, @intCast(index));
+        }
+
+        return events;
     }
 
     pub fn run(self: *Session) !void {

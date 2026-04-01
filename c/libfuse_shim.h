@@ -63,6 +63,12 @@ struct fsn_fuse_node_info {
     uint64_t inode;
 };
 
+struct fsn_fuse_audit_event {
+    const char *action;
+    const char *path;
+    int32_t result;
+};
+
 int fsn_fuse_probe(struct fsn_fuse_environment *out);
 const char *fsn_fuse_backend_name(void);
 int fsn_fuse_session_create(
@@ -109,6 +115,12 @@ int fsn_fuse_debug_truncate_file(
     uint64_t size
 );
 int fsn_fuse_debug_remove_file(struct fsn_fuse_session *session, const char *path);
+uint32_t fsn_fuse_debug_audit_count(const struct fsn_fuse_session *session);
+int fsn_fuse_debug_audit_event_at(
+    const struct fsn_fuse_session *session,
+    uint32_t index,
+    struct fsn_fuse_audit_event *out
+);
 const char *fsn_fuse_session_mount_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_session_backing_store_path(const struct fsn_fuse_session *session);
 const char *fsn_fuse_status_label(int status);

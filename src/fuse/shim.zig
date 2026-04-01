@@ -40,6 +40,12 @@ const c = struct {
         inode: u64,
     };
 
+    pub const RawAuditEvent = extern struct {
+        action: ?[*:0]const u8,
+        path: ?[*:0]const u8,
+        result: i32,
+    };
+
     extern fn fsn_fuse_probe(out: *RawEnvironment) c_int;
     extern fn fsn_fuse_backend_name() [*:0]const u8;
     extern fn fsn_fuse_session_create(config: *const RawSessionConfig, out: *?*OpaqueSession) c_int;
@@ -68,6 +74,8 @@ const c = struct {
     ) c_int;
     extern fn fsn_fuse_debug_truncate_file(session: *OpaqueSession, path: [*:0]const u8, size: u64) c_int;
     extern fn fsn_fuse_debug_remove_file(session: *OpaqueSession, path: [*:0]const u8) c_int;
+    extern fn fsn_fuse_debug_audit_count(session: *const OpaqueSession) u32;
+    extern fn fsn_fuse_debug_audit_event_at(session: *const OpaqueSession, index: u32, out: *RawAuditEvent) c_int;
     extern fn fsn_fuse_session_mount_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_session_backing_store_path(session: *const OpaqueSession) ?[*:0]const u8;
     extern fn fsn_fuse_status_label(status: c_int) [*:0]const u8;
@@ -117,6 +125,12 @@ pub const NodeInfo = struct {
     inode: u64,
 };
 
+pub const AuditEvent = struct {
+    action: []const u8,
+    path: []const u8,
+    result: i32,
+};
+
 pub const Error = error{
     OutOfMemory,
     ProbeFailed,
@@ -131,6 +145,7 @@ pub const Error = error{
     DebugWriteFailed,
     DebugTruncateFailed,
     DebugRemoveFailed,
+    DebugAuditFailed,
 };
 
 pub const RawSession = c.OpaqueSession;
@@ -287,6 +302,23 @@ pub fn debugRemoveFile(session: *RawSession, path: [*:0]const u8) Error!void {
     if (c.fsn_fuse_debug_remove_file(session, path) != 0) {
         return error.DebugRemoveFailed;
     }
+}
+
+pub fn debugAuditCount(session: *const RawSession) u32 {
+    return c.fsn_fuse_debug_audit_count(session);
+}
+
+pub fn debugAuditEvent(session: *const RawSession, index: u32) Error!AuditEvent {
+    var raw: c.RawAuditEvent = std.mem.zeroes(c.RawAuditEvent);
+    if (c.fsn_fuse_debug_audit_event_at(session, index, &raw) != 0) {
+        return error.DebugAuditFailed;
+    }
+
+    return .{
+        .action = std.mem.span(raw.action orelse return error.DebugAuditFailed),
+        .path = std.mem.span(raw.path orelse return error.DebugAuditFailed),
+        .result = raw.result,
+    };
 }
 
 pub fn statusLabel(status: c_int) []const u8 {

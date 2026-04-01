@@ -111,6 +111,25 @@ pub fn run() !void {
         else => return err,
     };
 
+    const audit_events = try session.auditEvents(allocator);
+    defer allocator.free(audit_events);
+    const readonly_audit_events = try readonly_session.auditEvents(allocator);
+    defer allocator.free(readonly_audit_events);
+
+    for (audit_events, 0..) |event, index| {
+        std.debug.print(
+            "audit[{d}] action={s} path={s} result={d}\n",
+            .{ index, event.action, event.path, event.result },
+        );
+    }
+
+    for (readonly_audit_events, 0..) |event, index| {
+        std.debug.print(
+            "readonly_audit[{d}] action={s} path={s} result={d}\n",
+            .{ index, event.action, event.path, event.result },
+        );
+    }
+
     if (session.state.run_attempts != 0) {
         return error.Unexpected;
     }
