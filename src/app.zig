@@ -8,17 +8,23 @@ pub fn run() !void {
     const audit_path = "/file-snitch-audit";
     const note_path = "/demo-note.txt";
     const blocked_note_path = "/blocked-note.txt";
+    const seed_path = "/seed-from-store.txt";
     const status_path = "/file-snitch-status";
+    const run_id = std.time.nanoTimestamp();
+    const mount_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.mount-{d}", .{run_id});
+    defer allocator.free(mount_path);
+    var backing_store = try prepareBackingStoreFixture(allocator, run_id);
+    defer backing_store.deinit(allocator);
     var session = try daemon.Session.init(allocator, .{
-        .mount_path = "/tmp/file-snitch.mount",
-        .backing_store_path = "/tmp/file-snitch.store",
+        .mount_path = mount_path,
+        .backing_store_path = backing_store.path,
         .run_in_foreground = true,
         .allow_mutations = true,
     });
     defer session.deinit();
     var readonly_session = try daemon.Session.init(allocator, .{
-        .mount_path = "/tmp/file-snitch-readonly.mount",
-        .backing_store_path = "/tmp/file-snitch-readonly.store",
+        .mount_path = mount_path,
+        .backing_store_path = backing_store.path,
         .run_in_foreground = true,
         .allow_mutations = false,
     });
@@ -32,10 +38,13 @@ pub fn run() !void {
     defer session.freeExecutionPlan(allocator, plan);
     const root = try session.inspectPath("/");
     const audit = try session.inspectPath(audit_path);
+    const seed = try session.inspectPath(seed_path);
     const status = try session.inspectPath(status_path);
     const note = try session.inspectPath(note_path);
     const entries = try session.rootEntries(allocator);
     defer allocator.free(entries);
+    const seed_content = try session.readPath(allocator, seed_path);
+    defer allocator.free(seed_content);
     const status_content = try session.readPath(allocator, status_path);
     defer allocator.free(status_content);
     const audit_content = try session.readPath(allocator, audit_path);
@@ -72,13 +81,16 @@ pub fn run() !void {
     );
 
     std.debug.print(
-        "debug inspect: root(kind={s} inode={d}) audit(kind={s} size={d} inode={d}) status(kind={s} size={d} inode={d}) note(kind={s} size={d} inode={d}) entries={d}\n",
+        "debug inspect: root(kind={s} inode={d}) audit(kind={s} size={d} inode={d}) seed(kind={s} size={d} inode={d}) status(kind={s} size={d} inode={d}) note(kind={s} size={d} inode={d}) entries={d}\n",
         .{
             @tagName(root.kind),
             root.inode,
             @tagName(audit.kind),
             audit.size,
             audit.inode,
+            @tagName(seed.kind),
+            seed.size,
+            seed.inode,
             @tagName(status.kind),
             status.size,
             status.inode,
@@ -94,10 +106,11 @@ pub fn run() !void {
     }
 
     std.debug.print(
-        "synthetic root directory, status file, and in-memory demo note are ready; other file access still returns ENOENT\n",
+        "synthetic control files, a seeded backing-store file, and an in-memory demo note are ready; directory passthrough is still one level only\n",
         .{},
     );
 
+    std.debug.print("seed file contents:\n{s}", .{seed_content});
     std.debug.print("status file contents:\n{s}", .{status_content});
     std.debug.print("audit file contents:\n{s}", .{audit_content});
     std.debug.print("note file contents:\n{s}", .{note_content});
@@ -141,4 +154,32 @@ pub fn run() !void {
     if (session.state.run_attempts != 0) {
         return error.Unexpected;
     }
+}
+
+const BackingStoreFixture = struct {
+    path: []u8,
+
+    fn deinit(self: BackingStoreFixture, allocator: std.mem.Allocator) void {
+        std.fs.deleteTreeAbsolute(self.path) catch {};
+        allocator.free(self.path);
+    }
+};
+
+fn prepareBackingStoreFixture(allocator: std.mem.Allocator, run_id: i128) !BackingStoreFixture {
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.store-{d}", .{run_id});
+    errdefer allocator.free(path);
+
+    try std.fs.makeDirAbsolute(path);
+
+    {
+        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/seed-from-store.txt", .{path});
+        defer allocator.free(seed_host_path);
+
+        var seed_file = try std.fs.createFileAbsolute(seed_host_path, .{ .truncate = true });
+        defer seed_file.close();
+
+        try seed_file.writeAll("seeded from backing store\n");
+    }
+
+    return .{ .path = path };
 }

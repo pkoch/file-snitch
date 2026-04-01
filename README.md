@@ -16,6 +16,7 @@ Current state:
 - the mount now exposes one readable synthetic status file
 - the mount now exposes one readable synthetic audit file
 - the repo now has a debug inspection path for verifying synthetic filesystem behavior without mounting
+- the mount now seeds one-level regular files from a host backing-store directory
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
 - mutating operations are now controlled by an explicit session policy flag
 - the demo now exercises both the allow and deny sides of that mutation policy
@@ -23,6 +24,7 @@ Current state:
 - the synthetic audit file now renders that in-memory audit trail as mounted file content
 - the demo app inspects the execution plan but does not invoke a live mount
 - the live mount path is compiled, but the demo intentionally avoids invoking it
+- write-through persistence into the backing-store directory is not implemented yet
 
 ## Layout
 
