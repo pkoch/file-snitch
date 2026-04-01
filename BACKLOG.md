@@ -60,6 +60,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Support one-level file flush and fsync against the backing-store directory
 - `[x]` Mount one guarded directory backed by a simple store
 - `[x]` Verify rename-over-existing on the live mount path
+- `[x]` Verify hidden-temp and backup-style save flows on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[ ]` Implement the minimum FUSE operations:
   - `getattr`

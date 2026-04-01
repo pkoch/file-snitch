@@ -76,9 +76,34 @@ if [[ "$(cat "$store_dir/existing-note.txt")" != "replacement note contents" ]];
   exit 1
 fi
 
+printf 'hidden old note\n' >"$mount_dir/hidden-temp-note.txt"
+printf 'hidden replacement note\n' >"$mount_dir/.hidden-temp-note.txt.tmp"
+mv "$mount_dir/.hidden-temp-note.txt.tmp" "$mount_dir/hidden-temp-note.txt"
+cat "$mount_dir/hidden-temp-note.txt"
+
+if [[ "$(cat "$store_dir/hidden-temp-note.txt")" != "hidden replacement note" ]]; then
+  echo "expected hidden-temp replacement backing-store contents missing" >&2
+  exit 1
+fi
+
+printf 'backup original note\n' >"$mount_dir/backup-note.txt"
+mv "$mount_dir/backup-note.txt" "$mount_dir/backup-note.txt~"
+printf 'backup replacement note\n' >"$mount_dir/.backup-note.txt.swp"
+mv "$mount_dir/.backup-note.txt.swp" "$mount_dir/backup-note.txt"
+rm "$mount_dir/backup-note.txt~"
+cat "$mount_dir/backup-note.txt"
+
+if [[ "$(cat "$store_dir/backup-note.txt")" != "backup replacement note" ]]; then
+  echo "expected backup-style replacement backing-store contents missing" >&2
+  exit 1
+fi
+
 grep -F '"action":"rename"' "$mount_dir/file-snitch-audit"
 grep -F 'live-note-renamed.txt' "$mount_dir/file-snitch-audit"
 grep -F 'existing-note.txt.tmp -> /existing-note.txt' "$mount_dir/file-snitch-audit"
+grep -F '.hidden-temp-note.txt.tmp -> /hidden-temp-note.txt' "$mount_dir/file-snitch-audit"
+grep -F '/backup-note.txt -> /backup-note.txt~' "$mount_dir/file-snitch-audit"
+grep -F '.backup-note.txt.swp -> /backup-note.txt' "$mount_dir/file-snitch-audit"
 
 kill -INT "$daemon_pid"
 wait "$daemon_pid"

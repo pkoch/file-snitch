@@ -29,6 +29,7 @@ Current state:
 - the demo app still inspects the execution plan without mounting
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
 - the live smoke test now also verifies temp-write replacement over an existing file
+- the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
 - directory mirroring is still limited to one-level regular files
 - the live macOS smoke test observed `._*` sidecar file traffic during rename/write flows
 
