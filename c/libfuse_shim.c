@@ -33,6 +33,8 @@ struct fsn_virtual_file {
     size_t size;
     size_t capacity;
     mode_t mode;
+    uid_t uid;
+    gid_t gid;
     uint64_t inode;
 };
 
@@ -103,7 +105,9 @@ static int fsn_import_backing_store_file(
     const char *name,
     const char *host_path,
     mode_t mode,
-    off_t size
+    off_t size,
+    uid_t uid,
+    gid_t gid
 );
 static int fsn_fill_node_info_from_stat(uint32_t kind, const struct stat *stbuf, struct fsn_fuse_node_info *out);
 static int fsn_mutations_allowed(const struct fsn_fuse_session *session);
@@ -166,6 +170,12 @@ static int fsn_change_user_file_mode_with_persistence(
     const struct fsn_fuse_session *session,
     const char *path,
     mode_t mode
+);
+static int fsn_change_user_file_owner_with_persistence(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uid_t uid,
+    gid_t gid
 );
 static int fsn_get_backing_store_user_file_path(
     const struct fsn_fuse_session *session,
@@ -426,8 +436,8 @@ static void fsn_fill_user_file_stat(const struct fsn_virtual_file *file, struct 
     memset(stbuf, 0, sizeof(*stbuf));
     stbuf->st_mode = S_IFREG | file->mode;
     stbuf->st_nlink = 1;
-    stbuf->st_uid = getuid();
-    stbuf->st_gid = getgid();
+    stbuf->st_uid = file->uid;
+    stbuf->st_gid = file->gid;
     stbuf->st_size = (off_t)file->size;
     stbuf->st_atime = time(NULL);
     stbuf->st_mtime = stbuf->st_atime;
@@ -775,7 +785,15 @@ static int fsn_load_backing_store_files(struct fsn_fuse_session *session) {
             continue;
         }
 
-        if (fsn_import_backing_store_file(session, entry->d_name, host_path, stbuf.st_mode, stbuf.st_size) != 0) {
+        if (fsn_import_backing_store_file(
+                session,
+                entry->d_name,
+                host_path,
+                stbuf.st_mode,
+                stbuf.st_size,
+                stbuf.st_uid,
+                stbuf.st_gid
+            ) != 0) {
             closedir(directory);
             return FSN_FUSE_STATUS_PLAN_BUILD_FAILED;
         }
@@ -790,7 +808,9 @@ static int fsn_import_backing_store_file(
     const char *name,
     const char *host_path,
     mode_t mode,
-    off_t size
+    off_t size,
+    uid_t uid,
+    gid_t gid
 ) {
     char virtual_path[PATH_MAX];
     struct fsn_virtual_file *file;
@@ -809,6 +829,9 @@ static int fsn_import_backing_store_file(
     if (fsn_append_user_file(session, virtual_path, mode, &file) != 0) {
         return -EINVAL;
     }
+
+    file->uid = uid;
+    file->gid = gid;
 
     if (size == 0) {
         return 0;
@@ -1030,6 +1053,8 @@ static int fsn_append_user_file(
     }
 
     file->mode = (mode & 0777) == 0 ? 0600 : (mode & 0777);
+    file->uid = getuid();
+    file->gid = getgid();
     file->inode = session->next_inode++;
     session->user_file_count += 1;
     if (out_file != NULL) {
@@ -1258,6 +1283,68 @@ static int fsn_change_user_file_mode_with_persistence(
 
     if (chmod(host_path, normalized_mode) != 0) {
         file->mode = previous_mode;
+        return -errno;
+    }
+
+    return 0;
+}
+
+static int fsn_change_user_file_owner_with_persistence(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    uid_t uid,
+    gid_t gid
+) {
+    struct fsn_virtual_file *file;
+    char host_path[PATH_MAX];
+    uid_t next_uid;
+    gid_t next_gid;
+    uid_t previous_uid;
+    gid_t previous_gid;
+    int result;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    if (!fsn_mutations_allowed(session)) {
+        return -EACCES;
+    }
+
+    if (fsn_is_reserved_path(session, path)) {
+        return -EACCES;
+    }
+
+    file = fsn_find_user_file((struct fsn_fuse_session *)session, path);
+    if (file == NULL) {
+        return -ENOENT;
+    }
+
+    next_uid = uid == (uid_t)-1 ? file->uid : uid;
+    next_gid = gid == (gid_t)-1 ? file->gid : gid;
+    if (next_uid == file->uid && next_gid == file->gid) {
+        return 0;
+    }
+
+    previous_uid = file->uid;
+    previous_gid = file->gid;
+    file->uid = next_uid;
+    file->gid = next_gid;
+
+    if (!fsn_should_persist_path(path)) {
+        return 0;
+    }
+
+    result = fsn_build_backing_store_file_path(session, path, host_path, sizeof(host_path));
+    if (result != 0) {
+        file->uid = previous_uid;
+        file->gid = previous_gid;
+        return result;
+    }
+
+    if (chown(host_path, next_uid, next_gid) != 0) {
+        file->uid = previous_uid;
+        file->gid = previous_gid;
         return -errno;
     }
 
@@ -1889,6 +1976,13 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
     return result;
 }
 
+static int fsn_fuse_chown(const char *path, uid_t uid, gid_t gid) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result = fsn_change_user_file_owner_with_persistence(session, path, uid, gid);
+    fsn_record_audit_event(session, "chown", path, result);
+    return result;
+}
+
 static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock) {
     struct fsn_file_handle *handle = fsn_get_file_handle(fi);
     int result;
@@ -2080,6 +2174,7 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
     session->operations.chmod = fsn_fuse_chmod;
+    session->operations.chown = fsn_fuse_chown;
     session->operations.lock = fsn_fuse_lock;
     session->operations.flock = fsn_fuse_flock;
 #ifdef __APPLE__
@@ -2087,9 +2182,9 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.getxattr = fsn_fuse_getxattr;
     session->operations.listxattr = fsn_fuse_listxattr;
     session->operations.removexattr = fsn_fuse_removexattr;
-    session->configured_operation_count = 22;
+    session->configured_operation_count = 23;
 #else
-    session->configured_operation_count = 18;
+    session->configured_operation_count = 19;
 #endif
     session->operations.flush = fsn_fuse_flush;
     session->operations.fsync = fsn_fuse_fsync;

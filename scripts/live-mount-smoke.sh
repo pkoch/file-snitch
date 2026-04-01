@@ -134,6 +134,19 @@ if [[ "$mode_value" != "600" ]]; then
   exit 1
 fi
 
+printf 'owner note\n' >"$mount_dir/owner-note.txt"
+python3 - <<PY
+import os
+
+path = "$mount_dir/owner-note.txt"
+os.chown(path, os.getuid(), os.getgid())
+PY
+owner_value="$(stat -f '%u:%g' "$mount_dir/owner-note.txt")"
+if [[ "$owner_value" != "$(id -u):$(id -g)" ]]; then
+  echo "expected mounted owner to remain current uid/gid, got $owner_value" >&2
+  exit 1
+fi
+
 printf 'lock data\n' >"$mount_dir/lock-note.txt"
 python3 - <<PY &
 import fcntl
@@ -255,6 +268,7 @@ grep -F '/backup-note.txt -> /backup-note.txt~' "$mount_dir/file-snitch-audit"
 grep -F '.backup-note.txt.swp -> /backup-note.txt' "$mount_dir/file-snitch-audit"
 grep -F '"action":"truncate"' "$mount_dir/file-snitch-audit"
 grep -F '"action":"unlink"' "$mount_dir/file-snitch-audit"
+grep -F '"action":"chown"' "$mount_dir/file-snitch-audit"
 grep -F '"action":"write","path":"/partial-note.txt"' "$mount_dir/file-snitch-audit"
 
 kill -INT "$daemon_pid"

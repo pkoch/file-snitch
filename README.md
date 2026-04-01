@@ -21,6 +21,7 @@ Current state:
 - those one-level regular file mutations now write through into the host backing-store directory
 - one-level file rename now updates both the mounted view and the backing-store directory
 - one-level chmod now persists into the backing-store directory
+- one-level uid/gid metadata is now tracked explicitly, and self-`chown` requests now pass through the mounted view
 - macOS `._*` AppleDouble sidecars are treated as transient mount-only files and are not persisted into the backing store
 - one-level xattrs now proxy to the backing-store file on macOS
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
@@ -36,6 +37,7 @@ Current state:
 - the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
 - the live smoke test now covers xattr set/get/list/remove round-trips on mounted files
 - the live smoke test now covers BSD `flock` and POSIX lock contention/release on mounted files
+- the live smoke test now covers self-`chown` handling on mounted files
 - directory mirroring is still limited to one-level regular files
 - the live macOS smoke test observed both `._*` sidecar traffic and aggressive xattr probing during normal file activity
 - the same macOS smoke path treats behavioral lock contention/release as the main signal, because callback visibility is partial and style-dependent on macFUSE
