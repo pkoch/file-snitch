@@ -119,6 +119,10 @@ pub const Session = struct {
         try fuse.debugRenameFile(self.handle, from.ptr, to.ptr);
     }
 
+    pub fn debugSyncFile(self: *Session, path: [:0]const u8, datasync: bool) !void {
+        try fuse.debugSyncFile(self.handle, path.ptr, datasync);
+    }
+
     pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
         try fuse.debugRemoveFile(self.handle, path.ptr);
     }

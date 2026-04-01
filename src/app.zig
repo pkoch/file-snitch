@@ -27,6 +27,7 @@ pub fn run() !void {
     try session.debugCreateFile(created_note_path, 0o600);
     try session.debugWriteFile(created_note_path, "hello from file-snitch\n");
     try session.debugRenameFile(created_note_path, note_path);
+    try session.debugSyncFile(note_path, false);
 
     var readonly_session = try daemon.Session.init(allocator, .{
         .mount_path = mount_path,

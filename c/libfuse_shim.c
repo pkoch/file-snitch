@@ -143,6 +143,7 @@ static int fsn_truncate_user_file_with_persistence(
     struct fsn_virtual_file *file,
     off_t size
 );
+static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path);
 static int fsn_remove_user_file_with_persistence(struct fsn_fuse_session *session, const char *path);
 static int fsn_rename_user_file_with_persistence(
@@ -1098,6 +1099,25 @@ static int fsn_truncate_user_file_with_persistence(
     return 0;
 }
 
+static int fsn_sync_path(const struct fsn_fuse_session *session, const char *path) {
+    const struct fsn_virtual_file *file;
+
+    if (session == NULL || path == NULL) {
+        return -EINVAL;
+    }
+
+    if (fsn_is_reserved_path(session, path)) {
+        return 0;
+    }
+
+    file = fsn_find_user_file_const(session, path);
+    if (file == NULL) {
+        return -ENOENT;
+    }
+
+    return fsn_sync_user_file_to_backing_store(session, file);
+}
+
 static int fsn_remove_user_file(struct fsn_fuse_session *session, const char *path) {
     uint32_t index;
 
@@ -1450,6 +1470,37 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     }
 }
 
+static int fsn_fuse_flush(const char *path, struct fuse_file_info *fi) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result;
+
+    (void)fi;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    result = fsn_sync_path(session, path);
+    fsn_record_audit_event(session, "flush", path, result);
+    return result;
+}
+
+static int fsn_fuse_fsync(const char *path, int datasync, struct fuse_file_info *fi) {
+    struct fsn_fuse_session *session = fuse_get_context()->private_data;
+    int result;
+
+    (void)datasync;
+    (void)fi;
+
+    if (path == NULL) {
+        return -EINVAL;
+    }
+
+    result = fsn_sync_path(session, path);
+    fsn_record_audit_event(session, "fsync", path, result);
+    return result;
+}
+
 static int fsn_fuse_unlink(const char *path) {
     struct fsn_fuse_session *session = fuse_get_context()->private_data;
 
@@ -1512,8 +1563,10 @@ static void fsn_fuse_configure_operations(struct fsn_fuse_session *session) {
     session->operations.read = fsn_fuse_read;
     session->operations.write = fsn_fuse_write;
     session->operations.truncate = fsn_fuse_truncate;
+    session->operations.flush = fsn_fuse_flush;
+    session->operations.fsync = fsn_fuse_fsync;
     session->operations.rename = fsn_fuse_rename;
-    session->configured_operation_count = 13;
+    session->configured_operation_count = 15;
 }
 
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session) {
@@ -2038,6 +2091,20 @@ int fsn_fuse_debug_rename_file(struct fsn_fuse_session *session, const char *fro
         strcpy(audit_path, "<rename>");
     }
     fsn_record_audit_event(session, "rename", audit_path, result);
+    return result;
+}
+
+int fsn_fuse_debug_sync_file(struct fsn_fuse_session *session, const char *path, uint8_t datasync) {
+    int result;
+
+    (void)datasync;
+
+    if (session == NULL || path == NULL) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
+    }
+
+    result = fsn_sync_path(session, path);
+    fsn_record_audit_event(session, "fsync", path, result);
     return result;
 }
 
