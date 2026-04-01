@@ -51,6 +51,7 @@ Current state:
 - `build.zig`: Zig build entrypoint
 - `src/`: Zig application code
 - `src/filesystem.zig`: Zig-owned guarded-directory model and backing-store behavior
+- `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
 - `scripts/`: verification helpers including live-mount smoke tests

@@ -1,8 +1,9 @@
 const std = @import("std");
-const daemon = @import("daemon.zig");
-const filesystem = @import("filesystem.zig");
-const policy = @import("policy.zig");
-const prompt = @import("prompt.zig");
+const app_src = @import("app_src");
+const daemon = app_src.daemon;
+const filesystem = app_src.filesystem;
+const policy = app_src.policy;
+const prompt = app_src.prompt;
 
 const seed_name = "seed-from-store.txt";
 const seed_path = "/" ++ seed_name;
