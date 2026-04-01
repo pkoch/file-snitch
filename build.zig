@@ -22,15 +22,66 @@ pub fn build(b: *std.Build) void {
     });
 
     switch (target.result.os.tag) {
-        .linux => exe.root_module.linkSystemLibrary("fuse3", .{}),
-        .macos => {
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/local/include" });
-            exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
-            exe.root_module.addRPath(.{ .cwd_relative = "/usr/local/lib" });
-            exe.root_module.linkSystemLibrary("fuse", .{});
-        },
+        .linux => configureLinuxFuse(b, exe.root_module),
+        .macos => configureMacFuse(b, exe.root_module),
         else => {},
     }
 
     b.installArtifact(exe);
+}
+
+fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
+    if (hasPkgConfig(b)) {
+        module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .force });
+        return;
+    }
+
+    addSystemIncludeIfPresent(module, "/usr/include/fuse3");
+    module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .no });
+}
+
+fn configureMacFuse(b: *std.Build, module: *std.Build.Module) void {
+    if (hasPkgConfig(b)) {
+        module.linkSystemLibrary("fuse", .{ .use_pkg_config = .force });
+        return;
+    }
+
+    for ([_][]const u8{ "/usr/local/include", "/opt/homebrew/include" }) |include_dir| {
+        addSystemIncludeIfPresent(module, include_dir);
+    }
+
+    for ([_][]const u8{ "/usr/local/lib", "/opt/homebrew/lib" }) |library_dir| {
+        addLibraryPathIfPresent(module, library_dir);
+    }
+
+    module.linkSystemLibrary("fuse", .{ .use_pkg_config = .no });
+}
+
+fn hasPkgConfig(b: *std.Build) bool {
+    _ = b.findProgram(&.{"pkg-config"}, &.{ "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" }) catch {
+        return false;
+    };
+    return true;
+}
+
+fn addSystemIncludeIfPresent(module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(path)) {
+        return;
+    }
+
+    module.addSystemIncludePath(.{ .cwd_relative = path });
+}
+
+fn addLibraryPathIfPresent(module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(path)) {
+        return;
+    }
+
+    module.addLibraryPath(.{ .cwd_relative = path });
+    module.addRPath(.{ .cwd_relative = path });
+}
+
+fn directoryExists(path: []const u8) bool {
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
 }

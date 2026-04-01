@@ -60,6 +60,12 @@ This scaffold expects:
 - `libfuse` development headers and libraries on Linux
 - macFUSE `libfuse` compatibility libraries on macOS
 
+FUSE discovery:
+- the Zig build now prefers `pkg-config` when available
+- Linux falls back to standard `fuse3` system locations if `pkg-config` is absent
+- macOS falls back to standard macFUSE locations under `/usr/local` and `/opt/homebrew` if `pkg-config` is absent
+- `.clangd` mirrors those fallback C flags for editor parsing; `build.zig` remains the source of truth
+
 Current verification:
 - `zig build`
 - `./zig-out/bin/file-snitch demo`
