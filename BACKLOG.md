@@ -10,9 +10,8 @@ Status:
 
 ## Current priorities
 
-- `[~]` Convert the brief into a concrete execution backlog
-- `[~]` Build a phase-0 research matrix for target apps and file IO patterns
-- `[x]` Stand up the initial Zig project scaffold and thin C `libfuse` boundary
+- `[~]` Finish the remaining phase-0 research before expanding the phase-1 surface further
+- `[ ]` Record real file IO behavior for the selected target apps/tools
 - `[ ]` Narrow the v1 mediated operation set based on observed write patterns
 - `[ ]` Define the smallest end-to-end Linux spike demo
 
@@ -39,7 +38,7 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 
 ## Phase 1: Linux spike
 
-Goal: a single guarded directory with in-memory policy and a CLI prompt.
+Goal: a single guarded root with top-level files only, in-memory policy, and a CLI prompt.
 
 - `[x]` Commit to a Zig core with a thin C `libfuse` shim for the spike
 - `[x]` Create repo structure for daemon, policy engine, and prompt broker
@@ -72,7 +71,7 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
 - `[x]` Verify BSD `flock` and POSIX lock contention on the live mount path
 - `[x]` Verify self-`chown` on the live mount path
 - `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
-- `[x]` Implement the minimum FUSE operations for the current one-level model:
+- `[x]` Implement the minimum file-centric FUSE operations for the current spike:
   - `getattr`
   - `readdir`
   - `open`
@@ -84,18 +83,20 @@ Goal: a single guarded directory with in-memory policy and a CLI prompt.
   - `release`
   - `rename`
   - `unlink`
-  - `mkdir`
-  - `rmdir`
   - `truncate`
-- `[~]` Keep directory support limited to one-level empty directories until the data model grows beyond the current spike scope
+- `[x]` Reject `mkdir` and `rmdir` explicitly while the spike remains file-only
 - `[x]` Add an in-memory policy engine with allow, deny, and prompt outcomes
-- `[x]` Add a CLI prompt path with default-deny timeout behavior
-- `[ ]` Support allow-once decisions
+- `[x]` Add one-shot prompt decisions for allow once, deny once, and timeout
 - `[ ]` Emit structured JSON audit logs
-- `[ ]` Revisit xattr mediation beyond the current resource-fork exception path
 - `[x]` Test common editor temp-write and rename flows
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
 - `[ ]` Package a reproducible spike workflow
+
+## Future work
+
+- `[ ]` Add directory support beyond the root itself
+- `[ ]` Revisit xattr mediation beyond the current resource-fork exception path
+- `[ ]` Add prompt decisions beyond allow once, deny once, and timeout
 
 ## Phase 2: encryption layer
 

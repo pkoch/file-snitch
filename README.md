@@ -43,8 +43,8 @@ Current state:
 - the live smoke test now covers xattr set/get/list/remove round-trips on mounted files
 - the live smoke test now covers BSD `flock` and POSIX lock contention/release on mounted files
 - the live smoke test now covers self-`chown` handling on mounted files
-- the mounted root now supports one-level empty directories for `mkdir` and `rmdir`
-- directory mirroring is still limited to one-level empty directories plus regular files
+- the mounted root is intentionally file-only beyond `/`; `mkdir` and `rmdir` fail explicitly in the current spike
+- directory support beyond the root itself is deferred out of the current spike scope
 - the live macOS smoke test observed both `._*` sidecar traffic and aggressive xattr probing during normal file activity
 - the same macOS smoke path treats behavioral lock contention/release as the main signal, because callback visibility is partial and style-dependent on macFUSE
 

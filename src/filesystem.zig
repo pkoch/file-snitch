@@ -72,21 +72,6 @@ const StoredAuditEvent = struct {
     }
 };
 
-const StoredDirectory = struct {
-    name: [:0]u8,
-    path: [:0]u8,
-    mode: u32,
-    uid: u32,
-    gid: u32,
-    inode: u64,
-
-    fn deinit(self: *StoredDirectory, allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.path);
-        self.* = undefined;
-    }
-};
-
 const StoredFile = struct {
     name: [:0]u8,
     path: [:0]u8,
@@ -132,7 +117,6 @@ pub const Model = struct {
     backing_store_path: []u8,
     policy_engine: policy.Engine,
     prompt_broker: ?prompt.Broker,
-    directories: std.ArrayListUnmanaged(StoredDirectory) = .{},
     files: std.ArrayListUnmanaged(StoredFile) = .{},
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .{},
     next_inode: u64 = first_dynamic_inode,
@@ -156,7 +140,7 @@ pub const Model = struct {
     }
 
     pub fn loadBackingStore(self: *Model) !void {
-        if (self.directories.items.len != 0 or self.files.items.len != 0) {
+        if (self.files.items.len != 0) {
             return error.BackingStoreAlreadyLoaded;
         }
 
@@ -174,57 +158,34 @@ pub const Model = struct {
             const virtual_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.name});
             defer self.allocator.free(virtual_path);
 
-            switch (entry.kind) {
-                .file => {
-                    var file = try directory.openFile(entry.name, .{ .mode = .read_only });
-                    defer file.close();
+            if (entry.kind != .file) {
+                continue;
+            }
 
-                    const stat = try file.stat();
-                    const posix_stat = try std.posix.fstat(file.handle);
-                    const imported = try self.appendFile(
-                        virtual_path,
-                        stat.mode & 0o777,
-                        @intCast(posix_stat.uid),
-                        @intCast(posix_stat.gid),
-                    );
+            var file = try directory.openFile(entry.name, .{ .mode = .read_only });
+            defer file.close();
 
-                    if (stat.size > 0) {
-                        try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
-                        imported.content.items.len = @intCast(stat.size);
-                        const read_count = try file.readAll(imported.content.items);
-                        if (read_count != imported.content.items.len) {
-                            return error.UnexpectedEof;
-                        }
-                    }
-                },
-                .directory => {
-                    var child_dir = try directory.openDir(entry.name, .{ .iterate = true });
-                    defer child_dir.close();
+            const stat = try file.stat();
+            const posix_stat = try std.posix.fstat(file.handle);
+            const imported = try self.appendFile(
+                virtual_path,
+                stat.mode & 0o777,
+                @intCast(posix_stat.uid),
+                @intCast(posix_stat.gid),
+            );
 
-                    var child_iterator = child_dir.iterate();
-                    if (try child_iterator.next() != null) {
-                        continue;
-                    }
-
-                    const stat = try std.posix.fstatat(directory.fd, entry.name, 0);
-                    _ = try self.appendDirectory(
-                        virtual_path,
-                        stat.mode & 0o777,
-                        @intCast(stat.uid),
-                        @intCast(stat.gid),
-                    );
-                },
-                else => continue,
+            if (stat.size > 0) {
+                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
+                imported.content.items.len = @intCast(stat.size);
+                const read_count = try file.readAll(imported.content.items);
+                if (read_count != imported.content.items.len) {
+                    return error.UnexpectedEof;
+                }
             }
         }
     }
 
     pub fn deinit(self: *Model) void {
-        for (self.directories.items) |*directory| {
-            directory.deinit(self.allocator);
-        }
-        self.directories.deinit(self.allocator);
-
         for (self.files.items) |*file| {
             file.deinit(self.allocator);
         }
@@ -295,21 +256,6 @@ pub const Model = struct {
             };
         }
 
-        if (self.findDirectory(path)) |directory| {
-            return .{
-                .node = .{
-                    .kind = .directory,
-                    .mode = directory.mode,
-                    .size = 0,
-                    .inode = directory.inode,
-                    .uid = directory.uid,
-                    .gid = directory.gid,
-                },
-                .open_kind = .directory,
-                .persistent = shouldPersistPath(path),
-            };
-        }
-
         if (self.findFile(path)) |file| {
             return .{
                 .node = .{
@@ -340,7 +286,7 @@ pub const Model = struct {
     }
 
     pub fn rootEntryCount(self: *const Model) u32 {
-        return @intCast(2 + self.directories.items.len + self.files.items.len);
+        return @intCast(2 + self.files.items.len);
     }
 
     pub fn rootEntryNameAt(self: *const Model, index: u32) ?[*:0]const u8 {
@@ -352,12 +298,7 @@ pub const Model = struct {
             return audit_name.ptr;
         }
 
-        const directory_index: usize = @intCast(index - 2);
-        if (directory_index < self.directories.items.len) {
-            return self.directories.items[directory_index].name.ptr;
-        }
-
-        const file_index = directory_index - self.directories.items.len;
+        const file_index: usize = @intCast(index - 2);
         if (file_index >= self.files.items.len) {
             return null;
         }
@@ -454,7 +395,7 @@ pub const Model = struct {
         mode: u32,
         context: AccessContext,
     ) i32 {
-        const result = self.createDirectoryInternal(path, mode, context);
+        const result = createDirectoryNotSupported(path, mode, context);
         self.recordAuditLiteral("mkdir", path, result);
         return result;
     }
@@ -531,7 +472,7 @@ pub const Model = struct {
         path: []const u8,
         context: AccessContext,
     ) i32 {
-        const result = self.removeDirectoryInternal(path, context);
+        const result = removeDirectoryNotSupported(path, context);
         self.recordAuditLiteral("rmdir", path, result);
         return result;
     }
@@ -584,7 +525,7 @@ pub const Model = struct {
             return errnoCode(.INVAL);
         }
 
-        if (self.findFile(path) != null or self.findDirectory(path) != null) {
+        if (self.findFile(path) != null) {
             return errnoCode(.EXIST);
         }
 
@@ -605,48 +546,6 @@ pub const Model = struct {
                 return persist_result;
             }
         }
-
-        return 0;
-    }
-
-    fn createDirectoryInternal(
-        self: *Model,
-        path: []const u8,
-        mode: u32,
-        context: AccessContext,
-    ) i32 {
-        if (!isUserFilePath(path) or isReservedPath(path)) {
-            return errnoCode(.INVAL);
-        }
-
-        if (self.findFile(path) != null or self.findDirectory(path) != null) {
-            return errnoCode(.EXIST);
-        }
-
-        const auth_result = self.authorizeAccess(path, .create, context);
-        if (auth_result != 0) {
-            return auth_result;
-        }
-
-        _ = self.appendDirectory(path, mode, currentUid(), currentGid()) catch |err| {
-            return mapFsError(err);
-        };
-        errdefer self.removeDirectoryAtIndex(self.directories.items.len - 1);
-
-        if (!shouldPersistPath(path)) {
-            return 0;
-        }
-
-        const host_path = self.hostPathAlloc(path) catch |err| {
-            self.removeDirectoryAtIndex(self.directories.items.len - 1);
-            return mapFsError(err);
-        };
-        defer self.allocator.free(host_path);
-
-        std.fs.makeDirAbsolute(host_path) catch |err| {
-            self.removeDirectoryAtIndex(self.directories.items.len - 1);
-            return mapFsError(err);
-        };
 
         return 0;
     }
@@ -769,10 +668,6 @@ pub const Model = struct {
             return auth_result;
         }
 
-        if (self.findDirectory(path) != null) {
-            return errnoCode(.ISDIR);
-        }
-
         const index = self.findFileIndex(path) orelse return errnoCode(.NOENT);
         if (shouldPersistPath(path)) {
             const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
@@ -781,37 +676,6 @@ pub const Model = struct {
         }
 
         self.removeFileAtIndex(index);
-        return 0;
-    }
-
-    fn removeDirectoryInternal(
-        self: *Model,
-        path: []const u8,
-        context: AccessContext,
-    ) i32 {
-        if (isReservedPath(path)) {
-            return errnoCode(.ACCES);
-        }
-
-        const auth_result = self.authorizeAccess(path, .delete, context);
-        if (auth_result != 0) {
-            return auth_result;
-        }
-
-        const index = self.findDirectoryIndex(path) orelse {
-            if (self.findFile(path) != null) {
-                return errnoCode(.NOTDIR);
-            }
-            return errnoCode(.NOENT);
-        };
-
-        if (shouldPersistPath(path)) {
-            const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-            defer self.allocator.free(host_path);
-            std.fs.deleteDirAbsolute(host_path) catch |err| return mapFsError(err);
-        }
-
-        self.removeDirectoryAtIndex(index);
         return 0;
     }
 
@@ -1035,30 +899,6 @@ pub const Model = struct {
         try host_file.chown(file.uid, file.gid);
     }
 
-    fn appendDirectory(
-        self: *Model,
-        path: []const u8,
-        mode: u32,
-        uid: u32,
-        gid: u32,
-    ) !*StoredDirectory {
-        const name = try self.allocator.dupeZ(u8, path[1..]);
-        errdefer self.allocator.free(name);
-        const owned_path = try self.allocator.dupeZ(u8, path);
-        errdefer self.allocator.free(owned_path);
-
-        try self.directories.append(self.allocator, .{
-            .name = name,
-            .path = owned_path,
-            .mode = mode & 0o777,
-            .uid = uid,
-            .gid = gid,
-            .inode = self.next_inode,
-        });
-        self.next_inode += 1;
-        return &self.directories.items[self.directories.items.len - 1];
-    }
-
     fn appendFile(
         self: *Model,
         path: []const u8,
@@ -1091,14 +931,6 @@ pub const Model = struct {
         self.files.items.len -= 1;
     }
 
-    fn removeDirectoryAtIndex(self: *Model, index: usize) void {
-        self.directories.items[index].deinit(self.allocator);
-        if (index + 1 < self.directories.items.len) {
-            std.mem.copyBackwards(StoredDirectory, self.directories.items[index .. self.directories.items.len - 1], self.directories.items[index + 1 ..]);
-        }
-        self.directories.items.len -= 1;
-    }
-
     fn takeFileAtIndex(self: *Model, index: usize) StoredFile {
         const removed = self.files.items[index];
         if (index + 1 < self.files.items.len) {
@@ -1106,20 +938,6 @@ pub const Model = struct {
         }
         self.files.items.len -= 1;
         return removed;
-    }
-
-    fn findDirectory(self: *const Model, path: []const u8) ?*StoredDirectory {
-        const index = self.findDirectoryIndex(path) orelse return null;
-        return @constCast(&self.directories.items[index]);
-    }
-
-    fn findDirectoryIndex(self: *const Model, path: []const u8) ?usize {
-        for (self.directories.items, 0..) |directory, index| {
-            if (std.mem.eql(u8, directory.path, path)) {
-                return index;
-            }
-        }
-        return null;
     }
 
     fn findFile(self: *const Model, path: []const u8) ?*StoredFile {
@@ -1162,6 +980,19 @@ pub const Model = struct {
         }
 
         return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.backing_store_path, path[1..] });
+    }
+
+    fn createDirectoryNotSupported(path: []const u8, mode: u32, context: AccessContext) i32 {
+        _ = path;
+        _ = mode;
+        _ = context;
+        return errnoCode(.OPNOTSUPP);
+    }
+
+    fn removeDirectoryNotSupported(path: []const u8, context: AccessContext) i32 {
+        _ = path;
+        _ = context;
+        return errnoCode(.OPNOTSUPP);
     }
 
     fn renderStatusContent(self: *const Model) ![]u8 {

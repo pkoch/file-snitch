@@ -246,7 +246,7 @@ test "policy and prompt paths are covered by integration assertions" {
     try std.testing.expectEqualStrings("", allowed_note);
 }
 
-test "directory lifecycle is covered by integration assertions" {
+test "directory operations fail explicitly in the file-only spike" {
     const allocator = std.testing.allocator;
     const fixture = try Fixture.init(allocator);
     defer fixture.deinit();
@@ -259,44 +259,28 @@ test "directory lifecycle is covered by integration assertions" {
     });
     defer session.deinit();
 
-    try session.debugCreateDirectory("/empty-dir", 0o755);
-
-    const created_directory = try session.inspectPath("/empty-dir");
-    try std.testing.expectEqual(filesystem.NodeKind.directory, created_directory.kind);
-
-    const created_entries = try session.rootEntries(allocator);
-    defer allocator.free(created_entries);
-    try std.testing.expectEqual(@as(usize, 4), created_entries.len);
-    try std.testing.expectEqualStrings("empty-dir", created_entries[2]);
-
-    var reloaded_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-    });
-    defer reloaded_session.deinit();
-
-    const reloaded_directory = try reloaded_session.inspectPath("/empty-dir");
-    try std.testing.expectEqual(filesystem.NodeKind.directory, reloaded_directory.kind);
-
-    try reloaded_session.debugRemoveDirectory("/empty-dir");
+    try std.testing.expectError(
+        error.DebugMkdirFailed,
+        session.debugCreateDirectory("/empty-dir", 0o755),
+    );
+    try std.testing.expectError(
+        error.DebugRmdirFailed,
+        session.debugRemoveDirectory("/empty-dir"),
+    );
     try std.testing.expectEqual(
         filesystem.NodeKind.missing,
-        (try reloaded_session.inspectPath("/empty-dir")).kind,
+        (try session.inspectPath("/empty-dir")).kind,
     );
 
     const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.backing_store_path});
     defer allocator.free(host_path);
     try std.testing.expectError(error.FileNotFound, std.fs.openDirAbsolute(host_path, .{}));
 
-    const initial_audit_events = try session.auditEvents(allocator);
-    defer allocator.free(initial_audit_events);
-    try expectAuditEvent(initial_audit_events, "mkdir", "/empty-dir", 0);
-
-    const reloaded_audit_events = try reloaded_session.auditEvents(allocator);
-    defer allocator.free(reloaded_audit_events);
-    try expectAuditEvent(reloaded_audit_events, "rmdir", "/empty-dir", 0);
+    const not_supported = -@as(i32, @intFromEnum(std.posix.E.OPNOTSUPP));
+    const audit_events = try session.auditEvents(allocator);
+    defer allocator.free(audit_events);
+    try expectAuditEvent(audit_events, "mkdir", "/empty-dir", not_supported);
+    try expectAuditEvent(audit_events, "rmdir", "/empty-dir", not_supported);
 }
 
 test "transient rename rollback keeps source entry when persist fails" {
