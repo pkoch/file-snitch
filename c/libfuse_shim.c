@@ -614,6 +614,29 @@ static int fsn_authorize_xattr(
     return fsn_daemon_authorize_access(session->daemon_state, &request);
 }
 
+static int fsn_prepare_xattr_target(
+    const struct fsn_fuse_session *session,
+    const char *path,
+    struct fsn_bridge_lookup *lookup,
+    char *host_path,
+    size_t host_path_size,
+    int missing_result
+) {
+    if (fsn_lookup_path(session, path, lookup) != 0) {
+        return -EIO;
+    }
+
+    if (lookup->open_kind != FSN_OPEN_USER_FILE || lookup->persistent == 0) {
+        return missing_result;
+    }
+
+    if (fsn_build_backing_store_path(session, path, host_path, host_path_size) != 0) {
+        return -ENAMETOOLONG;
+    }
+
+    return 0;
+}
+
 static int fsn_fuse_setxattr(
     const char *path,
     const char *name,
@@ -632,17 +655,12 @@ static int fsn_fuse_setxattr(
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_authorize_xattr(session, path, name);
+    result = fsn_prepare_xattr_target(session, path, &lookup, host_path, sizeof(host_path), -ENOTSUP);
     if (result == 0) {
-        if (fsn_lookup_path(session, path, &lookup) != 0) {
-            result = -EIO;
-        } else if (lookup.open_kind != FSN_OPEN_USER_FILE || lookup.persistent == 0) {
-            result = -ENOENT;
-        } else if (fsn_build_backing_store_path(session, path, host_path, sizeof(host_path)) != 0) {
-            result = -ENAMETOOLONG;
-        } else if (setxattr(host_path, name, value, size, position, flags) != 0) {
-            result = -errno;
-        }
+        result = fsn_authorize_xattr(session, path, name);
+    }
+    if (result == 0 && setxattr(host_path, name, value, size, position, flags) != 0) {
+        result = -errno;
     }
 
     fsn_record_audit(session, "setxattr", path, result);
@@ -666,19 +684,11 @@ static int fsn_fuse_getxattr(
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_authorize_xattr(session, path, name);
-    if (result != 0) {
-        fsn_record_audit(session, "getxattr", path, (int32_t)result);
-        return (int)result;
+    result = fsn_prepare_xattr_target(session, path, &lookup, host_path, sizeof(host_path), -ENOATTR);
+    if (result == 0) {
+        result = fsn_authorize_xattr(session, path, name);
     }
-
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        result = -EIO;
-    } else if (lookup.open_kind != FSN_OPEN_USER_FILE || lookup.persistent == 0) {
-        result = -ENOENT;
-    } else if (fsn_build_backing_store_path(session, path, host_path, sizeof(host_path)) != 0) {
-        result = -ENAMETOOLONG;
-    } else {
+    if (result == 0) {
         result = getxattr(host_path, name, value, size, position, 0);
         if (result < 0) {
             result = -errno;
@@ -700,19 +710,11 @@ static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_authorize_xattr(session, path, NULL);
-    if (result != 0) {
-        fsn_record_audit(session, "listxattr", path, (int32_t)result);
-        return (int)result;
+    result = fsn_prepare_xattr_target(session, path, &lookup, host_path, sizeof(host_path), 0);
+    if (result == 0) {
+        result = fsn_authorize_xattr(session, path, NULL);
     }
-
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        result = -EIO;
-    } else if (lookup.open_kind != FSN_OPEN_USER_FILE || lookup.persistent == 0) {
-        result = -ENOENT;
-    } else if (fsn_build_backing_store_path(session, path, host_path, sizeof(host_path)) != 0) {
-        result = -ENAMETOOLONG;
-    } else {
+    if (result == 0) {
         result = listxattr(host_path, list, size, 0);
         if (result < 0) {
             result = -errno;
@@ -734,17 +736,12 @@ static int fsn_fuse_removexattr(const char *path, const char *name) {
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_authorize_xattr(session, path, name);
+    result = fsn_prepare_xattr_target(session, path, &lookup, host_path, sizeof(host_path), -ENOTSUP);
     if (result == 0) {
-        if (fsn_lookup_path(session, path, &lookup) != 0) {
-            result = -EIO;
-        } else if (lookup.open_kind != FSN_OPEN_USER_FILE || lookup.persistent == 0) {
-            result = -ENOENT;
-        } else if (fsn_build_backing_store_path(session, path, host_path, sizeof(host_path)) != 0) {
-            result = -ENAMETOOLONG;
-        } else if (removexattr(host_path, name, 0) != 0) {
-            result = -errno;
-        }
+        result = fsn_authorize_xattr(session, path, name);
+    }
+    if (result == 0 && removexattr(host_path, name, 0) != 0) {
+        result = -errno;
     }
 
     fsn_record_audit(session, "removexattr", path, result);

@@ -29,6 +29,7 @@ pub const CliContext = struct {
     timeout_ms: u32 = 5_000,
     stdin_file: std.fs.File = .stdin(),
     stderr_file: std.fs.File = .stderr(),
+    mutex: std.Thread.Mutex = .{},
     pending_input: [256]u8 = [_]u8{0} ** 256,
     pending_len: usize = 0,
 };
@@ -63,6 +64,9 @@ fn resolveCli(raw_context: ?*anyopaque, request: Request) Decision {
 }
 
 fn resolveCliWithContext(context: *CliContext, request: Request) Decision {
+    context.mutex.lock();
+    defer context.mutex.unlock();
+
     writePrompt(context, request) catch return .unavailable;
 
     return readDecisionWithTimeout(context) catch |err| switch (err) {
