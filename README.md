@@ -74,12 +74,30 @@ FUSE discovery:
 - `zig build compile-commands` now writes `compile_commands.json` for clangd from the same discovery logic
 - after cloning or changing build flags, run `zig build compile-commands` so clangd picks up the correct C flags; `build.zig` remains the source of truth
 
-Current verification:
-- `zig build`
-- `zig build test`
-- `zig build compile-commands`
-- `./scripts/live-mount-smoke.sh`
-- `./scripts/prompt-mount-smoke.sh`
+## Verification
+
+Current validation workflow:
+
+```bash
+zig build
+zig build test
+zig build compile-commands
+./scripts/live-mount-smoke.sh
+./scripts/prompt-mount-smoke.sh
+```
+
+What each command covers:
+- `zig build`: compile the CLI binary and the C `libfuse` shim
+- `zig build test`: run both Zig test roots wired in `build.zig`
+  - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
+  - `src/prompt.zig`: prompt broker unit tests
+- `zig build compile-commands`: regenerate `compile_commands.json` for clangd
+- `./scripts/live-mount-smoke.sh`: live macFUSE mount verification for the file-only root, file mutation flows, xattrs, locks, and audit output
+- `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, and non-interactive ordinary xattr traffic
+
+When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
+- `tests/integration.zig`
+- `src/prompt.zig`
 
 Prompt notes:
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
