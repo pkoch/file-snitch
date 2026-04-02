@@ -373,7 +373,6 @@ verify_audit_log() {
     '"action":"mkdir","path":"/empty-dir"'
     '"action":"rename"'
     '"action":"setxattr"'
-    '"action":"getxattr"'
     '"action":"listxattr"'
     '"action":"removexattr"'
     'live-note-renamed.txt'

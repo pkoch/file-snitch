@@ -244,6 +244,25 @@ test "policy and prompt paths are covered by integration assertions" {
     const allowed_note = try allowed_prompt_session.readPath(allocator, allowed_prompt_note_path);
     defer allocator.free(allowed_note);
     try std.testing.expectEqualStrings("", allowed_note);
+
+    var default_prompt_context = prompt.ScriptedContext.init(&.{.allow});
+    var default_prompt_session = try daemon.Session.init(allocator, .{
+        .mount_path = fixture.mount_path,
+        .backing_store_path = fixture.backing_store_path,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .prompt,
+        .prompt_broker = prompt.scriptedBroker(&default_prompt_context),
+    });
+    defer default_prompt_session.deinit();
+
+    const prompted_read = try default_prompt_session.readPath(allocator, note_path);
+    defer allocator.free(prompted_read);
+    try std.testing.expectEqualStrings("hello from file-snitch\n", prompted_read);
+
+    const default_prompt_audit = try default_prompt_session.auditEvents(allocator);
+    defer allocator.free(default_prompt_audit);
+    try expectAuditEvent(default_prompt_audit, "prompt", "read /renamed-note.txt", 1);
+    try expectAuditEvent(default_prompt_audit, "read", note_path, 23);
 }
 
 test "directory operations fail explicitly in the file-only spike" {

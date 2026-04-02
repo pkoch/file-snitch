@@ -109,7 +109,10 @@ pub const Engine = struct {
         }
 
         return switch (request.access_class) {
-            .read => .allow,
+            .read => switch (self.default_mutation_outcome) {
+                .prompt => .prompt,
+                else => .allow,
+            },
             else => self.default_mutation_outcome,
         };
     }

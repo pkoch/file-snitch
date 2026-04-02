@@ -210,7 +210,7 @@ pub const Session = struct {
     }
 
     pub fn debugSyncFile(self: *Session, path: [:0]const u8, datasync: bool) !void {
-        if (self.state.filesystem.syncPath(path, datasync) != 0) {
+        if (self.state.filesystem.fsyncPath(path, datasync) != 0) {
             return error.DebugSyncFailed;
         }
     }
@@ -437,13 +437,21 @@ pub export fn fsn_daemon_chown(
     return @intCast(request.state.filesystem.chownFile(request.path, uid, gid, request.context));
 }
 
-pub export fn fsn_daemon_sync(
+pub export fn fsn_daemon_flush(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.flushPath(request.path));
+}
+
+pub export fn fsn_daemon_fsync(
     daemon_state: ?*anyopaque,
     raw_request: *const policy.RawRequest,
     datasync: u8,
 ) c_int {
     const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(request.state.filesystem.syncPath(request.path, datasync != 0));
+    return @intCast(request.state.filesystem.fsyncPath(request.path, datasync != 0));
 }
 
 pub export fn fsn_daemon_unlink(
@@ -462,6 +470,74 @@ pub export fn fsn_daemon_rmdir(
     return @intCast(request.state.filesystem.removeDirectory(request.path, request.context));
 }
 
+pub export fn fsn_daemon_setxattr(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    raw_name: ?[*:0]const u8,
+    raw_value: ?[*]const u8,
+    size: usize,
+    flags: c_int,
+    position: u32,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
+    var empty_value_storage: [1]u8 = undefined;
+    const value: []const u8 = if (size == 0)
+        empty_value_storage[0..0]
+    else blk: {
+        const ptr = raw_value orelse return errnoCode(.INVAL);
+        break :blk ptr[0..size];
+    };
+    return @intCast(request.state.filesystem.setXattr(request.path, name, value, flags, position));
+}
+
+pub export fn fsn_daemon_getxattr(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    raw_name: ?[*:0]const u8,
+    raw_value: ?[*]u8,
+    size: usize,
+    position: u32,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
+    var empty_value_storage: [1]u8 = undefined;
+    const value: []u8 = if (size == 0)
+        empty_value_storage[0..0]
+    else blk: {
+        const ptr = raw_value orelse return errnoCode(.INVAL);
+        break :blk ptr[0..size];
+    };
+    return @intCast(request.state.filesystem.getXattr(request.path, name, value, position));
+}
+
+pub export fn fsn_daemon_listxattr(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    raw_list: ?[*]u8,
+    size: usize,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    var empty_list_storage: [1]u8 = undefined;
+    const list: []u8 = if (size == 0)
+        empty_list_storage[0..0]
+    else blk: {
+        const ptr = raw_list orelse return errnoCode(.INVAL);
+        break :blk ptr[0..size];
+    };
+    return @intCast(request.state.filesystem.listXattr(request.path, list));
+}
+
+pub export fn fsn_daemon_removexattr(
+    daemon_state: ?*anyopaque,
+    raw_request: *const policy.RawRequest,
+    raw_name: ?[*:0]const u8,
+) c_int {
+    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.removeXattr(request.path, name));
+}
+
 pub export fn fsn_daemon_rename(
     daemon_state: ?*anyopaque,
     raw_request: *const policy.RawRequest,
@@ -477,10 +553,17 @@ pub export fn fsn_daemon_record_audit(
     raw_action: ?[*:0]const u8,
     raw_path: ?[*:0]const u8,
     result: i32,
+    raw_detail: ?[*:0]const u8,
 ) c_int {
     const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
     const action = requirePath(raw_action) orelse return errnoCode(.INVAL);
     const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
-    state.filesystem.recordPlatformAudit(action, path, result);
+    const detail = if (raw_detail) |value| requirePath(value) orelse return errnoCode(.INVAL) else null;
+
+    if (std.mem.eql(u8, action, "getxattr")) {
+        return 0;
+    }
+
+    state.filesystem.recordPlatformAudit(action, path, result, detail);
     return 0;
 }

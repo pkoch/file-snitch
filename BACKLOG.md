@@ -95,7 +95,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 ## Future work
 
 - `[ ]` Add directory support beyond the root itself
-- `[ ]` Revisit xattr mediation beyond the current resource-fork exception path
+- `[ ]` Revisit xattr mediation beyond the current passthrough-only path
 - `[ ]` Add prompt decisions beyond allow once, deny once, and timeout
 
 ## Phase 2: encryption layer

@@ -24,7 +24,7 @@ Current state:
 - one-level uid/gid metadata is now tracked explicitly, and self-`chown` requests now pass through the mounted view
 - macOS `._*` AppleDouble sidecars are treated as transient mount-only files and are not persisted into the backing store
 - one-level xattrs now proxy to the backing-store file on macOS
-- ordinary macOS xattrs now bypass prompt/deny policy by default, while the hook remains in place for future richer mediation and `com.apple.ResourceFork`
+- xattrs now bypass prompt/deny policy entirely in the current spike; richer xattr mediation is deferred to future work
 - flush and fsync now act as explicit backing-store sync points for one-level regular files
 - the binary now has an explicit `mount` mode for foreground live-mount runs
 - mutating operations are now controlled by a Zig-owned default mutation outcome instead of a C-owned session flag
@@ -101,6 +101,7 @@ When debugging a specific area, the build-managed test step above is still the d
 
 Prompt notes:
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
+- in `prompt` mode, regular file reads and mutations both prompt; `readonly` still allows reads and denies mutations
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
-- ordinary xattr traffic does not prompt in this mode; the current exception path is reserved for resource-fork style content
+- xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

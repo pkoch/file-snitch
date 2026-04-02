@@ -129,6 +129,26 @@ start_prompt_mount() {
   wait_for_mount_ready
 }
 
+start_prompt_mount_with_seed_file() {
+  local seed_name="$1"
+  local seed_contents="$2"
+
+  mount_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-mount.XXXXXX")"
+  store_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-store.XXXXXX")"
+  log_file="$(mktemp "$tmp_root/file-snitch.prompt-log.XXXXXX")"
+  prompt_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-fifo.XXXXXX")"
+
+  printf '%s' "$seed_contents" >"$store_dir/$seed_name"
+
+  mkfifo "$prompt_fifo"
+  exec 3<>"$prompt_fifo"
+
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 \
+    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt <&3 >"$log_file" 2>&1 &
+  daemon_pid="$!"
+  wait_for_mount_ready
+}
+
 verify_allow_case() {
   start_prompt_mount
 
@@ -147,6 +167,24 @@ verify_allow_case() {
     fail "expected prompt audit for allowed create missing"
   fi
   assert_no_xattr_prompts "expected ordinary xattr traffic to bypass the prompt path"
+
+  cleanup_case
+}
+
+verify_read_case() {
+  start_prompt_mount_with_seed_file "seeded-read.txt" $'seeded read through prompt\n'
+
+  queue_prompt_answers yes 32
+
+  assert_eq \
+    "$(cat "$mount_dir/seeded-read.txt")" \
+    "seeded read through prompt" \
+    "expected prompt allow to gate seeded regular-file reads"
+
+  if ! grep -F '"action":"prompt","path":"read /seeded-read.txt","result":1' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
+    fail "expected prompt audit for allowed read missing"
+  fi
+  assert_no_xattr_prompts "expected seeded read case to avoid xattr prompts"
 
   cleanup_case
 }
@@ -193,5 +231,6 @@ verify_timeout_case() {
 trap finish EXIT
 
 verify_allow_case
+verify_read_case
 verify_deny_case
 verify_timeout_case

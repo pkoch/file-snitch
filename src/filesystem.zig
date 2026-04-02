@@ -3,6 +3,7 @@ const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
     @cInclude("unistd.h");
+    @cInclude("sys/xattr.h");
 });
 
 const status_name: [:0]const u8 = "file-snitch-status";
@@ -58,16 +59,21 @@ pub const AuditEvent = struct {
     action: []const u8,
     path: []const u8,
     result: i32,
+    detail: ?[]const u8,
 };
 
 const StoredAuditEvent = struct {
     action: []u8,
     path: []u8,
     result: i32,
+    detail: ?[]u8,
 
     fn deinit(self: *StoredAuditEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.action);
         allocator.free(self.path);
+        if (self.detail) |detail| {
+            allocator.free(detail);
+        }
         self.* = undefined;
     }
 };
@@ -312,6 +318,10 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         context: AccessContext,
     ) i32 {
+        if (access_class == .read and (isStatusPath(path) or isAuditPath(path))) {
+            return 0;
+        }
+
         const request: policy.Request = .{
             .path = path,
             .access_class = access_class,
@@ -446,14 +456,113 @@ pub const Model = struct {
         return result;
     }
 
-    pub fn syncPath(
+    pub fn flushPath(
+        self: *Model,
+        path: []const u8,
+    ) i32 {
+        const result = self.syncPathInternal(path);
+        self.recordAuditLiteral("flush", path, result);
+        return result;
+    }
+
+    pub fn fsyncPath(
         self: *Model,
         path: []const u8,
         datasync: bool,
     ) i32 {
-        _ = datasync;
         const result = self.syncPathInternal(path);
-        self.recordAuditLiteral("fsync", path, result);
+        self.recordAudit("fsync", path, result, if (datasync) "datasync" else null) catch {};
+        return result;
+    }
+
+    pub fn setXattr(
+        self: *Model,
+        path: []const u8,
+        name: []const u8,
+        value: []const u8,
+        flags: i32,
+        position: u32,
+    ) i32 {
+        const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
+            .ok => |host_path_z| host_path_z,
+            .err => |code| return code,
+        };
+        defer self.allocator.free(host_path);
+
+        const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(name_z);
+
+        const result = if (c.setxattr(host_path.ptr, name_z.ptr, value.ptr, value.len, position, flags) == 0)
+            0
+        else
+            errnoCode(std.posix.errno(-1));
+        self.recordAudit("setxattr", path, result, name) catch {};
+        return result;
+    }
+
+    pub fn getXattr(
+        self: *Model,
+        path: []const u8,
+        name: []const u8,
+        value: []u8,
+        position: u32,
+    ) i32 {
+        const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.NOATTR))) {
+            .ok => |host_path_z| host_path_z,
+            .err => |code| return code,
+        };
+        defer self.allocator.free(host_path);
+
+        const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(name_z);
+
+        const result = c.getxattr(host_path.ptr, name_z.ptr, if (value.len == 0) null else value.ptr, value.len, position, 0);
+        if (result < 0) {
+            return errnoCode(std.posix.errno(-1));
+        }
+
+        return @intCast(result);
+    }
+
+    pub fn listXattr(
+        self: *Model,
+        path: []const u8,
+        list: []u8,
+    ) i32 {
+        const host_path = switch (self.hostXattrPathAllocZ(path, 0)) {
+            .ok => |host_path_z| host_path_z,
+            .err => |code| return code,
+        };
+        defer self.allocator.free(host_path);
+
+        const result = c.listxattr(host_path.ptr, if (list.len == 0) null else list.ptr, list.len, 0);
+        if (result < 0) {
+            return errnoCode(std.posix.errno(-1));
+        }
+
+        self.recordAudit("listxattr", path, @intCast(result), null) catch {};
+        return @intCast(result);
+    }
+
+    pub fn removeXattr(
+        self: *Model,
+        path: []const u8,
+        name: []const u8,
+    ) i32 {
+        const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
+            .ok => |host_path_z| host_path_z,
+            .err => |code| return code,
+        };
+        defer self.allocator.free(host_path);
+
+        const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(name_z);
+
+        const result = if (c.removexattr(host_path.ptr, name_z.ptr, 0) == 0)
+            0
+        else
+            errnoCode(std.posix.errno(-1));
+        self.recordAudit("removexattr", path, result, name) catch {};
         return result;
     }
 
@@ -503,6 +612,7 @@ pub const Model = struct {
             .action = stored.action,
             .path = stored.path,
             .result = stored.result,
+            .detail = stored.detail,
         };
     }
 
@@ -511,8 +621,9 @@ pub const Model = struct {
         action: []const u8,
         path: []const u8,
         result: i32,
+        detail: ?[]const u8,
     ) void {
-        self.recordAudit(action, path, result) catch {};
+        self.recordAudit(action, path, result, detail) catch {};
     }
 
     fn createFileInternal(
@@ -974,6 +1085,34 @@ pub const Model = struct {
         return 0;
     }
 
+    fn hostXattrPathAllocZ(
+        self: *const Model,
+        path: []const u8,
+        missing_result: i32,
+    ) union(enum) {
+        ok: [:0]u8,
+        err: i32,
+    } {
+        const lookup = self.lookupPath(path);
+        if (lookup.open_kind != .user_file or !lookup.persistent) {
+            return .{ .err = missing_result };
+        }
+
+        if (self.findFile(path) == null) {
+            return .{ .err = errnoCode(.NOENT) };
+        }
+
+        const host_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.backing_store_path, path[1..] }) catch {
+            return .{ .err = errnoCode(.NOMEM) };
+        };
+        defer self.allocator.free(host_path);
+
+        const host_path_z = self.allocator.dupeZ(u8, host_path) catch {
+            return .{ .err = errnoCode(.NOMEM) };
+        };
+        return .{ .ok = host_path_z };
+    }
+
     fn hostPathAlloc(self: *const Model, path: []const u8) ![]u8 {
         if (!isUserFilePath(path)) {
             return error.InvalidPath;
@@ -1024,10 +1163,17 @@ pub const Model = struct {
         defer content.deinit(self.allocator);
 
         for (self.audit_events.items) |event| {
-            try content.writer(self.allocator).print(
-                "{{\"action\":\"{s}\",\"path\":\"{s}\",\"result\":{d}}}\n",
-                .{ event.action, event.path, event.result },
-            );
+            if (event.detail) |detail| {
+                try content.writer(self.allocator).print(
+                    "{{\"action\":\"{s}\",\"path\":\"{s}\",\"result\":{d},\"detail\":\"{s}\"}}\n",
+                    .{ event.action, event.path, event.result, detail },
+                );
+            } else {
+                try content.writer(self.allocator).print(
+                    "{{\"action\":\"{s}\",\"path\":\"{s}\",\"result\":{d}}}\n",
+                    .{ event.action, event.path, event.result },
+                );
+            }
         }
 
         return content.toOwnedSlice(self.allocator);
@@ -1051,7 +1197,7 @@ pub const Model = struct {
             .{ accessClassLabel(access_class), path },
         ) catch return;
         defer self.allocator.free(audit_event_path);
-        self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome))) catch {};
+        self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome)), null) catch {};
     }
 
     fn resolvePromptDecision(self: *Model, request: policy.Request) i32 {
@@ -1073,7 +1219,7 @@ pub const Model = struct {
         else
             prompt.Decision.unavailable;
 
-        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision)) catch {};
+        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision), null) catch {};
         return switch (decision) {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
@@ -1083,18 +1229,25 @@ pub const Model = struct {
     fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32) void {
         const audit_event_path = std.fmt.allocPrint(self.allocator, "{s} -> {s}", .{ from, to }) catch return;
         defer self.allocator.free(audit_event_path);
-        self.recordAudit("rename", audit_event_path, result) catch {};
+        self.recordAudit("rename", audit_event_path, result, null) catch {};
     }
 
     fn recordAuditLiteral(self: *Model, action: []const u8, path: []const u8, result: i32) void {
-        self.recordAudit(action, path, result) catch {};
+        self.recordAudit(action, path, result, null) catch {};
     }
 
-    fn recordAudit(self: *Model, action: []const u8, path: []const u8, result: i32) !void {
+    fn recordAudit(
+        self: *Model,
+        action: []const u8,
+        path: []const u8,
+        result: i32,
+        detail: ?[]const u8,
+    ) !void {
         try self.audit_events.append(self.allocator, .{
             .action = try self.allocator.dupe(u8, action),
             .path = try self.allocator.dupe(u8, path),
             .result = result,
+            .detail = if (detail) |value| try self.allocator.dupe(u8, value) else null,
         });
     }
 };
