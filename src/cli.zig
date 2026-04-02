@@ -8,7 +8,10 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    return run(args[1..]);
+    run(args[1..]) catch |err| switch (err) {
+        error.InvalidUsage => std.process.exit(1),
+        else => return err,
+    };
 }
 
 pub fn run(args: []const []const u8) !void {
@@ -20,7 +23,7 @@ pub fn run(args: []const []const u8) !void {
                 .timeout_ms = command.prompt_timeout_ms,
             };
 
-            try daemon.mount(std.heap.page_allocator, .{
+            daemon.mount(std.heap.page_allocator, .{
                 .mount_path = command.mount_path,
                 .backing_store_path = command.backing_store_path,
                 .default_mutation_outcome = command.default_mutation_outcome,
@@ -28,7 +31,16 @@ pub fn run(args: []const []const u8) !void {
                     prompt.cliBroker(&cli_prompt_context)
                 else
                     null,
-            });
+            }) catch |err| switch (err) {
+                error.MountPathNotEmpty => {
+                    std.debug.print(
+                        "error: mount path is not empty: {s}\n",
+                        .{command.mount_path},
+                    );
+                    return error.InvalidUsage;
+                },
+                else => return err,
+            };
         },
     }
 }
@@ -75,9 +87,9 @@ fn parseMountCommand(args: []const []const u8) !MountCommand {
     }
 
     const allocator = std.heap.page_allocator;
-    const mount_path = try std.fs.realpathAlloc(allocator, args[0]);
+    const mount_path = try resolveDirectoryArgument(allocator, "mount path", args[0]);
     errdefer allocator.free(mount_path);
-    const backing_store_path = try std.fs.realpathAlloc(allocator, args[1]);
+    const backing_store_path = try resolveDirectoryArgument(allocator, "backing store path", args[1]);
     errdefer allocator.free(backing_store_path);
 
     return .{
@@ -88,6 +100,24 @@ fn parseMountCommand(args: []const []const u8) !MountCommand {
         else
             policy.Outcome.deny,
         .prompt_timeout_ms = try loadPromptTimeoutMs(),
+    };
+}
+
+fn resolveDirectoryArgument(
+    allocator: std.mem.Allocator,
+    label: []const u8,
+    raw_path: []const u8,
+) ![]const u8 {
+    return std.fs.realpathAlloc(allocator, raw_path) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("error: {s} does not exist: {s}\n", .{ label, raw_path });
+            return error.InvalidUsage;
+        },
+        error.NotDir => {
+            std.debug.print("error: {s} is not a directory: {s}\n", .{ label, raw_path });
+            return error.InvalidUsage;
+        },
+        else => return err,
     };
 }
 
