@@ -33,6 +33,12 @@ pub const AccessContext = struct {
     pid: u32 = 0,
     uid: u32 = 0,
     gid: u32 = 0,
+    umask: u32 = 0,
+};
+
+pub const Timestamp = struct {
+    sec: i64,
+    nsec: u32,
 };
 
 pub const RuntimeStats = struct {
@@ -43,10 +49,16 @@ pub const RuntimeStats = struct {
 pub const NodeInfo = struct {
     kind: NodeKind,
     mode: u32,
+    nlink: u32,
     size: u64,
+    block_size: u32,
+    block_count: u64,
     inode: u64,
     uid: u32,
     gid: u32,
+    atime: Timestamp,
+    mtime: Timestamp,
+    ctime: Timestamp,
 };
 
 pub const Lookup = struct {
@@ -86,6 +98,9 @@ const StoredFile = struct {
     uid: u32,
     gid: u32,
     inode: u64,
+    atime: Timestamp,
+    mtime: Timestamp,
+    ctime: Timestamp,
 
     fn deinit(self: *StoredFile, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -127,8 +142,12 @@ pub const Model = struct {
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .{},
     next_inode: u64 = first_dynamic_inode,
     runtime_stats: RuntimeStats = .{},
+    root_timestamp: Timestamp,
+    status_timestamp: Timestamp,
+    audit_timestamp: Timestamp,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Model {
+        const now = currentTimestamp();
         var model = Model{
             .allocator = allocator,
             .mount_path = try allocator.dupe(u8, config.mount_path),
@@ -139,6 +158,9 @@ pub const Model = struct {
                 config.policy_rules,
             ),
             .prompt_broker = config.prompt_broker,
+            .root_timestamp = now,
+            .status_timestamp = now,
+            .audit_timestamp = now,
         };
         errdefer model.deinit();
 
@@ -179,6 +201,10 @@ pub const Model = struct {
                 @intCast(posix_stat.uid),
                 @intCast(posix_stat.gid),
             );
+            const imported_now = currentTimestamp();
+            imported.atime = imported_now;
+            imported.mtime = imported_now;
+            imported.ctime = imported_now;
 
             if (stat.size > 0) {
                 try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
@@ -189,6 +215,7 @@ pub const Model = struct {
                 }
             }
         }
+        self.status_timestamp = currentTimestamp();
     }
 
     pub fn deinit(self: *Model) void {
@@ -210,6 +237,7 @@ pub const Model = struct {
 
     pub fn setRuntimeStats(self: *Model, stats: RuntimeStats) void {
         self.runtime_stats = stats;
+        self.status_timestamp = currentTimestamp();
     }
 
     pub fn defaultMutationOutcome(self: *const Model) policy.Outcome {
@@ -222,10 +250,16 @@ pub const Model = struct {
                 .node = .{
                     .kind = .directory,
                     .mode = 0o755,
+                    .nlink = 2,
                     .size = 0,
+                    .block_size = 4096,
+                    .block_count = 0,
                     .inode = root_inode,
                     .uid = currentUid(),
                     .gid = currentGid(),
+                    .atime = self.root_timestamp,
+                    .mtime = self.root_timestamp,
+                    .ctime = self.root_timestamp,
                 },
                 .open_kind = .directory,
                 .persistent = false,
@@ -237,10 +271,16 @@ pub const Model = struct {
                 .node = .{
                     .kind = .regular_file,
                     .mode = 0o444,
+                    .nlink = 1,
                     .size = self.renderStatusContentLength(),
+                    .block_size = 4096,
+                    .block_count = blockCountForSize(self.renderStatusContentLength()),
                     .inode = status_inode,
                     .uid = currentUid(),
                     .gid = currentGid(),
+                    .atime = self.status_timestamp,
+                    .mtime = self.status_timestamp,
+                    .ctime = self.status_timestamp,
                 },
                 .open_kind = .synthetic_readonly,
                 .persistent = false,
@@ -252,10 +292,16 @@ pub const Model = struct {
                 .node = .{
                     .kind = .regular_file,
                     .mode = 0o444,
+                    .nlink = 1,
                     .size = self.renderAuditContentLength(),
+                    .block_size = 4096,
+                    .block_count = blockCountForSize(self.renderAuditContentLength()),
                     .inode = audit_inode,
                     .uid = currentUid(),
                     .gid = currentGid(),
+                    .atime = self.audit_timestamp,
+                    .mtime = self.audit_timestamp,
+                    .ctime = self.audit_timestamp,
                 },
                 .open_kind = .synthetic_readonly,
                 .persistent = false,
@@ -268,9 +314,15 @@ pub const Model = struct {
                     .kind = .regular_file,
                     .mode = file.mode,
                     .size = file.content.items.len,
+                    .nlink = 1,
+                    .block_size = 4096,
+                    .block_count = blockCountForSize(@intCast(file.content.items.len)),
                     .inode = file.inode,
                     .uid = file.uid,
                     .gid = file.gid,
+                    .atime = file.atime,
+                    .mtime = file.mtime,
+                    .ctime = file.ctime,
                 },
                 .open_kind = .user_file,
                 .persistent = shouldPersistPath(path),
@@ -281,10 +333,16 @@ pub const Model = struct {
             .node = .{
                 .kind = .missing,
                 .mode = 0,
+                .nlink = 0,
                 .size = 0,
+                .block_size = 0,
+                .block_count = 0,
                 .inode = 0,
                 .uid = 0,
                 .gid = 0,
+                .atime = .{ .sec = 0, .nsec = 0 },
+                .mtime = .{ .sec = 0, .nsec = 0 },
+                .ctime = .{ .sec = 0, .nsec = 0 },
             },
             .open_kind = .missing,
             .persistent = false,
@@ -382,6 +440,7 @@ pub const Model = struct {
             self.recordAuditLiteral("read", path, errnoCode(.NOENT));
             return errnoCode(.NOENT);
         };
+        touchFileAtime(file);
 
         const result = copySlice(file.content.items, buffer, @intCast(offset));
         self.recordAuditLiteral("read", path, result);
@@ -496,6 +555,11 @@ pub const Model = struct {
             0
         else
             errnoCode(std.posix.errno(-1));
+        if (result == 0) {
+            if (self.findFile(path)) |file| {
+                touchFileChange(file);
+            }
+        }
         self.recordAudit("setxattr", path, result, name) catch {};
         return result;
     }
@@ -520,6 +584,9 @@ pub const Model = struct {
         if (result < 0) {
             return errnoCode(std.posix.errno(-1));
         }
+        if (self.findFile(path)) |file| {
+            touchFileAtime(file);
+        }
 
         return @intCast(result);
     }
@@ -538,6 +605,9 @@ pub const Model = struct {
         const result = c.listxattr(host_path.ptr, if (list.len == 0) null else list.ptr, list.len, 0);
         if (result < 0) {
             return errnoCode(std.posix.errno(-1));
+        }
+        if (self.findFile(path)) |file| {
+            touchFileAtime(file);
         }
 
         self.recordAudit("listxattr", path, @intCast(result), null) catch {};
@@ -562,6 +632,11 @@ pub const Model = struct {
             0
         else
             errnoCode(std.posix.errno(-1));
+        if (result == 0) {
+            if (self.findFile(path)) |file| {
+                touchFileChange(file);
+            }
+        }
         self.recordAudit("removexattr", path, result, name) catch {};
         return result;
     }
@@ -658,6 +733,7 @@ pub const Model = struct {
             }
         }
 
+        self.status_timestamp = currentTimestamp();
         return 0;
     }
 
@@ -684,6 +760,7 @@ pub const Model = struct {
         writeIntoArrayList(self.allocator, &file.content, @intCast(offset), bytes) catch |err| {
             return mapFsError(err);
         };
+        touchFileContent(file);
 
         return self.finishContentMutation(path, file, snapshot, @intCast(bytes.len));
     }
@@ -710,6 +787,7 @@ pub const Model = struct {
         resizeArrayList(self.allocator, &file.content, @intCast(size)) catch |err| {
             return mapFsError(err);
         };
+        touchFileContent(file);
 
         return self.finishContentMutation(path, file, snapshot, 0);
     }
@@ -728,6 +806,7 @@ pub const Model = struct {
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
         const snapshot = snapshotFileMetadata(file);
         file.mode = mode & 0o777;
+        touchFileChange(file);
 
         return self.finishMetadataMutation(path, file, snapshot, applyModeToHost);
     }
@@ -748,6 +827,7 @@ pub const Model = struct {
         const snapshot = snapshotFileMetadata(file);
         file.uid = uid;
         file.gid = gid;
+        touchFileChange(file);
 
         return self.finishMetadataMutation(path, file, snapshot, applyOwnershipToHost);
     }
@@ -787,6 +867,7 @@ pub const Model = struct {
         }
 
         self.removeFileAtIndex(index);
+        self.status_timestamp = currentTimestamp();
         return 0;
     }
 
@@ -844,6 +925,10 @@ pub const Model = struct {
 
         self.commitRenameMutation(rename_mutation);
         rename_committed = true;
+        if (self.findFile(to)) |file| {
+            touchFileChange(file);
+        }
+        self.status_timestamp = currentTimestamp();
         return 0;
     }
 
@@ -1017,6 +1102,7 @@ pub const Model = struct {
         uid: u32,
         gid: u32,
     ) !*StoredFile {
+        const now = currentTimestamp();
         const name = try self.allocator.dupeZ(u8, path[1..]);
         errdefer self.allocator.free(name);
         const owned_path = try self.allocator.dupeZ(u8, path);
@@ -1029,6 +1115,9 @@ pub const Model = struct {
             .uid = uid,
             .gid = gid,
             .inode = self.next_inode,
+            .atime = now,
+            .mtime = now,
+            .ctime = now,
         });
         self.next_inode += 1;
         return &self.files.items[self.files.items.len - 1];
@@ -1249,6 +1338,7 @@ pub const Model = struct {
             .result = result,
             .detail = if (detail) |value| try self.allocator.dupe(u8, value) else null,
         });
+        self.audit_timestamp = currentTimestamp();
     }
 };
 
@@ -1302,6 +1392,36 @@ fn copySlice(source: []const u8, buffer: []u8, offset: usize) i32 {
     const length = @min(source.len - offset, buffer.len);
     @memcpy(buffer[0..length], source[offset .. offset + length]);
     return @intCast(length);
+}
+
+fn currentTimestamp() Timestamp {
+    const now = std.time.nanoTimestamp();
+    return .{
+        .sec = @intCast(@divTrunc(now, std.time.ns_per_s)),
+        .nsec = @intCast(@mod(now, std.time.ns_per_s)),
+    };
+}
+
+fn blockCountForSize(size: u64) u64 {
+    if (size == 0) {
+        return 0;
+    }
+    return (size + 511) / 512;
+}
+
+fn touchFileAtime(file: *StoredFile) void {
+    file.atime = currentTimestamp();
+}
+
+fn touchFileChange(file: *StoredFile) void {
+    const now = currentTimestamp();
+    file.ctime = now;
+}
+
+fn touchFileContent(file: *StoredFile) void {
+    const now = currentTimestamp();
+    file.mtime = now;
+    file.ctime = now;
 }
 
 fn currentUid() u32 {

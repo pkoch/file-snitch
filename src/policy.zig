@@ -22,15 +22,6 @@ pub const Rule = struct {
     outcome: Outcome,
 };
 
-pub const RawRequest = extern struct {
-    path: ?[*:0]const u8,
-    access_class: u32,
-    pid: u32,
-    uid: u32,
-    gid: u32,
-    reserved: [4]u8,
-};
-
 pub const Request = struct {
     path: []const u8,
     access_class: AccessClass,
@@ -117,25 +108,6 @@ pub const Engine = struct {
         };
     }
 };
-
-pub const Error = error{
-    InvalidRequest,
-};
-
-pub fn requestFromRaw(raw: *const RawRequest) Error!Request {
-    const path = raw.path orelse return error.InvalidRequest;
-    const access_class = std.meta.intToEnum(AccessClass, raw.access_class) catch {
-        return error.InvalidRequest;
-    };
-
-    return .{
-        .path = std.mem.span(path),
-        .access_class = access_class,
-        .pid = raw.pid,
-        .uid = raw.uid,
-        .gid = raw.gid,
-    };
-}
 
 fn matchesPathPrefix(prefix: []const u8, path: []const u8) bool {
     if (std.mem.eql(u8, prefix, "/")) {

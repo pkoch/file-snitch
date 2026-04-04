@@ -20,22 +20,6 @@
 
 #include "libfuse_shim.h"
 
-enum fsn_access_class {
-    FSN_ACCESS_READ = 1,
-    FSN_ACCESS_CREATE = 2,
-    FSN_ACCESS_WRITE = 3,
-    FSN_ACCESS_RENAME = 4,
-    FSN_ACCESS_DELETE = 5,
-    FSN_ACCESS_METADATA = 6,
-    FSN_ACCESS_XATTR = 7,
-};
-
-enum fsn_node_kind {
-    FSN_NODE_MISSING = 0,
-    FSN_NODE_DIRECTORY = 1,
-    FSN_NODE_REGULAR_FILE = 2,
-};
-
 enum fsn_open_kind {
     FSN_OPEN_MISSING = 0,
     FSN_OPEN_DIRECTORY = 1,
@@ -45,41 +29,81 @@ enum fsn_open_kind {
 
 struct fsn_bridge_request {
     const char *path;
-    uint32_t access_class;
     uint32_t pid;
     uint32_t uid;
     uint32_t gid;
+    uint32_t umask;
     uint8_t reserved[4];
 };
 
+struct fsn_bridge_file_info {
+    int32_t flags;
+    uint64_t fh_old;
+    int32_t writepage;
+    uint8_t direct_io;
+    uint8_t keep_cache;
+    uint8_t flush;
+    uint8_t nonseekable;
+    uint8_t flock_release;
+    uint32_t padding_bits;
+    uint8_t purge_attr;
+    uint8_t purge_ubc;
+    uint8_t reserved[2];
+    uint64_t fh;
+    uint64_t lock_owner;
+};
+
+struct fsn_bridge_lock {
+    int32_t cmd;
+    int16_t lock_type;
+    int16_t whence;
+    int32_t pid;
+    int64_t start;
+    int64_t len;
+};
+
 struct fsn_bridge_lookup {
-    uint32_t kind;
     uint32_t mode;
+    uint32_t nlink;
     uint32_t uid;
     uint32_t gid;
+    uint32_t block_size;
     uint64_t size;
+    uint64_t block_count;
     uint64_t inode;
+    int64_t atime_sec;
+    uint32_t atime_nsec;
+    int64_t mtime_sec;
+    uint32_t mtime_nsec;
+    int64_t ctime_sec;
+    uint32_t ctime_nsec;
     uint8_t open_kind;
     uint8_t persistent;
-    uint8_t reserved[6];
+    uint8_t reserved[2];
 };
 
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
 extern uint32_t fsn_daemon_root_entry_count(void *daemon_state);
 extern const char *fsn_daemon_root_entry_name_at(void *daemon_state, uint32_t index);
-extern int fsn_daemon_authorize_access(void *daemon_state, const struct fsn_bridge_request *request);
 extern int fsn_daemon_read(
     void *daemon_state,
     const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
     uint64_t offset,
     size_t size,
     char *buf
 );
-extern int fsn_daemon_create(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
+extern int fsn_daemon_create(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    uint32_t mode,
+    const struct fsn_bridge_file_info *file_info
+);
 extern int fsn_daemon_mkdir(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
 extern int fsn_daemon_write(
     void *daemon_state,
     const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
     uint64_t offset,
     size_t size,
     const char *buf
@@ -87,8 +111,17 @@ extern int fsn_daemon_write(
 extern int fsn_daemon_truncate(void *daemon_state, const struct fsn_bridge_request *request, uint64_t size);
 extern int fsn_daemon_chmod(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
 extern int fsn_daemon_chown(void *daemon_state, const struct fsn_bridge_request *request, uint32_t uid, uint32_t gid);
-extern int fsn_daemon_flush(void *daemon_state, const struct fsn_bridge_request *request);
-extern int fsn_daemon_fsync(void *daemon_state, const struct fsn_bridge_request *request, uint8_t datasync);
+extern int fsn_daemon_flush(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info
+);
+extern int fsn_daemon_fsync(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
+    uint8_t datasync
+);
 extern int fsn_daemon_unlink(void *daemon_state, const struct fsn_bridge_request *request);
 extern int fsn_daemon_rmdir(void *daemon_state, const struct fsn_bridge_request *request);
 extern int fsn_daemon_setxattr(
@@ -120,12 +153,29 @@ extern int fsn_daemon_removexattr(
     const char *name
 );
 extern int fsn_daemon_rename(void *daemon_state, const struct fsn_bridge_request *request, const char *to_path);
-extern int fsn_daemon_record_audit(
+extern int fsn_daemon_record_open(
     void *daemon_state,
-    const char *action,
-    const char *path,
-    int32_t result,
-    const char *detail
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
+    int32_t result
+);
+extern int fsn_daemon_record_release(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
+    int32_t result
+);
+extern int fsn_daemon_record_lock(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_lock *lock,
+    int32_t result
+);
+extern int fsn_daemon_record_flock(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    int32_t operation,
+    int32_t result
 );
 
 struct fsn_file_handle {
@@ -149,7 +199,6 @@ static int fsn_is_user_file_path(const char *path);
 static int fsn_build_request(
     struct fsn_bridge_request *out,
     const char *path,
-    uint32_t access_class,
     int use_fuse_context
 );
 static int fsn_lookup_path(
@@ -165,13 +214,6 @@ static int fsn_build_backing_store_path(
     char *buf,
     size_t buf_size
 );
-static void fsn_record_audit(
-    const struct fsn_fuse_session *session,
-    const char *action,
-    const char *path,
-    int32_t result,
-    const char *detail
-);
 static struct fsn_file_handle *fsn_create_file_handle(void);
 static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
 static void fsn_clear_file_handle(struct fuse_file_info *fi);
@@ -186,12 +228,8 @@ static int fsn_push_argument(struct fsn_fuse_session *session, const char *value
 static int fsn_build_execution_plan(struct fsn_fuse_session *session);
 static char **fsn_duplicate_argument_vector(const struct fsn_fuse_session *session);
 static void fsn_free_argument_vector(char **argv, uint32_t argc);
-static const char *fsn_lock_cmd_detail(int cmd);
-static const char *fsn_flock_op_detail(int op);
-static const char *fsn_lock_type_label(short type);
-static const char *fsn_whence_label(short whence);
-static void fsn_format_lock_detail(int cmd, const struct flock *lock, char *buf, size_t buf_size);
-static void fsn_format_flags_detail(int flags, char *buf, size_t buf_size);
+static void fsn_capture_file_info(const struct fuse_file_info *fi, struct fsn_bridge_file_info *out);
+static void fsn_capture_lock(int cmd, const struct flock *lock, struct fsn_bridge_lock *out);
 
 static void *fsn_fuse_init(struct fuse_conn_info *conn) {
     if (conn != NULL) {
@@ -217,7 +255,7 @@ static int fsn_fuse_getattr(const char *path, struct stat *stbuf) {
         return -EIO;
     }
 
-    if (lookup.kind == FSN_NODE_MISSING) {
+    if (lookup.open_kind == FSN_OPEN_MISSING) {
         return -ENOENT;
     }
 
@@ -241,6 +279,11 @@ static int fsn_fuse_opendir(const char *path, struct fuse_file_info *fi) {
     return lookup.open_kind == FSN_OPEN_DIRECTORY ? 0 : -ENOENT;
 }
 
+/*
+ * Root directory enumeration still lives in the shim. That means
+ * opendir/readdir/releasedir are the remaining callbacks where C owns
+ * behavior instead of only forwarding libfuse ABI data into Zig.
+ */
 static int fsn_fuse_readdir(
     const char *path,
     void *buf,
@@ -330,14 +373,18 @@ static int fsn_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
 
 static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
     struct fsn_bridge_lookup lookup;
+    struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
-    char detail[64];
 
     if (path == NULL || fi == NULL) {
         return -EINVAL;
     }
 
     session = fuse_get_context()->private_data;
+    if (fsn_build_request(&request, path, 1) != 0) {
+        return -EINVAL;
+    }
     if (fsn_lookup_path(session, path, &lookup) != 0) {
         return -EIO;
     }
@@ -373,16 +420,16 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
             return -ENOENT;
     }
 
-    fsn_format_flags_detail(fi->flags, detail, sizeof(detail));
-    fsn_record_audit(session, "open", path, 0, detail);
+    fsn_capture_file_info(fi, &file_info);
+    fsn_daemon_record_open(session->daemon_state, &request, &file_info, 0);
     return 0;
 }
 
 static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_bridge_lookup lookup;
     struct fsn_fuse_session *session;
-    char detail[64];
     int result;
 
     if (path == NULL || fi == NULL) {
@@ -390,12 +437,13 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_build_request(&request, path, FSN_ACCESS_CREATE, 1);
+    result = fsn_build_request(&request, path, 1);
     if (result != 0) {
         return result;
     }
 
-    result = fsn_daemon_create(session->daemon_state, &request, (uint32_t)mode);
+    fsn_capture_file_info(fi, &file_info);
+    result = fsn_daemon_create(session->daemon_state, &request, (uint32_t)mode, &file_info);
     if (result != 0) {
         return result;
     }
@@ -422,8 +470,8 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         fi->fh = (uint64_t)(uintptr_t)handle;
     }
 
-    fsn_format_flags_detail(fi->flags, detail, sizeof(detail));
-    fsn_record_audit(session, "open", path, 0, detail);
+    fsn_capture_file_info(fi, &file_info);
+    fsn_daemon_record_open(session->daemon_state, &request, &file_info, 0);
     return 0;
 }
 
@@ -436,7 +484,7 @@ static int fsn_fuse_mkdir(const char *path, mode_t mode) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_CREATE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
@@ -444,15 +492,21 @@ static int fsn_fuse_mkdir(const char *path, mode_t mode) {
 }
 
 static int fsn_fuse_release(const char *path, struct fuse_file_info *fi) {
-    char detail[64];
+    struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
+    struct fsn_fuse_session *session;
 
     if (path == NULL) {
         return -EINVAL;
     }
 
-    fsn_format_flags_detail(fi != NULL ? fi->flags : 0, detail, sizeof(detail));
+    session = fuse_get_context()->private_data;
+    if (fsn_build_request(&request, path, 1) != 0) {
+        return -EINVAL;
+    }
+    fsn_capture_file_info(fi, &file_info);
     fsn_clear_file_handle(fi);
-    fsn_record_audit(fuse_get_context()->private_data, "release", path, 0, detail);
+    fsn_daemon_record_release(session->daemon_state, &request, &file_info, 0);
     return 0;
 }
 
@@ -464,6 +518,7 @@ static int fsn_fuse_read(
     struct fuse_file_info *fi
 ) {
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
 
     (void)fi;
@@ -473,11 +528,12 @@ static int fsn_fuse_read(
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_READ, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
+    fsn_capture_file_info(fi, &file_info);
 
-    return fsn_daemon_read(session->daemon_state, &request, (uint64_t)off, size, buf);
+    return fsn_daemon_read(session->daemon_state, &request, &file_info, (uint64_t)off, size, buf);
 }
 
 static int fsn_fuse_write(
@@ -488,6 +544,7 @@ static int fsn_fuse_write(
     struct fuse_file_info *fi
 ) {
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
 
     (void)fi;
@@ -497,11 +554,12 @@ static int fsn_fuse_write(
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_WRITE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
+    fsn_capture_file_info(fi, &file_info);
 
-    return fsn_daemon_write(session->daemon_state, &request, (uint64_t)off, size, buf);
+    return fsn_daemon_write(session->daemon_state, &request, &file_info, (uint64_t)off, size, buf);
 }
 
 static int fsn_fuse_truncate(const char *path, off_t size) {
@@ -513,7 +571,7 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_WRITE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
@@ -529,7 +587,7 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_METADATA, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
@@ -545,117 +603,19 @@ static int fsn_fuse_chown(const char *path, uid_t uid, gid_t gid) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_METADATA, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
     return fsn_daemon_chown(session->daemon_state, &request, (uint32_t)uid, (uint32_t)gid);
 }
 
-static const char *fsn_lock_cmd_detail(int cmd) {
-    switch (cmd) {
-        case F_GETLK:
-            return "F_GETLK";
-        case F_SETLK:
-            return "F_SETLK";
-        case F_SETLKW:
-            return "F_SETLKW";
-        default:
-            return "unknown";
-    }
-}
-
-static const char *fsn_lock_type_label(short type) {
-    switch (type) {
-        case F_RDLCK:
-            return "F_RDLCK";
-        case F_WRLCK:
-            return "F_WRLCK";
-        case F_UNLCK:
-            return "F_UNLCK";
-        default:
-            return "unknown";
-    }
-}
-
-static const char *fsn_whence_label(short whence) {
-    switch (whence) {
-        case SEEK_SET:
-            return "SEEK_SET";
-        case SEEK_CUR:
-            return "SEEK_CUR";
-        case SEEK_END:
-            return "SEEK_END";
-        default:
-            return "unknown";
-    }
-}
-
-static void fsn_format_lock_detail(int cmd, const struct flock *lock, char *buf, size_t buf_size) {
-    if (buf == NULL || buf_size == 0) {
-        return;
-    }
-
-    if (lock == NULL) {
-        snprintf(buf, buf_size, "cmd=%s", fsn_lock_cmd_detail(cmd));
-        return;
-    }
-
-    snprintf(
-        buf,
-        buf_size,
-        "cmd=%s type=%s whence=%s start=%lld len=%lld",
-        fsn_lock_cmd_detail(cmd),
-        fsn_lock_type_label(lock->l_type),
-        fsn_whence_label(lock->l_whence),
-        (long long)lock->l_start,
-        (long long)lock->l_len
-    );
-}
-
-static void fsn_format_flags_detail(int flags, char *buf, size_t buf_size) {
-    const char *access_mode;
-
-    if (buf == NULL || buf_size == 0) {
-        return;
-    }
-
-    switch (flags & O_ACCMODE) {
-        case O_RDONLY:
-            access_mode = "O_RDONLY";
-            break;
-        case O_WRONLY:
-            access_mode = "O_WRONLY";
-            break;
-        case O_RDWR:
-            access_mode = "O_RDWR";
-            break;
-        default:
-            access_mode = "unknown";
-            break;
-    }
-
-    snprintf(buf, buf_size, "flags=0x%x access=%s", flags, access_mode);
-}
-
-static const char *fsn_flock_op_detail(int op) {
-    switch (op & ~LOCK_NB) {
-        case LOCK_SH:
-            return (op & LOCK_NB) != 0 ? "LOCK_SH|LOCK_NB" : "LOCK_SH";
-        case LOCK_EX:
-            return (op & LOCK_NB) != 0 ? "LOCK_EX|LOCK_NB" : "LOCK_EX";
-        case LOCK_UN:
-            return (op & LOCK_NB) != 0 ? "LOCK_UN|LOCK_NB" : "LOCK_UN";
-        default:
-            return (op & LOCK_NB) != 0 ? "unknown|LOCK_NB" : "unknown";
-    }
-}
-
 static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock) {
     struct fsn_bridge_lookup lookup;
+    struct fsn_bridge_request request;
+    struct fsn_bridge_lock raw_lock;
     struct fsn_file_handle *handle;
     struct fsn_fuse_session *session;
-    char detail[128];
     int result;
 
     if (path == NULL || fi == NULL || lock == NULL) {
@@ -663,19 +623,22 @@ static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, s
     }
 
     session = fuse_get_context()->private_data;
-    fsn_format_lock_detail(cmd, lock, detail, sizeof(detail));
+    if (fsn_build_request(&request, path, 1) != 0) {
+        return -EINVAL;
+    }
+    fsn_capture_lock(cmd, lock, &raw_lock);
     if (fsn_lookup_path(session, path, &lookup) != 0) {
         return -EIO;
     }
 
     if (lookup.open_kind != FSN_OPEN_USER_FILE) {
-        fsn_record_audit(session, "lock", path, -ENOENT, detail);
+        fsn_daemon_record_lock(session->daemon_state, &request, &raw_lock, -ENOENT);
         return -ENOENT;
     }
 
     handle = fsn_get_file_handle(fi);
     if (handle == NULL) {
-        fsn_record_audit(session, "lock", path, -EBADF, detail);
+        fsn_daemon_record_lock(session->daemon_state, &request, &raw_lock, -EBADF);
         return -EBADF;
     }
 
@@ -684,12 +647,13 @@ static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, s
         result = -errno;
     }
 
-    fsn_record_audit(session, "lock", path, result, detail);
+    fsn_daemon_record_lock(session->daemon_state, &request, &raw_lock, result);
     return result;
 }
 
 static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
     struct fsn_bridge_lookup lookup;
+    struct fsn_bridge_request request;
     struct fsn_file_handle *handle;
     struct fsn_fuse_session *session;
     int result;
@@ -699,18 +663,21 @@ static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
     }
 
     session = fuse_get_context()->private_data;
+    if (fsn_build_request(&request, path, 1) != 0) {
+        return -EINVAL;
+    }
     if (fsn_lookup_path(session, path, &lookup) != 0) {
         return -EIO;
     }
 
     if (lookup.open_kind != FSN_OPEN_USER_FILE) {
-        fsn_record_audit(session, "flock", path, -ENOENT, fsn_flock_op_detail(op));
+        fsn_daemon_record_flock(session->daemon_state, &request, op, -ENOENT);
         return -ENOENT;
     }
 
     handle = fsn_get_file_handle(fi);
     if (handle == NULL) {
-        fsn_record_audit(session, "flock", path, -EBADF, fsn_flock_op_detail(op));
+        fsn_daemon_record_flock(session->daemon_state, &request, op, -EBADF);
         return -EBADF;
     }
 
@@ -719,7 +686,7 @@ static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
         result = -errno;
     }
 
-    fsn_record_audit(session, "flock", path, result, fsn_flock_op_detail(op));
+    fsn_daemon_record_flock(session->daemon_state, &request, op, result);
     return result;
 }
 
@@ -741,7 +708,7 @@ static int fsn_fuse_setxattr(
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1);
+    result = fsn_build_request(&request, path, 1);
     if (result == 0) {
         result = fsn_daemon_setxattr(session->daemon_state, &request, name, value, size, flags, position);
     }
@@ -764,7 +731,7 @@ static int fsn_fuse_getxattr(
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1);
+    result = fsn_build_request(&request, path, 1);
     if (result == 0) {
         result = fsn_daemon_getxattr(session->daemon_state, &request, name, value, size, position);
     }
@@ -781,7 +748,7 @@ static int fsn_fuse_listxattr(const char *path, char *list, size_t size) {
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1);
+    result = fsn_build_request(&request, path, 1);
     if (result == 0) {
         result = fsn_daemon_listxattr(session->daemon_state, &request, list, size);
     }
@@ -798,7 +765,7 @@ static int fsn_fuse_removexattr(const char *path, const char *name) {
     }
 
     session = fuse_get_context()->private_data;
-    result = fsn_build_request(&request, path, FSN_ACCESS_XATTR, 1);
+    result = fsn_build_request(&request, path, 1);
     if (result == 0) {
         result = fsn_daemon_removexattr(session->daemon_state, &request, name);
     }
@@ -808,38 +775,38 @@ static int fsn_fuse_removexattr(const char *path, const char *name) {
 
 static int fsn_fuse_flush(const char *path, struct fuse_file_info *fi) {
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
-
-    (void)fi;
 
     if (path == NULL) {
         return -EINVAL;
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_WRITE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
+    fsn_capture_file_info(fi, &file_info);
 
-    return fsn_daemon_flush(session->daemon_state, &request);
+    return fsn_daemon_flush(session->daemon_state, &request, &file_info);
 }
 
 static int fsn_fuse_fsync(const char *path, int datasync, struct fuse_file_info *fi) {
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
-
-    (void)fi;
 
     if (path == NULL) {
         return -EINVAL;
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_WRITE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
+    fsn_capture_file_info(fi, &file_info);
 
-    return fsn_daemon_fsync(session->daemon_state, &request, datasync != 0 ? 1 : 0);
+    return fsn_daemon_fsync(session->daemon_state, &request, &file_info, datasync != 0 ? 1 : 0);
 }
 
 static int fsn_fuse_unlink(const char *path) {
@@ -851,7 +818,7 @@ static int fsn_fuse_unlink(const char *path) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_DELETE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
@@ -867,7 +834,7 @@ static int fsn_fuse_rmdir(const char *path) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, path, FSN_ACCESS_DELETE, 1) != 0) {
+    if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
 
@@ -883,7 +850,7 @@ static int fsn_fuse_rename(const char *from, const char *to) {
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_build_request(&request, from, FSN_ACCESS_RENAME, 1) != 0) {
+    if (fsn_build_request(&request, from, 1) != 0) {
         return -EINVAL;
     }
 
@@ -1229,7 +1196,6 @@ static int fsn_is_user_file_path(const char *path) {
 static int fsn_build_request(
     struct fsn_bridge_request *out,
     const char *path,
-    uint32_t access_class,
     int use_fuse_context
 ) {
     struct fuse_context *context;
@@ -1240,7 +1206,6 @@ static int fsn_build_request(
 
     memset(out, 0, sizeof(*out));
     out->path = path;
-    out->access_class = access_class;
     if (!use_fuse_context) {
         return 0;
     }
@@ -1250,6 +1215,7 @@ static int fsn_build_request(
         out->pid = (uint32_t)context->pid;
         out->uid = (uint32_t)context->uid;
         out->gid = (uint32_t)context->gid;
+        out->umask = (uint32_t)context->umask;
     }
 
     return 0;
@@ -1269,14 +1235,28 @@ static int fsn_lookup_path(
 
 static void fsn_fill_stat_from_lookup(const struct fsn_bridge_lookup *lookup, struct stat *stbuf) {
     memset(stbuf, 0, sizeof(*stbuf));
-    stbuf->st_mode = (lookup->kind == FSN_NODE_DIRECTORY ? S_IFDIR : S_IFREG) | lookup->mode;
-    stbuf->st_nlink = lookup->kind == FSN_NODE_DIRECTORY ? 2 : 1;
+    stbuf->st_mode = (mode_t)lookup->mode;
+    stbuf->st_nlink = (nlink_t)lookup->nlink;
     stbuf->st_uid = lookup->uid;
     stbuf->st_gid = lookup->gid;
     stbuf->st_size = (off_t)lookup->size;
-    stbuf->st_atime = time(NULL);
-    stbuf->st_mtime = stbuf->st_atime;
-    stbuf->st_ctime = stbuf->st_atime;
+    stbuf->st_blocks = (blkcnt_t)lookup->block_count;
+    stbuf->st_blksize = (blksize_t)lookup->block_size;
+#ifdef __APPLE__
+    stbuf->st_atimespec.tv_sec = (time_t)lookup->atime_sec;
+    stbuf->st_atimespec.tv_nsec = (long)lookup->atime_nsec;
+    stbuf->st_mtimespec.tv_sec = (time_t)lookup->mtime_sec;
+    stbuf->st_mtimespec.tv_nsec = (long)lookup->mtime_nsec;
+    stbuf->st_ctimespec.tv_sec = (time_t)lookup->ctime_sec;
+    stbuf->st_ctimespec.tv_nsec = (long)lookup->ctime_nsec;
+#else
+    stbuf->st_atim.tv_sec = (time_t)lookup->atime_sec;
+    stbuf->st_atim.tv_nsec = (long)lookup->atime_nsec;
+    stbuf->st_mtim.tv_sec = (time_t)lookup->mtime_sec;
+    stbuf->st_mtim.tv_nsec = (long)lookup->mtime_nsec;
+    stbuf->st_ctim.tv_sec = (time_t)lookup->ctime_sec;
+    stbuf->st_ctim.tv_nsec = (long)lookup->ctime_nsec;
+#endif
     stbuf->st_ino = (ino_t)lookup->inode;
 }
 
@@ -1315,18 +1295,45 @@ static int fsn_build_backing_store_path(
     return 0;
 }
 
-static void fsn_record_audit(
-    const struct fsn_fuse_session *session,
-    const char *action,
-    const char *path,
-    int32_t result,
-    const char *detail
-) {
-    if (session == NULL || session->daemon_state == NULL || action == NULL || path == NULL) {
+static void fsn_capture_file_info(const struct fuse_file_info *fi, struct fsn_bridge_file_info *out) {
+    memset(out, 0, sizeof(*out));
+    if (fi == NULL) {
         return;
     }
 
-    fsn_daemon_record_audit(session->daemon_state, action, path, result, detail);
+    out->flags = fi->flags;
+    out->fh_old = (uint64_t)fi->fh_old;
+    out->writepage = fi->writepage;
+    out->direct_io = (uint8_t)fi->direct_io;
+    out->keep_cache = (uint8_t)fi->keep_cache;
+    out->flush = (uint8_t)fi->flush;
+    out->nonseekable = (uint8_t)fi->nonseekable;
+    out->flock_release = (uint8_t)fi->flock_release;
+#ifdef __APPLE__
+    out->padding_bits = (uint32_t)fi->padding;
+    out->purge_attr = (uint8_t)fi->purge_attr;
+    out->purge_ubc = (uint8_t)fi->purge_ubc;
+#else
+    out->padding_bits = (uint32_t)fi->padding;
+    out->purge_attr = 0;
+    out->purge_ubc = 0;
+#endif
+    out->fh = fi->fh;
+    out->lock_owner = fi->lock_owner;
+}
+
+static void fsn_capture_lock(int cmd, const struct flock *lock, struct fsn_bridge_lock *out) {
+    memset(out, 0, sizeof(*out));
+    out->cmd = cmd;
+    if (lock == NULL) {
+        return;
+    }
+
+    out->lock_type = lock->l_type;
+    out->whence = lock->l_whence;
+    out->pid = lock->l_pid;
+    out->start = (int64_t)lock->l_start;
+    out->len = (int64_t)lock->l_len;
 }
 
 static struct fsn_file_handle *fsn_create_file_handle(void) {
@@ -1372,8 +1379,6 @@ static int fsn_open_backing_store_fd(
     int requested_flags
 ) {
     char host_path[PATH_MAX];
-    int access_mode;
-    int open_flags;
     int path_result;
     int descriptor;
 
@@ -1386,13 +1391,7 @@ static int fsn_open_backing_store_fd(
         return path_result;
     }
 
-    access_mode = requested_flags & O_ACCMODE;
-    open_flags = requested_flags & ~(O_CREAT | O_EXCL | O_TRUNC);
-    if (access_mode != O_RDONLY && access_mode != O_WRONLY && access_mode != O_RDWR) {
-        open_flags &= ~O_ACCMODE;
-        open_flags |= O_RDONLY;
-    }
-    descriptor = open(host_path, open_flags);
+    descriptor = open(host_path, requested_flags);
     if (descriptor < 0) {
         return -errno;
     }

@@ -36,21 +36,63 @@ pub const NodeInfo = filesystem.NodeInfo;
 pub const AuditEvent = filesystem.AuditEvent;
 
 pub const RawLookup = extern struct {
-    kind: u32,
     mode: u32,
+    nlink: u32,
     uid: u32,
     gid: u32,
+    block_size: u32,
     size: u64,
+    block_count: u64,
     inode: u64,
+    atime_sec: i64,
+    atime_nsec: u32,
+    mtime_sec: i64,
+    mtime_nsec: u32,
+    ctime_sec: i64,
+    ctime_nsec: u32,
     open_kind: u8,
     persistent: u8,
-    reserved: [6]u8,
+    reserved: [2]u8,
 };
 
-const DecodedRequest = struct {
+pub const RawRequest = extern struct {
+    path: ?[*:0]const u8,
+    pid: u32,
+    uid: u32,
+    gid: u32,
+    umask: u32,
+    reserved: [4]u8,
+};
+
+pub const RawFileInfo = extern struct {
+    flags: i32,
+    fh_old: u64,
+    writepage: i32,
+    direct_io: u8,
+    keep_cache: u8,
+    flush: u8,
+    nonseekable: u8,
+    flock_release: u8,
+    padding_bits: u32,
+    purge_attr: u8,
+    purge_ubc: u8,
+    reserved: [2]u8,
+    fh: u64,
+    lock_owner: u64,
+};
+
+pub const RawLock = extern struct {
+    cmd: i32,
+    lock_type: i16,
+    whence: i16,
+    pid: i32,
+    start: i64,
+    len: i64,
+};
+
+const DecodedContext = struct {
     state: *State,
     path: []const u8,
-    access_class: policy.AccessClass,
     context: filesystem.AccessContext,
 };
 
@@ -293,35 +335,77 @@ fn requirePath(raw_path: ?[*:0]const u8) ?[]const u8 {
     return std.mem.span(path);
 }
 
-fn requestFromRaw(raw_request: *const policy.RawRequest) ?struct {
+fn contextFromRaw(raw_request: *const RawRequest) ?struct {
     path: []const u8,
-    access_class: policy.AccessClass,
     context: filesystem.AccessContext,
 } {
-    const request = policy.requestFromRaw(raw_request) catch return null;
+    const path = raw_request.path orelse return null;
     return .{
-        .path = request.path,
-        .access_class = request.access_class,
+        .path = std.mem.span(path),
         .context = .{
-            .pid = request.pid,
-            .uid = request.uid,
-            .gid = request.gid,
+            .pid = raw_request.pid,
+            .uid = raw_request.uid,
+            .gid = raw_request.gid,
+            .umask = raw_request.umask,
         },
     };
 }
 
-fn requireDecodedRequest(
+fn requireDecodedContext(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
-) ?DecodedRequest {
+    raw_request: *const RawRequest,
+) ?DecodedContext {
     const state = requireState(daemon_state) orelse return null;
-    const request = requestFromRaw(raw_request) orelse return null;
+    const request = contextFromRaw(raw_request) orelse return null;
     return .{
         .state = state,
         .path = request.path,
-        .access_class = request.access_class,
         .context = request.context,
     };
+}
+
+fn modeForNode(node: NodeInfo) u32 {
+    return switch (node.kind) {
+        .missing => 0,
+        .directory => std.posix.S.IFDIR | node.mode,
+        .regular_file => std.posix.S.IFREG | node.mode,
+    };
+}
+
+fn formatFileInfoDetail(allocator: std.mem.Allocator, file_info: ?*const RawFileInfo) !?[]u8 {
+    const info = file_info orelse return null;
+    const detail = try std.fmt.allocPrint(
+        allocator,
+        "flags=0x{x} fh_old={d} writepage={d} direct_io={d} keep_cache={d} flush={d} nonseekable={d} flock_release={d} padding_bits={d} purge_attr={d} purge_ubc={d} fh={d} lock_owner={d}",
+        .{
+            @as(u32, @bitCast(info.flags)),
+            info.fh_old,
+            info.writepage,
+            info.direct_io,
+            info.keep_cache,
+            info.flush,
+            info.nonseekable,
+            info.flock_release,
+            info.padding_bits,
+            info.purge_attr,
+            info.purge_ubc,
+            info.fh,
+            info.lock_owner,
+        },
+    );
+    return detail;
+}
+
+fn formatLockDetail(allocator: std.mem.Allocator, lock: *const RawLock) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "cmd={d} type={d} whence={d} pid={d} start={d} len={d}",
+        .{ lock.cmd, lock.lock_type, lock.whence, lock.pid, lock.start, lock.len },
+    );
+}
+
+fn formatFlockDetail(allocator: std.mem.Allocator, operation: i32) ![]u8 {
+    return std.fmt.allocPrint(allocator, "op={d}", .{operation});
 }
 
 fn errnoCode(err: std.posix.E) c_int {
@@ -338,15 +422,23 @@ pub export fn fsn_daemon_lookup_path(
     const lookup = state.filesystem.lookupPath(path);
 
     out.* = .{
-        .kind = @intFromEnum(lookup.node.kind),
-        .mode = lookup.node.mode,
+        .mode = modeForNode(lookup.node),
+        .nlink = lookup.node.nlink,
         .uid = lookup.node.uid,
         .gid = lookup.node.gid,
+        .block_size = lookup.node.block_size,
         .size = lookup.node.size,
+        .block_count = lookup.node.block_count,
         .inode = lookup.node.inode,
+        .atime_sec = lookup.node.atime.sec,
+        .atime_nsec = lookup.node.atime.nsec,
+        .mtime_sec = lookup.node.mtime.sec,
+        .mtime_nsec = lookup.node.mtime.nsec,
+        .ctime_sec = lookup.node.ctime.sec,
+        .ctime_nsec = lookup.node.ctime.nsec,
         .open_kind = @intFromEnum(lookup.open_kind),
         .persistent = @intFromBool(lookup.persistent),
-        .reserved = std.mem.zeroes([6]u8),
+        .reserved = std.mem.zeroes([2]u8),
     };
     return 0;
 }
@@ -361,125 +453,127 @@ pub export fn fsn_daemon_root_entry_name_at(daemon_state: ?*anyopaque, index: u3
     return state.filesystem.rootEntryNameAt(index);
 }
 
-pub export fn fsn_daemon_authorize_access(
-    daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
-) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(request.state.filesystem.authorizeAccess(request.path, request.access_class, request.context));
-}
-
 pub export fn fsn_daemon_read(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     offset: u64,
     size: usize,
     buf: [*]u8,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    _ = raw_file_info;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.readInto(request.path, offset, buf[0..size], request.context));
 }
 
 pub export fn fsn_daemon_create(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     mode: u32,
+    raw_file_info: ?*const RawFileInfo,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    _ = raw_file_info;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.createFile(request.path, mode, request.context));
 }
 
 pub export fn fsn_daemon_mkdir(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     mode: u32,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.createDirectory(request.path, mode, request.context));
 }
 
 pub export fn fsn_daemon_write(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     offset: u64,
     size: usize,
     buf: [*]const u8,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    _ = raw_file_info;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.writeFile(request.path, offset, buf[0..size], request.context));
 }
 
 pub export fn fsn_daemon_truncate(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     size: u64,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.truncateFile(request.path, size, request.context));
 }
 
 pub export fn fsn_daemon_chmod(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     mode: u32,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.chmodFile(request.path, mode, request.context));
 }
 
 pub export fn fsn_daemon_chown(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     uid: u32,
     gid: u32,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.chownFile(request.path, uid, gid, request.context));
 }
 
 pub export fn fsn_daemon_flush(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    _ = raw_file_info;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.flushPath(request.path));
 }
 
 pub export fn fsn_daemon_fsync(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     datasync: u8,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    _ = raw_file_info;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.fsyncPath(request.path, datasync != 0));
 }
 
 pub export fn fsn_daemon_unlink(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.removeFile(request.path, request.context));
 }
 
 pub export fn fsn_daemon_rmdir(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.removeDirectory(request.path, request.context));
 }
 
 pub export fn fsn_daemon_setxattr(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     raw_name: ?[*:0]const u8,
     raw_value: ?[*]const u8,
     size: usize,
     flags: c_int,
     position: u32,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
     var empty_value_storage: [1]u8 = undefined;
     const value: []const u8 = if (size == 0)
@@ -493,13 +587,13 @@ pub export fn fsn_daemon_setxattr(
 
 pub export fn fsn_daemon_getxattr(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     raw_name: ?[*:0]const u8,
     raw_value: ?[*]u8,
     size: usize,
     position: u32,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
     var empty_value_storage: [1]u8 = undefined;
     const value: []u8 = if (size == 0)
@@ -513,11 +607,11 @@ pub export fn fsn_daemon_getxattr(
 
 pub export fn fsn_daemon_listxattr(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     raw_list: ?[*]u8,
     size: usize,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     var empty_list_storage: [1]u8 = undefined;
     const list: []u8 = if (size == 0)
         empty_list_storage[0..0]
@@ -530,40 +624,72 @@ pub export fn fsn_daemon_listxattr(
 
 pub export fn fsn_daemon_removexattr(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     raw_name: ?[*:0]const u8,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const name = requirePath(raw_name) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.removeXattr(request.path, name));
 }
 
 pub export fn fsn_daemon_rename(
     daemon_state: ?*anyopaque,
-    raw_request: *const policy.RawRequest,
+    raw_request: *const RawRequest,
     raw_to_path: ?[*:0]const u8,
 ) c_int {
-    const request = requireDecodedRequest(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const to_path = requirePath(raw_to_path) orelse return errnoCode(.INVAL);
     return @intCast(request.state.filesystem.renameFile(request.path, to_path, request.context));
 }
 
-pub export fn fsn_daemon_record_audit(
+pub export fn fsn_daemon_record_open(
     daemon_state: ?*anyopaque,
-    raw_action: ?[*:0]const u8,
-    raw_path: ?[*:0]const u8,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     result: i32,
-    raw_detail: ?[*:0]const u8,
 ) c_int {
-    const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
-    const action = requirePath(raw_action) orelse return errnoCode(.INVAL);
-    const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
-    const detail = if (raw_detail) |value| requirePath(value) orelse return errnoCode(.INVAL) else null;
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const detail = formatFileInfoDetail(request.state.filesystem.allocator, raw_file_info) catch return errnoCode(.NOMEM);
+    defer if (detail) |value| request.state.filesystem.allocator.free(value);
+    request.state.filesystem.recordPlatformAudit("open", request.path, result, detail);
+    return 0;
+}
 
-    if (std.mem.eql(u8, action, "getxattr")) {
-        return 0;
-    }
+pub export fn fsn_daemon_record_release(
+    daemon_state: ?*anyopaque,
+    raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
+    result: i32,
+) c_int {
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const detail = formatFileInfoDetail(request.state.filesystem.allocator, raw_file_info) catch return errnoCode(.NOMEM);
+    defer if (detail) |value| request.state.filesystem.allocator.free(value);
+    request.state.filesystem.recordPlatformAudit("release", request.path, result, detail);
+    return 0;
+}
 
-    state.filesystem.recordPlatformAudit(action, path, result, detail);
+pub export fn fsn_daemon_record_lock(
+    daemon_state: ?*anyopaque,
+    raw_request: *const RawRequest,
+    raw_lock: *const RawLock,
+    result: i32,
+) c_int {
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const detail = formatLockDetail(request.state.filesystem.allocator, raw_lock) catch return errnoCode(.NOMEM);
+    defer request.state.filesystem.allocator.free(detail);
+    request.state.filesystem.recordPlatformAudit("lock", request.path, result, detail);
+    return 0;
+}
+
+pub export fn fsn_daemon_record_flock(
+    daemon_state: ?*anyopaque,
+    raw_request: *const RawRequest,
+    operation: i32,
+    result: i32,
+) c_int {
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    const detail = formatFlockDetail(request.state.filesystem.allocator, operation) catch return errnoCode(.NOMEM);
+    defer request.state.filesystem.allocator.free(detail);
+    request.state.filesystem.recordPlatformAudit("flock", request.path, result, detail);
     return 0;
 }
