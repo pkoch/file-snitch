@@ -14,7 +14,6 @@ Status:
 - `[ ]` Record real file IO behavior for the selected target apps/tools
 - `[x]` Narrow the v1 mediated operation set based on observed write patterns
   - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
-- `[ ]` Define the smallest end-to-end Linux spike demo
 - `[ ]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
 
 ## Cross-cutting guardrails
@@ -50,7 +49,8 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
   - verified for simple VFS-backed shell request-time flows and a real `gh` config-read path; still need broader validation and backend caveat tracking
   - important caveat: current findings are VFS-backed observations, not a blanket claim about the FSKit backend
-- `[ ]` Document prompt latency constraints and timeout assumptions
+- `[x]` Document prompt latency constraints and timeout assumptions
+  - current assumptions captured in [docs/research/8 - prompt-latency-and-timeouts.md](./docs/research/8%20-%20prompt-latency-and-timeouts.md)
 - `[x]` Produce a recommendation for the exact Linux spike scope
   - current architecture recommendation captured in [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
   - current scope: exact-path file enrollment, sparse parent-directory virtualization, full unprotected-subtree passthrough, temp files ignored as protected objects
