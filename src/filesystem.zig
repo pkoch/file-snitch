@@ -320,7 +320,7 @@ pub const Model = struct {
             const posix_stat = try std.posix.fstat(file.handle);
             const imported = try self.appendFile(
                 virtual_path,
-                stat.mode & 0o777,
+                @intCast(stat.mode & 0o777),
                 @intCast(posix_stat.uid),
                 @intCast(posix_stat.gid),
             );
