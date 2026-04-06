@@ -10,13 +10,14 @@ Status:
 
 ## Current priorities
 
-- `[~]` Finish the remaining phase-0 research before expanding the phase-1 surface further
+- `[x]` Finish the remaining phase-0 research before expanding the phase-1 surface further
 - `[x]` Record real file IO behavior for the selected target apps/tools
   - captured in [docs/research/2 - target-app-matrix.md](./docs/research/2%20-%20target-app-matrix.md)
   - nine targets produced syscall-backed evidence; OpenRouter turned into an explicit “not a good file-enrollment target” finding instead of a replacement target
 - `[x]` Narrow the v1 mediated operation set based on observed write patterns
   - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
-- `[ ]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
+- `[x]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
+  - recommendation captured in [docs/research/10 - mount-planner-strategy.md](./docs/research/10%20-%20mount-planner-strategy.md)
 
 ## Cross-cutting guardrails
 
@@ -45,19 +46,21 @@ Deliverable: a short report covering the selected target apps/tools, their secre
   - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
 - `[x]` Compare Linux spike implementation options and record a recommendation
 - `[x]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
-- `[~]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
+- `[x]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
-  - verified for simple shell request-time flows and a real `gh` config-read path; still need broader metadata-heavy validation
+  - verified for simple shell request-time flows and a real `gh` config-read path; accepted as sufficient for Phase 0
   - important caveat: `release` is not actor-bearing on Linux and must not drive policy or cache decisions
-- `[~]` Verify caller attribution assumptions on macOS with macFUSE
+- `[x]` Verify caller attribution assumptions on macOS with macFUSE
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
-  - verified for simple VFS-backed shell request-time flows and a real `gh` config-read path; still need broader validation and backend caveat tracking
+  - verified for simple VFS-backed shell request-time flows and a real `gh` config-read path; accepted as sufficient for Phase 0
   - important caveat: current findings are VFS-backed observations, not a blanket claim about the FSKit backend
 - `[x]` Document prompt latency constraints and timeout assumptions
   - current assumptions captured in [docs/research/8 - prompt-latency-and-timeouts.md](./docs/research/8%20-%20prompt-latency-and-timeouts.md)
 - `[x]` Produce a recommendation for the exact Linux spike scope
   - current architecture recommendation captured in [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
   - current scope: exact-path file enrollment, sparse parent-directory virtualization, full unprotected-subtree passthrough, temp files ignored as protected objects
+- `[x]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
+  - recommendation captured in [docs/research/10 - mount-planner-strategy.md](./docs/research/10%20-%20mount-planner-strategy.md)
 - `[x]` Produce a recommendation for the exact v1 durable decision key after attribution validation
   - floor shape: executable path + uid + exact enrolled path + approval class
   - recommendation captured in [docs/research/6 - durable-decision-key.md](./docs/research/6%20-%20durable-decision-key.md)
