@@ -7,6 +7,9 @@ mount_dir=""
 store_dir=""
 log_file=""
 prompt_fifo=""
+status_fifo=""
+status_file=""
+status_reader_pid=""
 daemon_pid=""
 
 cleanup_case() {
@@ -26,11 +29,20 @@ cleanup_case() {
   [[ -n "$store_dir" ]] && rm -rf "$store_dir"
   [[ -n "$log_file" ]] && rm -f "$log_file"
   [[ -n "$prompt_fifo" ]] && rm -f "$prompt_fifo"
+  if [[ -n "$status_reader_pid" ]] && kill -0 "$status_reader_pid" 2>/dev/null; then
+    kill "$status_reader_pid" 2>/dev/null || true
+    wait "$status_reader_pid" || true
+  fi
+  [[ -n "$status_fifo" ]] && rm -f "$status_fifo"
+  [[ -n "$status_file" ]] && rm -f "$status_file"
 
   mount_dir=""
   store_dir=""
   log_file=""
   prompt_fifo=""
+  status_fifo=""
+  status_file=""
+  status_reader_pid=""
   daemon_pid=""
   return "$status"
 }
@@ -81,7 +93,7 @@ assert_prompt_audit() {
   local regex="$1"
   local message="$2"
 
-  if ! grep -E "$regex" "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
+  if ! grep -E "$regex" "$log_file" >/dev/null 2>&1; then
     fail "$message"
   fi
 }
@@ -115,10 +127,8 @@ queue_prompt_answers() {
 }
 
 wait_for_mount_ready() {
-  local status_path="$mount_dir/file-snitch-status"
-
   for _ in $(seq 1 50); do
-    if [[ -f "$status_path" ]]; then
+    if [[ -s "$status_file" ]] && mount | grep -F "on $mount_dir " >/dev/null 2>&1; then
       return
     fi
 
@@ -137,12 +147,17 @@ start_prompt_mount() {
   store_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-store.XXXXXX")"
   log_file="$(mktemp "$tmp_root/file-snitch.prompt-log.XXXXXX")"
   prompt_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-fifo.XXXXXX")"
+  status_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-status-fifo.XXXXXX")"
+  status_file="$(mktemp "$tmp_root/file-snitch.prompt-status.XXXXXX")"
 
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
+  mkfifo "$status_fifo"
+  head -n 1 "$status_fifo" >"$status_file" &
+  status_reader_pid="$!"
 
   FILE_SNITCH_PROMPT_TIMEOUT_MS=200 \
-    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt <&3 >"$log_file" 2>&1 &
+    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt --status-fifo "$status_fifo" <&3 >"$log_file" 2>&1 &
   daemon_pid="$!"
   wait_for_mount_ready
 }
@@ -155,14 +170,19 @@ start_prompt_mount_with_seed_file() {
   store_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-store.XXXXXX")"
   log_file="$(mktemp "$tmp_root/file-snitch.prompt-log.XXXXXX")"
   prompt_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-fifo.XXXXXX")"
+  status_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-status-fifo.XXXXXX")"
+  status_file="$(mktemp "$tmp_root/file-snitch.prompt-status.XXXXXX")"
 
   printf '%s' "$seed_contents" >"$store_dir/$seed_name"
 
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
+  mkfifo "$status_fifo"
+  head -n 1 "$status_fifo" >"$status_file" &
+  status_reader_pid="$!"
 
   FILE_SNITCH_PROMPT_TIMEOUT_MS=200 \
-    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt <&3 >"$log_file" 2>&1 &
+    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt --status-fifo "$status_fifo" <&3 >"$log_file" 2>&1 &
   daemon_pid="$!"
   wait_for_mount_ready
 }

@@ -7,8 +7,6 @@ const prompt = app_src.prompt;
 
 const seed_name = "seed-from-store.txt";
 const seed_path = "/" ++ seed_name;
-const status_path = "/file-snitch-status";
-const audit_path = "/file-snitch-audit";
 const created_note_path = "/demo-note.txt";
 const note_path = "/renamed-note.txt";
 const blocked_note_path = "/blocked-note.txt";
@@ -91,23 +89,17 @@ test "session exercise is covered by integration assertions" {
     try std.testing.expectEqualStrings(fixture.mount_path, plan.args[2]);
 
     const root = try session.inspectPath("/");
-    const audit = try session.inspectPath(audit_path);
     const seed = try session.inspectPath(seed_path);
-    const status = try session.inspectPath(status_path);
     const note = try session.inspectPath(note_path);
     try std.testing.expectEqual(filesystem.NodeKind.directory, root.kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, audit.kind);
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, seed.kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, status.kind);
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, note.kind);
 
     const entries = try session.rootEntries(allocator);
     defer allocator.free(entries);
-    try std.testing.expectEqual(@as(usize, 4), entries.len);
-    try std.testing.expectEqualStrings("file-snitch-status", entries[0]);
-    try std.testing.expectEqualStrings("file-snitch-audit", entries[1]);
-    try std.testing.expectEqualStrings(seed_name, entries[2]);
-    try std.testing.expectEqualStrings(note_path[1..], entries[3]);
+    try std.testing.expectEqual(@as(usize, 2), entries.len);
+    try std.testing.expectEqualStrings(seed_name, entries[0]);
+    try std.testing.expectEqualStrings(note_path[1..], entries[1]);
 
     const seed_content = try session.readPath(allocator, seed_path);
     defer allocator.free(seed_content);
@@ -116,15 +108,6 @@ test "session exercise is covered by integration assertions" {
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
     try std.testing.expectEqualStrings("hello from file-snitch\n", note_content);
-
-    const status_content = try session.readPath(allocator, status_path);
-    defer allocator.free(status_content);
-    try std.testing.expect(std.mem.indexOf(u8, status_content, "files=2") != null);
-
-    const audit_content = try session.readPath(allocator, audit_path);
-    defer allocator.free(audit_content);
-    try std.testing.expect(std.mem.indexOf(u8, audit_content, "\"action\":\"rename\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, audit_content, "\"path\":\"/demo-note.txt -> /renamed-note.txt\"") != null);
 
     const audit_events = try session.auditEvents(allocator);
     defer allocator.free(audit_events);

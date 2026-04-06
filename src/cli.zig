@@ -22,6 +22,11 @@ pub fn run(args: []const []const u8) !void {
             var cli_prompt_context = prompt.CliContext{
                 .timeout_ms = command.prompt_timeout_ms,
             };
+            const status_output_file = if (command.status_fifo_path) |path|
+                try openStatusFifo(path)
+            else
+                null;
+            defer if (status_output_file) |file| file.close();
 
             daemon.mount(std.heap.page_allocator, .{
                 .mount_path = command.mount_path,
@@ -31,6 +36,8 @@ pub fn run(args: []const []const u8) !void {
                     prompt.cliBroker(&cli_prompt_context)
                 else
                     null,
+                .status_output_file = status_output_file,
+                .audit_output_file = std.fs.File.stdout(),
             }) catch |err| switch (err) {
                 error.MountPathNotEmpty => {
                     std.debug.print(
@@ -55,10 +62,14 @@ const MountCommand = struct {
     backing_store_path: []const u8,
     default_mutation_outcome: policy.Outcome,
     prompt_timeout_ms: u32,
+    status_fifo_path: ?[]const u8 = null,
 
     fn deinit(self: MountCommand, allocator: std.mem.Allocator) void {
         allocator.free(self.mount_path);
         allocator.free(self.backing_store_path);
+        if (self.status_fifo_path) |path| {
+            allocator.free(path);
+        }
     }
 };
 
@@ -81,7 +92,7 @@ fn parseCommand(args: []const []const u8) !Command {
 }
 
 fn parseMountCommand(args: []const []const u8) !MountCommand {
-    if (args.len < 2 or args.len > 3) {
+    if (args.len < 2) {
         printUsage();
         return error.InvalidUsage;
     }
@@ -92,15 +103,38 @@ fn parseMountCommand(args: []const []const u8) !MountCommand {
     const backing_store_path = try resolveDirectoryArgument(allocator, "backing store path", args[1]);
     errdefer allocator.free(backing_store_path);
 
-    return .{
+    var command: MountCommand = .{
         .mount_path = mount_path,
         .backing_store_path = backing_store_path,
-        .default_mutation_outcome = if (args.len == 3)
-            try parseMountPolicy(args[2])
-        else
-            policy.Outcome.deny,
+        .default_mutation_outcome = policy.Outcome.deny,
         .prompt_timeout_ms = try loadPromptTimeoutMs(),
     };
+    errdefer command.deinit(allocator);
+
+    var index: usize = 2;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+
+        if (std.mem.eql(u8, arg, "mutable") or std.mem.eql(u8, arg, "readonly") or std.mem.eql(u8, arg, "prompt")) {
+            command.default_mutation_outcome = try parseMountPolicy(arg);
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--status-fifo")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            command.status_fifo_path = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    return command;
 }
 
 fn resolveDirectoryArgument(
@@ -149,14 +183,33 @@ fn loadPromptTimeoutMs() !u32 {
     return std.fmt.parseInt(u32, raw_value, 10);
 }
 
+fn openStatusFifo(path: []const u8) !std.fs.File {
+    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("error: status fifo does not exist: {s}\n", .{path});
+            return error.InvalidUsage;
+        },
+        else => return err,
+    };
+
+    if (stat.kind != .named_pipe) {
+        std.debug.print("error: status fifo is not a named pipe: {s}\n", .{path});
+        return error.InvalidUsage;
+    }
+
+    return std.fs.cwd().openFile(path, .{ .mode = .write_only });
+}
+
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch mount <mount-path> <backing-store-path> [mutable|readonly|prompt]
+        \\  file-snitch mount <mount-path> <backing-store-path> [mutable|readonly|prompt] [--status-fifo <path>]
         \\
         \\notes:
         \\  - `mount` requires an existing empty mount directory
         \\  - `mount` defaults to `readonly` unless another policy is specified
+        \\  - `mount` streams audit JSON to stdout
+        \\  - `--status-fifo` writes status JSON snapshots to an existing named pipe
         \\
     , .{});
 }

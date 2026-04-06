@@ -11,6 +11,8 @@ pub const Config = struct {
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
     prompt_broker: ?prompt.Broker = null,
+    status_output_file: ?std.fs.File = null,
+    audit_output_file: ?std.fs.File = null,
 };
 
 pub const Description = struct {
@@ -122,6 +124,8 @@ pub const Session = struct {
                 .default_mutation_outcome = config.default_mutation_outcome,
                 .policy_rules = config.policy_rules,
                 .prompt_broker = config.prompt_broker,
+                .status_output_file = config.status_output_file,
+                .audit_output_file = config.audit_output_file,
             }),
         };
         errdefer state.filesystem.deinit();
@@ -287,6 +291,10 @@ pub const Session = struct {
         self.state.run_attempts += 1;
         try fuse.runSession(self.handle);
     }
+
+    pub fn publishStatus(self: *Session) void {
+        self.state.filesystem.publishStatus();
+    }
 };
 
 pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
@@ -306,6 +314,7 @@ pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
             @tagName(description.default_mutation_outcome),
         },
     );
+    session.publishStatus();
 
     try session.run();
 }

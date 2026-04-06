@@ -6,6 +6,9 @@ tmp_root="/private/tmp"
 mount_dir="$(mktemp -d "$tmp_root/file-snitch.mount.XXXXXX")"
 store_dir="$(mktemp -d "$tmp_root/file-snitch.store.XXXXXX")"
 log_file="$(mktemp "$tmp_root/file-snitch.mount-log.XXXXXX")"
+status_fifo="$(mktemp -u "$tmp_root/file-snitch.status-fifo.XXXXXX")"
+status_file="$(mktemp "$tmp_root/file-snitch.status.XXXXXX")"
+status_reader_pid=""
 daemon_pid=""
 
 cleanup() {
@@ -20,7 +23,13 @@ cleanup() {
     umount "$mount_dir" || true
   fi
 
-  rm -rf "$mount_dir" "$store_dir" "$log_file"
+  if [[ -n "$status_reader_pid" ]] && kill -0 "$status_reader_pid" 2>/dev/null; then
+    kill "$status_reader_pid" 2>/dev/null || true
+    wait "$status_reader_pid" || true
+  fi
+
+  rm -rf "$mount_dir" "$store_dir" "$log_file" "$status_file"
+  [[ -n "$status_fifo" ]] && rm -f "$status_fifo"
   return "$status"
 }
 
@@ -62,10 +71,8 @@ assert_store_file_contents() {
 }
 
 wait_for_mount_ready() {
-  local status_path="$mount_dir/file-snitch-status"
-
   for _ in $(seq 1 50); do
-    if [[ -f "$status_path" ]]; then
+    if [[ -s "$status_file" ]] && mount | grep -F "on $mount_dir " >/dev/null 2>&1; then
       return
     fi
 
@@ -87,15 +94,18 @@ wait_for_mount_ready() {
 
 start_mount() {
   printf 'seeded from backing store\n' >"$store_dir/seed-from-store.txt"
+  mkfifo "$status_fifo"
+  head -n 1 "$status_fifo" >"$status_file" &
+  status_reader_pid="$!"
 
-  "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" mutable >"$log_file" 2>&1 &
+  "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" mutable --status-fifo "$status_fifo" >"$log_file" 2>&1 &
   daemon_pid="$!"
   wait_for_mount_ready
 }
 
 show_mount_state() {
   ls -1 "$mount_dir"
-  cat "$mount_dir/file-snitch-status"
+  cat "$status_file"
   cat "$mount_dir/seed-from-store.txt"
 }
 
@@ -387,7 +397,7 @@ verify_audit_log() {
   )
 
   for pattern in "${audit_patterns[@]}"; do
-    grep -F "$pattern" "$mount_dir/file-snitch-audit"
+    grep -F "$pattern" "$log_file"
   done
 }
 

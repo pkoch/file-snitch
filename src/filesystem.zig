@@ -7,15 +7,8 @@ const c = @cImport({
     @cInclude("sys/xattr.h");
 });
 
-const status_name: [:0]const u8 = "file-snitch-status";
-const status_path: [:0]const u8 = "/file-snitch-status";
-const audit_name: [:0]const u8 = "file-snitch-audit";
-const audit_path: [:0]const u8 = "/file-snitch-audit";
-
 const root_inode: u64 = 1;
-const status_inode: u64 = 2;
-const audit_inode: u64 = 3;
-const first_dynamic_inode: u64 = 16;
+const first_dynamic_inode: u64 = 4;
 
 pub const NodeKind = enum(u32) {
     missing = 0,
@@ -148,6 +141,8 @@ pub const Config = struct {
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
     prompt_broker: ?prompt.Broker = null,
+    status_output_file: ?std.fs.File = null,
+    audit_output_file: ?std.fs.File = null,
 };
 
 pub const Model = struct {
@@ -156,14 +151,15 @@ pub const Model = struct {
     backing_store_path: []u8,
     policy_engine: policy.Engine,
     prompt_broker: ?prompt.Broker,
+    status_output_file: ?std.fs.File,
+    audit_output_file: ?std.fs.File,
     files: std.ArrayListUnmanaged(StoredFile) = .{},
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .{},
     handle_grants: std.AutoHashMapUnmanaged(u64, HandleGrant) = .{},
     next_inode: u64 = first_dynamic_inode,
     runtime_stats: RuntimeStats = .{},
     root_timestamp: Timestamp,
-    status_timestamp: Timestamp,
-    audit_timestamp: Timestamp,
+    output_mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Model {
         const now = currentTimestamp();
@@ -177,9 +173,9 @@ pub const Model = struct {
                 config.policy_rules,
             ),
             .prompt_broker = config.prompt_broker,
+            .status_output_file = config.status_output_file,
+            .audit_output_file = config.audit_output_file,
             .root_timestamp = now,
-            .status_timestamp = now,
-            .audit_timestamp = now,
         };
         errdefer model.deinit();
 
@@ -198,7 +194,7 @@ pub const Model = struct {
 
         var iterator = directory.iterate();
         while (try iterator.next()) |entry| {
-            if (isReservedName(entry.name) or isTransientSidecarName(entry.name)) {
+            if (isTransientSidecarName(entry.name)) {
                 continue;
             }
 
@@ -234,7 +230,6 @@ pub const Model = struct {
                 }
             }
         }
-        self.status_timestamp = currentTimestamp();
     }
 
     pub fn deinit(self: *Model) void {
@@ -261,7 +256,10 @@ pub const Model = struct {
 
     pub fn setRuntimeStats(self: *Model, stats: RuntimeStats) void {
         self.runtime_stats = stats;
-        self.status_timestamp = currentTimestamp();
+    }
+
+    pub fn publishStatus(self: *Model) void {
+        self.emitStatusSnapshot();
     }
 
     pub fn defaultMutationOutcome(self: *const Model) policy.Outcome {
@@ -286,48 +284,6 @@ pub const Model = struct {
                     .ctime = self.root_timestamp,
                 },
                 .open_kind = .directory,
-                .persistent = false,
-            };
-        }
-
-        if (isStatusPath(path)) {
-            return .{
-                .node = .{
-                    .kind = .regular_file,
-                    .mode = 0o444,
-                    .nlink = 1,
-                    .size = self.renderStatusContentLength(),
-                    .block_size = 4096,
-                    .block_count = blockCountForSize(self.renderStatusContentLength()),
-                    .inode = status_inode,
-                    .uid = currentUid(),
-                    .gid = currentGid(),
-                    .atime = self.status_timestamp,
-                    .mtime = self.status_timestamp,
-                    .ctime = self.status_timestamp,
-                },
-                .open_kind = .synthetic_readonly,
-                .persistent = false,
-            };
-        }
-
-        if (isAuditPath(path)) {
-            return .{
-                .node = .{
-                    .kind = .regular_file,
-                    .mode = 0o444,
-                    .nlink = 1,
-                    .size = self.renderAuditContentLength(),
-                    .block_size = 4096,
-                    .block_count = blockCountForSize(self.renderAuditContentLength()),
-                    .inode = audit_inode,
-                    .uid = currentUid(),
-                    .gid = currentGid(),
-                    .atime = self.audit_timestamp,
-                    .mtime = self.audit_timestamp,
-                    .ctime = self.audit_timestamp,
-                },
-                .open_kind = .synthetic_readonly,
                 .persistent = false,
             };
         }
@@ -374,19 +330,11 @@ pub const Model = struct {
     }
 
     pub fn rootEntryCount(self: *const Model) u32 {
-        return @intCast(2 + self.files.items.len);
+        return @intCast(self.files.items.len);
     }
 
     pub fn rootEntryNameAt(self: *const Model, index: u32) ?[*:0]const u8 {
-        if (index == 0) {
-            return status_name.ptr;
-        }
-
-        if (index == 1) {
-            return audit_name.ptr;
-        }
-
-        const file_index: usize = @intCast(index - 2);
+        const file_index: usize = @intCast(index);
         if (file_index >= self.files.items.len) {
             return null;
         }
@@ -424,10 +372,6 @@ pub const Model = struct {
         context: AccessContext,
         label: ?[]const u8,
     ) i32 {
-        if (access_class == .read and (isStatusPath(path) or isAuditPath(path))) {
-            return 0;
-        }
-
         const request: policy.Request = .{
             .path = path,
             .access_class = access_class,
@@ -466,26 +410,6 @@ pub const Model = struct {
         if (offset > std.math.maxInt(usize)) {
             self.recordAuditLiteral("read", path, errnoCode(.INVAL));
             return errnoCode(.INVAL);
-        }
-
-        if (isStatusPath(path)) {
-            const content = self.renderStatusContent() catch {
-                self.recordAuditLiteral("read", path, errnoCode(.NOMEM));
-                return errnoCode(.NOMEM);
-            };
-            defer self.allocator.free(content);
-
-            const result = copySlice(content, buffer, @intCast(offset));
-            self.recordAuditLiteral("read", path, result);
-            return result;
-        }
-
-        if (isAuditPath(path)) {
-            const content = self.renderAuditContent() catch {
-                return errnoCode(.NOMEM);
-            };
-            defer self.allocator.free(content);
-            return copySlice(content, buffer, @intCast(offset));
         }
 
         const file = self.findFile(path) orelse {
@@ -825,7 +749,7 @@ pub const Model = struct {
         context: AccessContext,
         open_flags: ?i32,
     ) i32 {
-        if (!isUserFilePath(path) or isReservedPath(path)) {
+        if (!isUserFilePath(path)) {
             return errnoCode(.INVAL);
         }
 
@@ -857,7 +781,7 @@ pub const Model = struct {
             }
         }
 
-        self.status_timestamp = currentTimestamp();
+        self.touchStatus();
         return 0;
     }
 
@@ -964,10 +888,6 @@ pub const Model = struct {
     }
 
     fn syncPathInternal(self: *Model, path: []const u8) i32 {
-        if (isReservedPath(path)) {
-            return 0;
-        }
-
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
         if (!shouldPersistPath(path)) {
             return 0;
@@ -981,10 +901,6 @@ pub const Model = struct {
         path: []const u8,
         context: AccessContext,
     ) i32 {
-        if (isReservedPath(path)) {
-            return errnoCode(.ACCES);
-        }
-
         const auth_result = self.authorizeAccess(path, .delete, context);
         if (auth_result != 0) {
             return auth_result;
@@ -998,7 +914,7 @@ pub const Model = struct {
         }
 
         self.removeFileAtIndex(index);
-        self.status_timestamp = currentTimestamp();
+        self.touchStatus();
         return 0;
     }
 
@@ -1010,10 +926,6 @@ pub const Model = struct {
     ) i32 {
         if (!isUserFilePath(from) or !isUserFilePath(to)) {
             return errnoCode(.INVAL);
-        }
-
-        if (isReservedPath(from) or isReservedPath(to)) {
-            return errnoCode(.ACCES);
         }
 
         if (std.mem.eql(u8, from, to)) {
@@ -1059,7 +971,7 @@ pub const Model = struct {
         if (self.findFile(to)) |file| {
             touchFileChange(file);
         }
-        self.status_timestamp = currentTimestamp();
+        self.touchStatus();
         return 0;
     }
 
@@ -1354,57 +1266,6 @@ pub const Model = struct {
         return errnoCode(.OPNOTSUPP);
     }
 
-    fn renderStatusContent(self: *const Model) ![]u8 {
-        return std.fmt.allocPrint(
-            self.allocator,
-            "backend=libfuse\nmount_path={s}\nbacking_store={s}\nconfigured_ops={d}\nplanned_args={d}\nbacking_files={d}\n",
-            .{
-                self.mount_path,
-                self.backing_store_path,
-                self.runtime_stats.configured_operation_count,
-                self.runtime_stats.planned_argument_count,
-                self.files.items.len,
-            },
-        );
-    }
-
-    fn renderStatusContentLength(self: *const Model) u64 {
-        const content = self.renderStatusContent() catch return 0;
-        defer self.allocator.free(content);
-        return content.len;
-    }
-
-    fn renderAuditContent(self: *const Model) ![]u8 {
-        if (self.audit_events.items.len == 0) {
-            return self.allocator.dupe(u8, "[]\n");
-        }
-
-        var content: std.ArrayList(u8) = .empty;
-        defer content.deinit(self.allocator);
-
-        for (self.audit_events.items) |event| {
-            if (event.detail) |detail| {
-                try content.writer(self.allocator).print(
-                    "{{\"action\":\"{s}\",\"path\":\"{s}\",\"result\":{d},\"detail\":\"{s}\"}}\n",
-                    .{ event.action, event.path, event.result, detail },
-                );
-            } else {
-                try content.writer(self.allocator).print(
-                    "{{\"action\":\"{s}\",\"path\":\"{s}\",\"result\":{d}}}\n",
-                    .{ event.action, event.path, event.result },
-                );
-            }
-        }
-
-        return content.toOwnedSlice(self.allocator);
-    }
-
-    fn renderAuditContentLength(self: *const Model) u64 {
-        const content = self.renderAuditContent() catch return 0;
-        defer self.allocator.free(content);
-        return content.len;
-    }
-
     fn recordPolicyAudit(
         self: *Model,
         access_class: policy.AccessClass,
@@ -1475,7 +1336,58 @@ pub const Model = struct {
             .result = result,
             .detail = if (detail) |value| try self.allocator.dupe(u8, value) else null,
         });
-        self.audit_timestamp = currentTimestamp();
+        self.emitAuditLine(action, path, result, detail);
+    }
+
+    fn touchStatus(self: *Model) void {
+        self.emitStatusSnapshot();
+    }
+
+    fn emitStatusSnapshot(self: *Model) void {
+        const output_file = self.status_output_file orelse return;
+
+        var line: std.io.Writer.Allocating = .init(self.allocator);
+        defer line.deinit();
+
+        std.json.Stringify.value(.{
+            .action = "status",
+            .backend = "libfuse",
+            .mount_path = self.mount_path,
+            .backing_store = self.backing_store_path,
+            .configured_ops = self.runtime_stats.configured_operation_count,
+            .planned_args = self.runtime_stats.planned_argument_count,
+            .backing_files = self.files.items.len,
+        }, .{}, &line.writer) catch return;
+        line.writer.writeByte('\n') catch return;
+
+        self.output_mutex.lock();
+        defer self.output_mutex.unlock();
+        output_file.writeAll(line.written()) catch {};
+    }
+
+    fn emitAuditLine(
+        self: *Model,
+        action: []const u8,
+        path: []const u8,
+        result: i32,
+        detail: ?[]const u8,
+    ) void {
+        const output_file = self.audit_output_file orelse return;
+
+        var line: std.io.Writer.Allocating = .init(self.allocator);
+        defer line.deinit();
+
+        std.json.Stringify.value(.{
+            .action = action,
+            .path = path,
+            .result = result,
+            .detail = detail,
+        }, .{}, &line.writer) catch return;
+        line.writer.writeByte('\n') catch return;
+
+        self.output_mutex.lock();
+        defer self.output_mutex.unlock();
+        output_file.writeAll(line.written()) catch {};
     }
 };
 
@@ -1657,22 +1569,6 @@ fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
 
 fn isRootPath(path: []const u8) bool {
     return std.mem.eql(u8, path, "/");
-}
-
-fn isStatusPath(path: []const u8) bool {
-    return std.mem.eql(u8, path, status_path);
-}
-
-fn isAuditPath(path: []const u8) bool {
-    return std.mem.eql(u8, path, audit_path);
-}
-
-fn isReservedPath(path: []const u8) bool {
-    return isStatusPath(path) or isAuditPath(path);
-}
-
-fn isReservedName(name: []const u8) bool {
-    return std.mem.eql(u8, name, status_name) or std.mem.eql(u8, name, audit_name);
 }
 
 fn isTransientSidecarName(name: []const u8) bool {

@@ -78,7 +78,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[x]` Verify xattr round-trips on the live mount path
 - `[x]` Verify BSD `flock` and POSIX lock contention on the live mount path
 - `[x]` Verify self-`chown` on the live mount path
-- `[~]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
+- `[x]` Make the mounted root behave like a guarded directory instead of an empty synthetic root
 - `[x]` Implement the minimum file-centric FUSE operations for the current spike:
   - `getattr`
   - `readdir`

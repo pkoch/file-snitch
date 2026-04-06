@@ -12,9 +12,7 @@ Current state:
 - the shim exposes a stub session lifecycle that Zig can create, inspect, and destroy
 - the shim now owns a real high-level `fuse_operations` table shape
 - the shim now builds real mount argv and a compiled `fuse_setup`/`fuse_loop` execution path
-- the synthetic root directory now answers `getattr` and `readdir` cleanly
-- the mount now exposes one readable synthetic status file
-- the mount now exposes one readable synthetic audit file
+- the mounted root now answers `getattr` and `readdir` cleanly as a file-only guarded directory
 - the daemon/session API now supports dry-run inspection of synthetic filesystem behavior without mounting
 - the mount now seeds one-level regular files from a host backing-store directory
 - the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
@@ -33,7 +31,8 @@ Current state:
 - the C shim now only owns `libfuse` ABI glue, mount execution, host-fd lock plumbing, and macOS xattr syscalls
 - the daemon now has a CLI prompt broker with default-deny timeout behavior
 - the session now records an in-memory audit trail for reads and mutations
-- the synthetic audit file now renders that in-memory audit trail as mounted file content
+- mount mode now streams audit JSON to stdout instead of exposing a synthetic audit file inside the mount
+- mount mode can optionally stream status JSON snapshots to a caller-provided FIFO instead of exposing a synthetic status file inside the mount
 - Zig integration tests now exercise the dry-run session path, execution plan, persistence, and policy behavior without mounting
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
 - a separate scripted macFUSE prompt smoke test now verifies live prompt allow, explicit deny, and timeout behavior
@@ -101,8 +100,8 @@ What each command covers:
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
-- `./scripts/live-mount-smoke.sh`: live macFUSE mount verification for the file-only root, file mutation flows, xattrs, locks, and audit output
-- `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, and non-interactive ordinary xattr traffic
+- `./scripts/live-mount-smoke.sh`: live macFUSE mount verification for the file-only root, file mutation flows, xattrs, locks, audit stdout, and status FIFO output
+- `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/integration.zig`
@@ -110,6 +109,8 @@ When debugging a specific area, the build-managed test step above is still the d
 
 Prompt notes:
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
+- `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
+- mount mode always writes audit JSON lines to stdout
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

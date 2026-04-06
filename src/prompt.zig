@@ -98,7 +98,21 @@ fn resolveScripted(raw_context: ?*anyopaque, request: Request) Decision {
 fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void {
     try writePromptJson(context, request, label, null);
 
-    const message = try std.fmt.allocPrint(std.heap.page_allocator, "allow? [Y/n] ", .{});
+    if (context.stderr_file.isTty()) {
+        const human = try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "{s}Authorize:{s} {s}{s}{s}\n",
+            .{ ansi_bold, ansi_reset, ansi_bold, label, ansi_reset },
+        );
+        defer std.heap.page_allocator.free(human);
+        try context.stderr_file.writeAll(human);
+    }
+
+    const message = try std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "allow? {s}[Y/n]{s} ",
+        .{ ansi_bold, ansi_reset },
+    );
     defer std.heap.page_allocator.free(message);
 
     try context.stderr_file.writeAll(message);
@@ -106,6 +120,24 @@ fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void 
 
 fn finishPrompt(context: *CliContext, request: Request, label: []const u8, decision: Decision) !void {
     try context.stderr_file.writeAll("\n");
+    if (context.stderr_file.isTty()) {
+        const human = try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "{s}Decision:{s} {s}{s}{s} for {s}{s}{s}\n",
+            .{
+                ansi_bold,
+                ansi_reset,
+                ansi_bold,
+                decisionLabel(decision),
+                ansi_reset,
+                ansi_bold,
+                label,
+                ansi_reset,
+            },
+        );
+        defer std.heap.page_allocator.free(human);
+        try context.stderr_file.writeAll(human);
+    }
     try writePromptJson(context, request, label, decision);
 }
 
@@ -235,6 +267,18 @@ fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
         .xattr => "xattr",
     };
 }
+
+fn decisionLabel(decision: Decision) []const u8 {
+    return switch (decision) {
+        .allow => "ALLOW",
+        .deny => "DENY",
+        .timeout => "TIMEOUT",
+        .unavailable => "UNAVAILABLE",
+    };
+}
+
+const ansi_bold = "\x1b[1m";
+const ansi_reset = "\x1b[0m";
 
 test "scripted broker returns configured decisions in order" {
     var context = ScriptedContext.init(&.{ .allow, .deny });
