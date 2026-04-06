@@ -11,7 +11,9 @@ Status:
 ## Current priorities
 
 - `[~]` Finish the remaining phase-0 research before expanding the phase-1 surface further
-- `[ ]` Record real file IO behavior for the selected target apps/tools
+- `[x]` Record real file IO behavior for the selected target apps/tools
+  - captured in [docs/research/2 - target-app-matrix.md](./docs/research/2%20-%20target-app-matrix.md)
+  - nine targets produced syscall-backed evidence; OpenRouter turned into an explicit “not a good file-enrollment target” finding instead of a replacement target
 - `[x]` Narrow the v1 mediated operation set based on observed write patterns
   - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
 - `[ ]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
@@ -26,17 +28,19 @@ These are not backlog items to “finish.” They are constraints that future ch
 
 ## Phase 0: ground-truth research
 
-Deliverable: a short report covering 10 target apps/tools, their secret file locations, and their real file IO behavior.
+Deliverable: a short report covering the selected target apps/tools, their secret file locations, and their real file IO behavior, including any targets that turn out not to be good file-enrollment fits.
 
 - `[x]` Create a target-app matrix with space for observed paths, operations, and quirks
 - `[x]` Pick 10 target apps/tools to study
-- `[~]` Capture expected secret-bearing paths for each target
-- `[ ]` Record real file IO behavior for each target:
+- `[x]` Capture expected secret-bearing paths for each target
+- `[x]` Record real file IO behavior for each target:
   - open flags
   - read vs write behavior
   - temp file plus rename behavior
   - chmod/chown usage
   - file locking behavior
+  - current matrix in [docs/research/2 - target-app-matrix.md](./docs/research/2%20-%20target-app-matrix.md)
+  - OpenRouter remained a useful negative finding rather than a validated file-bearing target
 - `[x]` Summarize which filesystem operations v1 must mediate
   - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
 - `[x]` Compare Linux spike implementation options and record a recommendation
