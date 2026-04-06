@@ -354,6 +354,7 @@ fn runWithPolicy(command: RunCommand) !void {
     var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, loaded_policy.enrollments.len);
     defer {
         for (guarded_entries) |entry| {
+            allocator.free(entry.relative_path);
             allocator.free(entry.backing_file_path);
         }
         allocator.free(guarded_entries);
@@ -361,7 +362,7 @@ fn runWithPolicy(command: RunCommand) !void {
 
     for (loaded_policy.enrollments, 0..) |enrollment, index| {
         guarded_entries[index] = .{
-            .file_name = std.fs.path.basename(enrollment.path),
+            .relative_path = try relativeEnrollmentPath(allocator, mount_plan.paths[0], enrollment.path),
             .backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id),
         };
     }
@@ -716,6 +717,20 @@ fn findEnrollmentIndexByArgument(loaded_policy: *const config.PolicyFile, reques
     const canonical = std.fs.realpathAlloc(allocator, requested_path) catch return null;
     defer allocator.free(canonical);
     return loaded_policy.findEnrollmentIndex(canonical);
+}
+
+fn relativeEnrollmentPath(
+    alloc: std.mem.Allocator,
+    mount_path: []const u8,
+    enrollment_path: []const u8,
+) ![]u8 {
+    if (!std.mem.startsWith(u8, enrollment_path, mount_path)) {
+        return error.InvalidPath;
+    }
+    if (enrollment_path.len <= mount_path.len or enrollment_path[mount_path.len] != '/') {
+        return error.InvalidPath;
+    }
+    return alloc.dupe(u8, enrollment_path[mount_path.len + 1 ..]);
 }
 
 fn allocateObjectId() ![]u8 {

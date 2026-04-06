@@ -23,6 +23,7 @@ Status:
 - `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
   - verified live for a real kubeconfig-style target on macOS
   - verified live for multiple guarded siblings under one mounted parent on macOS
+  - verified live for nested guarded paths under one mounted parent on macOS
   - still limited to one planned mount per `run`
 
 ## Cross-cutting guardrails
@@ -159,6 +160,8 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Demonstrate one real exact-file flow, starting with kubeconfig-style `~/.kube/config`
   - verified live on macOS against a real `~/.kube/config` shadowed from an alternate guarded object
   - same projection model also verified live for multiple guarded siblings under one mounted parent
+- `[x]` Support nested guarded paths inside a mounted parent tree
+  - verified in integration coverage and live on macOS with a guarded `extensions/foo/token.json`-style path
 - `[ ]` Support multiple planned mounts in one `run` invocation
 
 ## Future work

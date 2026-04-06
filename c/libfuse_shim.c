@@ -101,8 +101,14 @@ struct fsn_bridge_lookup {
 
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
 extern int fsn_daemon_open_persistent_backing_fd(void *daemon_state, const char *path, int requested_flags);
-extern uint32_t fsn_daemon_root_entry_count(void *daemon_state);
-extern const char *fsn_daemon_root_entry_name_at(void *daemon_state, uint32_t index);
+extern uint32_t fsn_daemon_directory_entry_count(void *daemon_state, const char *path);
+extern int fsn_daemon_directory_entry_name(
+    void *daemon_state,
+    const char *path,
+    uint32_t index,
+    char *buffer,
+    size_t buffer_size
+);
 extern int fsn_daemon_authorize_open(
     void *daemon_state,
     const struct fsn_bridge_request *request,
@@ -352,6 +358,7 @@ static int fsn_fuse_readdir(
     struct fsn_fuse_session *session;
     uint32_t count;
     uint32_t index;
+    int real_directory_present = 0;
 
     (void)off;
     (void)fi;
@@ -390,6 +397,7 @@ static int fsn_fuse_readdir(
         return 0;
     }
 
+    session = fuse_get_context()->private_data;
     if (session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
         DIR *directory;
         struct dirent *entry;
@@ -407,78 +415,36 @@ static int fsn_fuse_readdir(
             directory_fd = openat(session->source_dir_fd, relative_path, O_RDONLY | O_DIRECTORY);
         }
 
-        if (directory_fd < 0) {
-            return -errno;
-        }
-
-        directory = fdopendir(directory_fd);
-        if (directory == NULL) {
-            close(directory_fd);
-            return -errno;
-        }
-
-        errno = 0;
-        while ((entry = readdir(directory)) != NULL) {
-            struct fsn_bridge_lookup entry_lookup;
-            char child_path[PATH_MAX];
-
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                continue;
+        if (directory_fd >= 0) {
+            directory = fdopendir(directory_fd);
+            if (directory == NULL) {
+                close(directory_fd);
+                return -errno;
             }
+            real_directory_present = 1;
 
-            if (fsn_build_child_virtual_path(path, entry->d_name, child_path, sizeof(child_path)) != 0) {
-                closedir(directory);
-                return -ENAMETOOLONG;
-            }
+            errno = 0;
+            while ((entry = readdir(directory)) != NULL) {
+                struct fsn_bridge_lookup entry_lookup;
+                char child_path[PATH_MAX];
 
-            if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
-                closedir(directory);
-                return -EIO;
-            }
-
-            memset(&stbuf, 0, sizeof(stbuf));
-            fsn_fill_stat_from_lookup(&entry_lookup, &stbuf);
-            if (filler(buf, entry->d_name, &stbuf, 0
-#ifdef __linux__
-                , 0
-#endif
-            ) != 0) {
-                closedir(directory);
-                return 0;
-            }
-        }
-
-        if (errno != 0) {
-            int read_errno = errno;
-            closedir(directory);
-            return -read_errno;
-        }
-
-        if (fsn_is_root_path(path)) {
-            count = fsn_daemon_root_entry_count(session->daemon_state);
-            for (index = 0; index < count; index += 1) {
-                const char *name = fsn_daemon_root_entry_name_at(session->daemon_state, index);
-                struct fsn_bridge_lookup lookup;
-                char virtual_path[PATH_MAX];
-
-                if (name == NULL) {
-                    closedir(directory);
-                    return -EIO;
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                    continue;
                 }
 
-                if (fsn_build_virtual_path(name, virtual_path, sizeof(virtual_path)) != 0) {
+                if (fsn_build_child_virtual_path(path, entry->d_name, child_path, sizeof(child_path)) != 0) {
                     closedir(directory);
                     return -ENAMETOOLONG;
                 }
 
-                if (fsn_lookup_path(session, virtual_path, &lookup) != 0) {
+                if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
                     closedir(directory);
                     return -EIO;
                 }
 
                 memset(&stbuf, 0, sizeof(stbuf));
-                fsn_fill_stat_from_lookup(&lookup, &stbuf);
-                if (filler(buf, name, &stbuf, 0
+                fsn_fill_stat_from_lookup(&entry_lookup, &stbuf);
+                if (filler(buf, entry->d_name, &stbuf, 0
 #ifdef __linux__
                     , 0
 #endif
@@ -487,27 +453,32 @@ static int fsn_fuse_readdir(
                     return 0;
                 }
             }
+
+            if (errno != 0) {
+                int read_errno = errno;
+                closedir(directory);
+                return -read_errno;
+            }
+        } else if (errno != ENOENT) {
+            return -errno;
         }
 
-        closedir(directory);
-        return 0;
+        if (real_directory_present) {
+            closedir(directory);
+        }
     }
 
-    if (!fsn_is_root_path(path)) {
-        return 0;
-    }
-
-    count = fsn_daemon_root_entry_count(session->daemon_state);
+    count = fsn_daemon_directory_entry_count(session->daemon_state, path);
     for (index = 0; index < count; index += 1) {
-        const char *name = fsn_daemon_root_entry_name_at(session->daemon_state, index);
+        char name[PATH_MAX];
         struct fsn_bridge_lookup lookup;
         char virtual_path[PATH_MAX];
 
-        if (name == NULL) {
+        if (fsn_daemon_directory_entry_name(session->daemon_state, path, index, name, sizeof(name)) != 0) {
             return -EIO;
         }
 
-        if (fsn_build_virtual_path(name, virtual_path, sizeof(virtual_path)) != 0) {
+        if (fsn_build_child_virtual_path(path, name, virtual_path, sizeof(virtual_path)) != 0) {
             return -ENAMETOOLONG;
         }
 

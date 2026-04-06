@@ -266,15 +266,27 @@ pub const Session = struct {
     }
 
     pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
-        const count = self.state.filesystem.rootEntryCount();
+        if (self.state.filesystem.layout == .guarded_root) {
+            const count = self.state.filesystem.files.items.len;
+            var entries = try allocator.alloc([]const u8, count);
+            errdefer allocator.free(entries);
+
+            for (self.state.filesystem.files.items, 0..) |file, index| {
+                entries[index] = file.name;
+            }
+            return entries;
+        }
+
+        const count = self.state.filesystem.syntheticEntryCount("/");
         var entries = try allocator.alloc([]const u8, count);
         errdefer allocator.free(entries);
 
         for (0..count) |index| {
-            const raw = self.state.filesystem.rootEntryNameAt(@intCast(index)) orelse {
+            var buffer: [std.fs.max_path_bytes]u8 = undefined;
+            const len = self.state.filesystem.syntheticEntryNameAt("/", @intCast(index), &buffer) orelse {
                 return error.Unexpected;
             };
-            entries[index] = std.mem.span(raw);
+            entries[index] = try allocator.dupe(u8, buffer[0..len]);
         }
 
         return entries;
@@ -600,14 +612,29 @@ pub export fn fsn_daemon_open_persistent_backing_fd(
     return @intCast(state.filesystem.openPersistentBackingFd(path, requested_flags));
 }
 
-pub export fn fsn_daemon_root_entry_count(daemon_state: ?*anyopaque) u32 {
+pub export fn fsn_daemon_directory_entry_count(
+    daemon_state: ?*anyopaque,
+    raw_path: ?[*:0]const u8,
+) u32 {
     const state = requireState(daemon_state) orelse return 0;
-    return state.filesystem.rootEntryCount();
+    const path = requirePath(raw_path) orelse return 0;
+    return state.filesystem.syntheticEntryCount(path);
 }
 
-pub export fn fsn_daemon_root_entry_name_at(daemon_state: ?*anyopaque, index: u32) ?[*:0]const u8 {
-    const state = requireState(daemon_state) orelse return null;
-    return state.filesystem.rootEntryNameAt(index);
+pub export fn fsn_daemon_directory_entry_name(
+    daemon_state: ?*anyopaque,
+    raw_path: ?[*:0]const u8,
+    index: u32,
+    buffer: [*]u8,
+    buffer_size: usize,
+) c_int {
+    const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
+    const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
+    if (buffer_size == 0) return errnoCode(.INVAL);
+    _ = state.filesystem.syntheticEntryNameAt(path, index, buffer[0..buffer_size]) orelse {
+        return errnoCode(.NOENT);
+    };
+    return 0;
 }
 
 pub export fn fsn_daemon_read(

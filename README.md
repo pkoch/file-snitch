@@ -36,6 +36,7 @@ Current state:
   - after unmount, the original host file was unchanged
 - the same enrolled-parent path now also works for multiple guarded files under one mounted parent:
   - guarded siblings project from their backing objects
+  - nested guarded paths project through synthetic intermediate directories inside the mount
   - unguarded siblings still passthrough
   - unmount restores the original host files unchanged
 - macOS `._*` AppleDouble sidecars remain transient in the new enrolled-parent path and do not persist back into the real directory after unmount
@@ -113,7 +114,7 @@ When debugging a specific area, the build-managed test step above is still the d
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run` currently supports one planned mount and mounts its real parent directory in place
-- multiple enrolled files under that one mounted parent are supported
+- multiple enrolled files under that one mounted tree are supported, including nested guarded paths
 - `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan

@@ -573,7 +573,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     var session = try daemon.Session.initEnrolledParent(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
-            .file_name = "config",
+            .relative_path = "config",
             .backing_file_path = backing_file_path,
         }},
         .run_in_foreground = true,
@@ -661,11 +661,11 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         .mount_path = source_parent,
         .guarded_entries = &.{
             .{
-                .file_name = "a.key",
+                .relative_path = "a.key",
                 .backing_file_path = first_backing_path,
             },
             .{
-                .file_name = "b.key",
+                .relative_path = "b.key",
                 .backing_file_path = second_backing_path,
             },
         },
@@ -714,6 +714,73 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         const contents = try readFileAbsoluteAlloc(allocator, sibling_path);
         defer allocator.free(contents);
         try std.testing.expectEqualStrings("updated sibling\n", contents);
+    }
+}
+
+test "enrolled parent can project a guarded file below a synthetic subdirectory" {
+    const allocator = std.testing.allocator;
+    const run_id = std.time.nanoTimestamp();
+    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-nested-{d}", .{run_id});
+    defer allocator.free(source_parent);
+    const backing_file_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-nested-{d}", .{run_id});
+    defer allocator.free(backing_file_path);
+    const real_dir_path = try std.fmt.allocPrint(allocator, "{s}/extensions/foo", .{source_parent});
+    defer allocator.free(real_dir_path);
+    const real_sibling_path = try std.fmt.allocPrint(allocator, "{s}/hosts.yml", .{source_parent});
+    defer allocator.free(real_sibling_path);
+
+    try std.fs.makeDirAbsolute(source_parent);
+    try std.fs.cwd().makePath(real_dir_path);
+    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    defer std.fs.deleteFileAbsolute(backing_file_path) catch {};
+
+    {
+        var file = try std.fs.createFileAbsolute(real_sibling_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("plain hosts\n");
+    }
+    {
+        var file = try std.fs.createFileAbsolute(backing_file_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("guarded nested token\n");
+    }
+
+    var session = try daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = source_parent,
+        .guarded_entries = &.{.{
+            .relative_path = "extensions/foo/token.json",
+            .backing_file_path = backing_file_path,
+        }},
+        .run_in_foreground = true,
+        .default_mutation_outcome = .allow,
+    });
+    defer session.deinit();
+
+    try std.testing.expectEqual(filesystem.NodeKind.directory, (try session.inspectPath("/extensions")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.directory, (try session.inspectPath("/extensions/foo")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/extensions/foo/token.json")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/hosts.yml")).kind);
+
+    const nested_contents = try session.readPath(allocator, "/extensions/foo/token.json");
+    defer allocator.free(nested_contents);
+    try std.testing.expectEqualStrings("guarded nested token\n", nested_contents);
+
+    const sibling_contents = try session.readPath(allocator, "/hosts.yml");
+    defer allocator.free(sibling_contents);
+    try std.testing.expectEqualStrings("plain hosts\n", sibling_contents);
+
+    try session.debugWriteFile("/extensions/foo/token.json", "updated nested token\n");
+    try session.debugWriteFile("/hosts.yml", "updated hosts\n");
+
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, backing_file_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("updated nested token\n", contents);
+    }
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, real_sibling_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("updated hosts\n", contents);
     }
 }
 

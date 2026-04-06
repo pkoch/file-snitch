@@ -253,7 +253,7 @@ const RenameMutation = struct {
 };
 
 pub const GuardedEntryConfig = struct {
-    file_name: []const u8,
+    relative_path: []const u8,
     backing_file_path: []const u8,
 };
 
@@ -408,7 +408,7 @@ pub const Model = struct {
         }
 
         for (guarded_entries) |entry| {
-            const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.file_name});
+            const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.relative_path});
             defer self.allocator.free(guarded_path);
 
             var file = try std.fs.openFileAbsolute(entry.backing_file_path, .{ .mode = .read_only });
@@ -542,36 +542,33 @@ pub const Model = struct {
         };
     }
 
-    pub fn rootEntryCount(self: *const Model) u32 {
-        if (self.layout == .enrolled_parent) {
-            var count: u32 = 0;
-            for (self.files.items) |file| {
-                if (self.shouldExposeAsSyntheticRootEntry(&file)) {
-                    count += 1;
-                }
-            }
-            return count;
+    pub fn syntheticEntryCount(self: *const Model, directory_path: []const u8) u32 {
+        var count: u32 = 0;
+        for (self.files.items, 0..) |file, index| {
+            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
+            if (self.syntheticChildAlreadySeen(directory_path, child_name, index)) continue;
+            count += 1;
         }
-        return @intCast(self.files.items.len);
+        return count;
     }
 
-    pub fn rootEntryNameAt(self: *const Model, index: u32) ?[*:0]const u8 {
-        if (self.layout == .enrolled_parent) {
-            var visible_index: u32 = 0;
-            for (self.files.items) |file| {
-                if (self.shouldExposeAsSyntheticRootEntry(&file)) {
-                    if (visible_index == index) return file.name.ptr;
-                    visible_index += 1;
-                }
+    pub fn syntheticEntryNameAt(self: *const Model, directory_path: []const u8, index: u32, buffer: []u8) ?usize {
+        var visible_index: u32 = 0;
+        for (self.files.items, 0..) |file, file_index| {
+            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
+            if (self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
+            if (visible_index != index) {
+                visible_index += 1;
+                continue;
             }
-            return null;
+            if (child_name.len + 1 > buffer.len) {
+                return null;
+            }
+            @memcpy(buffer[0..child_name.len], child_name);
+            buffer[child_name.len] = 0;
+            return child_name.len;
         }
-        const file_index: usize = @intCast(index);
-        if (file_index >= self.files.items.len) {
-            return null;
-        }
-
-        return self.files.items[file_index].name.ptr;
+        return null;
     }
 
     fn lookupEnrolledParentPath(self: *const Model, path: []const u8) Lookup {
@@ -598,6 +595,10 @@ pub const Model = struct {
                 .open_kind = .user_file,
                 .persistent = self.isGuardedPath(path),
             };
+        }
+
+        if (self.hasGuardedDescendant(path)) {
+            return self.lookupGuardedDirectoryPath(path);
         }
 
         return self.lookupPassthroughPath(path);
@@ -670,21 +671,74 @@ pub const Model = struct {
         };
     }
 
-    fn shouldExposeAsSyntheticRootEntry(self: *const Model, file: *const StoredFile) bool {
-        if (self.layout != .enrolled_parent) {
-            return true;
+    fn lookupGuardedDirectoryPath(self: *const Model, path: []const u8) Lookup {
+        const passthrough = self.lookupPassthroughPath(path);
+        if (passthrough.node.kind == .directory) {
+            return passthrough;
         }
 
-        if (file.backing_path == null) {
-            return true;
-        }
-
-        const dir = self.source_dir orelse return true;
-        _ = dir.statFile(file.name) catch |err| switch (err) {
-            error.FileNotFound => return true,
-            else => return true,
+        return .{
+            .node = .{
+                .kind = .directory,
+                .mode = 0o755,
+                .nlink = 2,
+                .size = 0,
+                .block_size = 4096,
+                .block_count = 0,
+                .inode = syntheticDirectoryInode(path),
+                .uid = currentUid(),
+                .gid = currentGid(),
+                .atime = self.root_timestamp,
+                .mtime = self.root_timestamp,
+                .ctime = self.root_timestamp,
+            },
+            .open_kind = .directory,
+            .persistent = false,
         };
+    }
+
+    fn hasGuardedDescendant(self: *const Model, path: []const u8) bool {
+        for (self.files.items) |file| {
+            if (isDescendantPath(path, file.path)) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    fn syntheticChildNameForFile(self: *const Model, directory_path: []const u8, file: *const StoredFile) ?[]const u8 {
+        const child_name = directChildName(directory_path, file.path) orelse return null;
+        if (self.layout == .guarded_root) {
+            return child_name;
+        }
+        if (self.realChildExists(directory_path, child_name)) {
+            return null;
+        }
+        return child_name;
+    }
+
+    fn syntheticChildAlreadySeen(
+        self: *const Model,
+        directory_path: []const u8,
+        child_name: []const u8,
+        before_index: usize,
+    ) bool {
+        for (self.files.items[0..before_index]) |file| {
+            const previous = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
+            if (std.mem.eql(u8, previous, child_name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn realChildExists(self: *const Model, directory_path: []const u8, child_name: []const u8) bool {
+        const dir = self.source_dir orelse return false;
+        const child_path = joinVirtualPath(self.allocator, directory_path, child_name) catch return false;
+        defer self.allocator.free(child_path);
+        const relative_path = relativeMountedPath(child_path) orelse return false;
+        _ = std.posix.fstatat(dir.fd, relative_path, 0) catch return false;
+        return true;
     }
 
     pub fn authorizeAccess(
@@ -1212,7 +1266,7 @@ pub const Model = struct {
             return self.createPassthroughFile(path, mode, open_flags);
         }
 
-        if (!isUserFilePath(path)) {
+        if (self.layout == .guarded_root and !isUserFilePath(path)) {
             return errnoCode(.INVAL);
         }
 
@@ -2291,6 +2345,43 @@ fn relativeMountedPath(path: []const u8) ?[]const u8 {
         return null;
     }
     return path[1..];
+}
+
+fn joinVirtualPath(allocator: std.mem.Allocator, directory_path: []const u8, child_name: []const u8) ![]u8 {
+    if (isRootPath(directory_path)) {
+        return std.fmt.allocPrint(allocator, "/{s}", .{child_name});
+    }
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ directory_path, child_name });
+}
+
+fn directChildName(directory_path: []const u8, descendant_path: []const u8) ?[]const u8 {
+    const relative = if (isRootPath(directory_path)) blk: {
+        if (descendant_path.len < 2 or descendant_path[0] != '/') return null;
+        break :blk descendant_path[1..];
+    } else blk: {
+        if (!std.mem.startsWith(u8, descendant_path, directory_path)) return null;
+        if (descendant_path.len <= directory_path.len or descendant_path[directory_path.len] != '/') return null;
+        break :blk descendant_path[directory_path.len + 1 ..];
+    };
+
+    if (relative.len == 0) return null;
+    const separator = std.mem.indexOfScalar(u8, relative, '/') orelse relative.len;
+    return relative[0..separator];
+}
+
+fn isDescendantPath(parent_path: []const u8, candidate_path: []const u8) bool {
+    if (isRootPath(parent_path)) {
+        return candidate_path.len > 1 and candidate_path[0] == '/';
+    }
+    return std.mem.startsWith(u8, candidate_path, parent_path) and
+        candidate_path.len > parent_path.len and
+        candidate_path[parent_path.len] == '/';
+}
+
+fn syntheticDirectoryInode(path: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(path);
+    return first_dynamic_inode +% hasher.final();
 }
 
 fn blockCountForSize(size: u64) u64 {
