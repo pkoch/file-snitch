@@ -100,6 +100,7 @@ Current validation workflow:
 zig build
 zig build test
 zig build compile-commands
+./scripts/linux-live-mount-smoke.sh
 ./scripts/live-mount-smoke.sh
 ./scripts/prompt-mount-smoke.sh
 ```
@@ -110,6 +111,7 @@ What each command covers:
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
+- `./scripts/linux-live-mount-smoke.sh`: live Linux `libfuse3` mount verification for the mutable guarded-root path
 - `./scripts/live-mount-smoke.sh`: live macFUSE mount verification for the file-only root, file mutation flows, xattrs, locks, audit stdout, and status FIFO output
 - `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
 
