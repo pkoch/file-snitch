@@ -1,84 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-tmp_root="/private/tmp"
-mount_dir=""
-store_dir=""
-log_file=""
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$repo_root/tests/smoke/lib/assertions.sh"
+source "$repo_root/tests/smoke/lib/mount-fixture.sh"
+
+case "$(uname -s)" in
+  Darwin)
+    source "$repo_root/tests/smoke/lib/platform-Darwin.sh"
+    ;;
+  *)
+    echo "prompt smoke is only supported on macOS" >&2
+    exit 1
+    ;;
+esac
 prompt_fifo=""
-status_fifo=""
-status_file=""
-status_reader_pid=""
-daemon_pid=""
 
-cleanup_case() {
-  local status=0
-
-  if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
-    kill -INT "$daemon_pid" 2>/dev/null || true
-    wait "$daemon_pid" || status=$?
-  fi
-
-  if [[ -n "$mount_dir" ]] && mount | grep -F "on $mount_dir " >/dev/null 2>&1; then
-    umount "$mount_dir" || true
-  fi
-
+fixture_cleanup_extra() {
   exec 3>&- || true
-  [[ -n "$mount_dir" ]] && rm -rf "$mount_dir"
-  [[ -n "$store_dir" ]] && rm -rf "$store_dir"
-  [[ -n "$log_file" ]] && rm -f "$log_file"
   [[ -n "$prompt_fifo" ]] && rm -f "$prompt_fifo"
-  if [[ -n "$status_reader_pid" ]] && kill -0 "$status_reader_pid" 2>/dev/null; then
-    kill "$status_reader_pid" 2>/dev/null || true
-    wait "$status_reader_pid" || true
-  fi
-  [[ -n "$status_fifo" ]] && rm -f "$status_fifo"
-  [[ -n "$status_file" ]] && rm -f "$status_file"
-
-  mount_dir=""
-  store_dir=""
-  log_file=""
   prompt_fifo=""
-  status_fifo=""
-  status_file=""
-  status_reader_pid=""
-  daemon_pid=""
-  return "$status"
 }
 
 finish() {
-  cleanup_case
-}
-
-fail() {
-  echo "$1" >&2
-  if [[ -n "$log_file" && -f "$log_file" ]]; then
-    cat "$log_file" >&2
-  fi
-  exit 1
-}
-
-assert_eq() {
-  local actual="$1"
-  local expected="$2"
-  local message="$3"
-
-  [[ "$actual" == "$expected" ]] || fail "$message"
-}
-
-assert_file_exists() {
-  local path="$1"
-  local message="$2"
-
-  [[ -f "$path" ]] || fail "$message"
-}
-
-assert_file_missing() {
-  local path="$1"
-  local message="$2"
-
-  [[ ! -e "$path" ]] || fail "$message"
+  cleanup_mount_fixture
 }
 
 assert_no_xattr_prompts() {
@@ -126,65 +71,31 @@ queue_prompt_answers() {
   done
 }
 
-wait_for_mount_ready() {
-  for _ in $(seq 1 50); do
-    if [[ -s "$status_file" ]] && mount | grep -F "on $mount_dir " >/dev/null 2>&1; then
-      return
-    fi
-
-    if ! kill -0 "$daemon_pid" 2>/dev/null; then
-      fail "prompt mount exited early"
-    fi
-
-    sleep 0.1
-  done
-
-  fail "prompt mount did not become ready"
-}
-
 start_prompt_mount() {
-  mount_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-mount.XXXXXX")"
-  store_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-store.XXXXXX")"
-  log_file="$(mktemp "$tmp_root/file-snitch.prompt-log.XXXXXX")"
-  prompt_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-fifo.XXXXXX")"
-  status_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-status-fifo.XXXXXX")"
-  status_file="$(mktemp "$tmp_root/file-snitch.prompt-status.XXXXXX")"
+  prepare_mount_fixture "file-snitch.prompt"
+  prompt_fifo="$(mktemp -u "$TMP_ROOT/file-snitch.prompt-fifo.XXXXXX")"
 
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
-  mkfifo "$status_fifo"
-  head -n 1 "$status_fifo" >"$status_file" &
-  status_reader_pid="$!"
-
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 \
-    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt --status-fifo "$status_fifo" <&3 >"$log_file" 2>&1 &
-  daemon_pid="$!"
-  wait_for_mount_ready
+  mount_input_fd=3
+  mount_extra_args=(--status-fifo "$status_fifo")
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 start_file_snitch_mount prompt
 }
 
 start_prompt_mount_with_seed_file() {
   local seed_name="$1"
   local seed_contents="$2"
 
-  mount_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-mount.XXXXXX")"
-  store_dir="$(mktemp -d "$tmp_root/file-snitch.prompt-store.XXXXXX")"
-  log_file="$(mktemp "$tmp_root/file-snitch.prompt-log.XXXXXX")"
-  prompt_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-fifo.XXXXXX")"
-  status_fifo="$(mktemp -u "$tmp_root/file-snitch.prompt-status-fifo.XXXXXX")"
-  status_file="$(mktemp "$tmp_root/file-snitch.prompt-status.XXXXXX")"
+  prepare_mount_fixture "file-snitch.prompt"
+  prompt_fifo="$(mktemp -u "$TMP_ROOT/file-snitch.prompt-fifo.XXXXXX")"
 
   printf '%s' "$seed_contents" >"$store_dir/$seed_name"
 
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
-  mkfifo "$status_fifo"
-  head -n 1 "$status_fifo" >"$status_file" &
-  status_reader_pid="$!"
-
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 \
-    "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" prompt --status-fifo "$status_fifo" <&3 >"$log_file" 2>&1 &
-  daemon_pid="$!"
-  wait_for_mount_ready
+  mount_input_fd=3
+  mount_extra_args=(--status-fifo "$status_fifo")
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 start_file_snitch_mount prompt
 }
 
 verify_allow_case() {
@@ -209,7 +120,7 @@ verify_allow_case() {
     "expected create prompt to include open mode"
   assert_no_xattr_prompts "expected ordinary xattr traffic to bypass the prompt path"
 
-  cleanup_case
+  cleanup_mount_fixture
 }
 
 verify_read_case() {
@@ -230,7 +141,7 @@ verify_read_case() {
     "expected read prompt to include open mode"
   assert_no_xattr_prompts "expected seeded read case to avoid xattr prompts"
 
-  cleanup_case
+  cleanup_mount_fixture
 }
 
 verify_deny_case() {
@@ -250,7 +161,7 @@ verify_deny_case() {
     "expected prompt audit for denied create missing"
   assert_no_xattr_prompts "expected denied case to avoid xattr prompts"
 
-  cleanup_case
+  cleanup_mount_fixture
 }
 
 verify_timeout_case() {
@@ -269,7 +180,7 @@ verify_timeout_case() {
     "expected prompt audit for timed-out create missing"
   assert_no_xattr_prompts "expected timeout case to avoid xattr prompts"
 
-  cleanup_case
+  cleanup_mount_fixture
 }
 
 trap finish EXIT

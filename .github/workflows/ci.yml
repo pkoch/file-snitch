@@ -7,8 +7,7 @@ on:
   pull_request:
 
 jobs:
-  tier1:
-    name: Tier 1
+  build:
     runs-on: ubuntu-latest
     env:
       ZIG_INSTALL_DIR: ${{ github.workspace }}/.zig-toolchain/linux-x86_64
@@ -16,115 +15,52 @@ jobs:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config fuse3 libfuse3-dev
+          sudo apt-get update && sudo apt-get install -y \
+            fuse3 \
+            libfuse3-dev \
+            pkg-config \
+          ;
 
-      - name: Read Zig toolchain
-        run: |
-          echo "ZIG_VERSION=$(jq -r '.version' zig-toolchain.json)" >> "$GITHUB_ENV"
-          echo "ZIG_LINUX_X86_64_SHA256=$(jq -r '.platforms.linux_x86_64.sha256' zig-toolchain.json)" >> "$GITHUB_ENV"
-
-      - name: Restore Zig toolchain cache
-        uses: actions/cache@v5
+      - uses: ./.github/actions/setup-zig
         with:
-          path: ${{ env.ZIG_INSTALL_DIR }}
-          key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json') }}
+          zig-install-dir: ${{ env.ZIG_INSTALL_DIR }}
+          zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
+          zig-global-cache-dir: ${{ env.ZIG_GLOBAL_CACHE_DIR }}
 
-      - name: Install Zig
-        run: |
-          if [[ ! -x "$ZIG_INSTALL_DIR/zig" ]]; then
-            curl -L \
-              "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-              -o "$RUNNER_TEMP/zig.tar.xz"
-            echo "${ZIG_LINUX_X86_64_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
-            rm -rf "$ZIG_INSTALL_DIR"
-            mkdir -p "$ZIG_INSTALL_DIR"
-            tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$ZIG_INSTALL_DIR" --strip-components=1
-          fi
-          echo "$ZIG_INSTALL_DIR" >> "$GITHUB_PATH"
+      - run: ./tests/build.sh
 
-      - name: Restore Zig build caches
-        uses: actions/cache@v5
+      - uses: actions/upload-artifact@v4
         with:
-          path: |
-            ${{ env.ZIG_CACHE_DIR }}
-            ${{ env.ZIG_GLOBAL_CACHE_DIR }}
-          key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json', 'build.zig', 'build/**/*.zig') }}
-          restore-keys: |
-            zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json') }}-
-            zig-build-${{ runner.os }}-${{ runner.arch }}-
+          name: file-snitch-linux
+          path: zig-out/bin/file-snitch
+          if-no-files-found: error
 
-      - name: Run Tier 1 checks
-        run: ./scripts/ci-tier1.sh
-
-  tier2-linux-live:
-    name: Tier 2 Linux Live
+  smoke-linux:
     runs-on: ubuntu-latest
-    needs: tier1
-    env:
-      ZIG_INSTALL_DIR: ${{ github.workspace }}/.zig-toolchain/linux-x86_64
-      ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+    needs: build
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Install Linux build dependencies
+      - name: Install Linux runtime dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config fuse3 libfuse3-dev
+          sudo apt-get update && sudo apt-get install -y \
+            fuse3 \
+          ;
 
-      - name: Read Zig toolchain
-        run: |
-          echo "ZIG_VERSION=$(jq -r '.version' zig-toolchain.json)" >> "$GITHUB_ENV"
-          echo "ZIG_LINUX_X86_64_SHA256=$(jq -r '.platforms.linux_x86_64.sha256' zig-toolchain.json)" >> "$GITHUB_ENV"
-
-      - name: Restore Zig toolchain cache
-        uses: actions/cache@v5
+      - uses: actions/download-artifact@v4
         with:
-          path: ${{ env.ZIG_INSTALL_DIR }}
-          key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json') }}
+          name: file-snitch-linux
+          path: zig-out/bin
+      - run: chmod +x zig-out/bin/file-snitch
 
-      - name: Install Zig
-        run: |
-          if [[ ! -x "$ZIG_INSTALL_DIR/zig" ]]; then
-            curl -L \
-              "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-              -o "$RUNNER_TEMP/zig.tar.xz"
-            echo "${ZIG_LINUX_X86_64_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
-            rm -rf "$ZIG_INSTALL_DIR"
-            mkdir -p "$ZIG_INSTALL_DIR"
-            tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$ZIG_INSTALL_DIR" --strip-components=1
-          fi
-          echo "$ZIG_INSTALL_DIR" >> "$GITHUB_PATH"
-
-      - name: Restore Zig build caches
-        uses: actions/cache@v5
-        with:
-          path: |
-            ${{ env.ZIG_CACHE_DIR }}
-            ${{ env.ZIG_GLOBAL_CACHE_DIR }}
-          key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json', 'build.zig', 'build/**/*.zig') }}
-          restore-keys: |
-            zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig-toolchain.json') }}-
-            zig-build-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Prepare FUSE device
+      - name: Setup FUSE
         run: |
           sudo modprobe fuse
           sudo chmod 666 /dev/fuse
 
-      - name: Build file-snitch
-        run: |
-          zig build \
-            --cache-dir "$ZIG_CACHE_DIR" \
-            --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
-
-      - name: Run Linux live mount smoke
-        run: ./scripts/live-mount-smoke.sh
+      - run: ./tests/smoke/mount-allow.sh

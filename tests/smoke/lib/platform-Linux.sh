@@ -21,11 +21,3 @@ platform_stop_mount() {
 platform_mode() {
   stat -c '%a' "$1"
 }
-
-platform_run_extra_checks() {
-  :
-}
-
-platform_assert_extra_audit_log() {
-  :
-}

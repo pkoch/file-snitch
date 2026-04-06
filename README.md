@@ -58,7 +58,7 @@ Current state:
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
-- `scripts/`: verification helpers including live-mount smoke tests
+- `scripts/`: auxiliary helpers; verification entrypoints now live under `tests/`
 
 ## Architecture guardrails
 
@@ -100,8 +100,8 @@ Current validation workflow:
 zig build
 zig build test
 zig build compile-commands
-./scripts/live-mount-smoke.sh
-./scripts/prompt-mount-smoke.sh
+./tests/smoke/mount-allow.sh
+./tests/smoke/mount-prompt.sh
 ```
 
 What each command covers:
@@ -110,8 +110,8 @@ What each command covers:
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
-- `./scripts/live-mount-smoke.sh`: live mount verification for the mutable guarded-root path, with one shared core smoke flow plus platform-specific helpers and extra coverage where the host platform supports it
-- `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
+- `./tests/smoke/mount-allow.sh`: live mount verification for the allow-by-default guarded-root path, with one shared core smoke flow plus platform-specific helpers and extra coverage where the host platform supports it
+- `./tests/smoke/mount-prompt.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/integration.zig`

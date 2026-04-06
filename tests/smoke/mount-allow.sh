@@ -1,122 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-platform_lib_dir="$repo_root/scripts/lib/live-mount"
-platform_name="$(uname -s)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+test_name="$(basename "$0" .sh)"
 
+source "$repo_root/tests/smoke/lib/assertions.sh"
+source "$repo_root/tests/smoke/lib/mount-fixture.sh"
+
+platform_name="$(uname -s)"
 case "$platform_name" in
-  Darwin)
-    # shellcheck source=scripts/lib/live-mount/macos.sh
-    source "$platform_lib_dir/macos.sh"
-    ;;
-  Linux)
-    # shellcheck source=scripts/lib/live-mount/linux.sh
-    source "$platform_lib_dir/linux.sh"
-    ;;
+  Darwin) ;;
+  Linux)  ;;
   *)
     echo "unsupported platform: $platform_name" >&2
     exit 1
     ;;
 esac
 
-mount_dir="$(mktemp -d "$TMP_ROOT/file-snitch.mount.XXXXXX")"
-store_dir="$(mktemp -d "$TMP_ROOT/file-snitch.store.XXXXXX")"
-log_file="$(mktemp "$TMP_ROOT/file-snitch.mount-log.XXXXXX")"
-status_fifo="$(mktemp -u "$TMP_ROOT/file-snitch.status-fifo.XXXXXX")"
-status_file="$(mktemp "$TMP_ROOT/file-snitch.status.XXXXXX")"
-status_reader_pid=""
-daemon_pid=""
+platform_adapter="$repo_root/tests/smoke/lib/platform-${platform_name}.sh"
+if [[ -f "$platform_adapter" ]]; then
+  source "$platform_adapter"
+fi
+
+scenario_adapter="$repo_root/tests/smoke/${test_name}-${platform_name}.sh"
+if [[ -f "$scenario_adapter" ]]; then
+  source "$scenario_adapter"
+fi
 
 cleanup() {
-  local status=0
-
-  platform_stop_mount || status=$?
-
-  if [[ -n "$status_reader_pid" ]] && kill -0 "$status_reader_pid" 2>/dev/null; then
-    kill "$status_reader_pid" 2>/dev/null || true
-    wait "$status_reader_pid" || true
-  fi
-
-  rm -rf "$mount_dir" "$store_dir" "$log_file" "$status_file"
-  [[ -n "$status_fifo" ]] && rm -f "$status_fifo"
-  return "$status"
-}
-
-fail() {
-  echo "$1" >&2
-  if [[ -f "$log_file" ]]; then
-    echo "--- file-snitch log ---" >&2
-    cat "$log_file" >&2 || true
-  fi
-  exit 1
-}
-
-assert_eq() {
-  local actual="$1"
-  local expected="$2"
-  local message="$3"
-
-  if [[ "$actual" != "$expected" ]]; then
-    fail "$message"
-  fi
-}
-
-assert_file_exists() {
-  local path="$1"
-  local message="$2"
-
-  [[ -f "$path" ]] || fail "$message"
-}
-
-assert_file_missing() {
-  local path="$1"
-  local message="$2"
-
-  [[ ! -e "$path" ]] || fail "$message"
-}
-
-assert_store_file_contents() {
-  local path="$1"
-  local expected="$2"
-  local message="$3"
-
-  assert_eq "$(cat "$path")" "$expected" "$message"
-}
-
-assert_log_contains() {
-  local needle="$1"
-
-  if ! grep -F "$needle" "$log_file" >/dev/null 2>&1; then
-    fail "expected log entry missing: $needle"
-  fi
-}
-
-wait_for_mount_ready() {
-  for _ in $(seq 1 100); do
-    if [[ -s "$status_file" ]] && platform_mount_is_active "$mount_dir"; then
-      return
-    fi
-
-    if ! kill -0 "$daemon_pid" 2>/dev/null; then
-      fail "mount exited before becoming ready"
-    fi
-
-    sleep 0.1
-  done
-
-  fail "mount did not become ready"
+  cleanup_mount_fixture
 }
 
 start_mount() {
+  prepare_mount_fixture "file-snitch"
   printf 'seeded from backing store\n' >"$store_dir/seed-from-store.txt"
-  mkfifo "$status_fifo"
-  head -n 1 "$status_fifo" >"$status_file" &
-  status_reader_pid="$!"
-
-  "$repo_root/zig-out/bin/file-snitch" mount "$mount_dir" "$store_dir" mutable --status-fifo "$status_fifo" >"$log_file" 2>&1 &
-  daemon_pid="$!"
-  wait_for_mount_ready
+  mount_extra_args=(--status-fifo "$status_fifo")
+  start_file_snitch_mount mutable
 }
 
 show_mount_state() {
@@ -249,8 +168,7 @@ verify_common_audit_log() {
 }
 
 shutdown_mount() {
-  platform_stop_mount
-  daemon_pid=""
+  stop_mount_fixture
 }
 
 main() {

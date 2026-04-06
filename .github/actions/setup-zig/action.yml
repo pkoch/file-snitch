@@ -1,0 +1,58 @@
+name: Setup Zig
+description: Install the pinned Zig toolchain and restore Zig caches.
+
+inputs:
+  zig-install-dir:
+    description: Directory where Zig should be installed.
+    required: true
+  zig-cache-dir:
+    description: Directory for Zig local build cache.
+    required: true
+  zig-global-cache-dir:
+    description: Directory for Zig global cache.
+    required: true
+  toolchain-manifest:
+    description: Path to zig-toolchain.json.
+    required: false
+    default: zig-toolchain.json
+
+runs:
+  using: composite
+  steps:
+    - name: Read Zig toolchain
+      shell: bash
+      run: |
+        manifest="${{ inputs.toolchain-manifest }}"
+        echo "ZIG_VERSION=$(jq -r '.version' "$manifest")" >> "$GITHUB_ENV"
+        echo "ZIG_LINUX_X86_64_SHA256=$(jq -r '.platforms.linux_x86_64.sha256' "$manifest")" >> "$GITHUB_ENV"
+
+    - name: Restore Zig toolchain cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ inputs.zig-install-dir }}
+        key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest) }}
+
+    - name: Install Zig
+      shell: bash
+      run: |
+        if [[ ! -x "${{ inputs.zig-install-dir }}/zig" ]]; then
+          curl -L \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "${ZIG_LINUX_X86_64_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          rm -rf "${{ inputs.zig-install-dir }}"
+          mkdir -p "${{ inputs.zig-install-dir }}"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "${{ inputs.zig-install-dir }}" --strip-components=1
+        fi
+        echo "${{ inputs.zig-install-dir }}" >> "$GITHUB_PATH"
+
+    - name: Restore Zig build caches
+      uses: actions/cache@v5
+      with:
+        path: |
+          ${{ inputs.zig-cache-dir }}
+          ${{ inputs.zig-global-cache-dir }}
+        key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest, 'build.zig', 'build/**/*.zig') }}
+        restore-keys: |
+          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest) }}-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-
