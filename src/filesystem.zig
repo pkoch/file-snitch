@@ -734,6 +734,7 @@ pub const Model = struct {
             .pid = context.pid,
             .uid = context.uid,
             .gid = context.gid,
+            .executable_path = context.executable_path,
         };
 
         return switch (self.policy_engine.evaluate(request)) {

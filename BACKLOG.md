@@ -13,7 +13,11 @@ Status:
 - `[~]` Pivot the spike from a synthetic guarded root to policy-driven exact-file enrollment
 - `[~]` Add `~/.config/file-snitch/policy.yml` as the durable source of truth for enrollments and remembered decisions
   - enrollments now load from `policy.yml`
-  - remembered decisions are still not consumed from it
+  - remembered decisions now compile into the runtime policy engine for exact-path enforcement
+- `[~]` Replace the spike-oriented CLI surface with product verbs
+  - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
+  - `run` now requires explicit `--daemon` or `--foreground`
+  - current runtime path is still limited to one enrolled file
 - `[x]` Make an empty policy file a clean no-op
 - `[x]` Derive the mount plan from enrolled files using the minimal non-overlapping mount strategy
 - `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
@@ -135,6 +139,17 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Load `policy.yml` from `~/.config/file-snitch/policy.yml` by default
 - `[x]` Accept an override path for `policy.yml` in the CLI
 - `[x]` Make empty or missing enrollments a no-op instead of requiring a synthetic mount root
+- `[x]` Add product-facing CLI verbs:
+  - `run`
+  - `enroll`
+  - `unenroll`
+  - `status`
+  - `doctor`
+- `[x]` Require `run` to receive either `--daemon` or `--foreground`
+- `[x]` Make `enroll` migrate the plaintext file into the guarded store and update `policy.yml`
+- `[x]` Make `unenroll` restore the guarded file to its original path and remove policy state
+- `[x]` Make `status` report enrollments, derived mounts, and daemon-relevant configuration from `policy.yml`
+- `[x]` Make `doctor` validate the policy file, guarded objects, and target-path health without mutating state
 - `[~]` Replace the current one-mount `mount <mount-path> <backing-store-path>` product path with policy-driven mount planning
 - `[~]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
 - `[~]` Distinguish guarded files from passthrough files in the Zig-owned lookup model

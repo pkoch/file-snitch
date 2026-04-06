@@ -396,6 +396,152 @@ test "policy file loader parses enrollments and collapses mount plan" {
     try std.testing.expectEqualStrings("/home/pkoch/.config/gh", mount_plan.paths[1]);
 }
 
+test "policy file save round-trips appended enrollments" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "roundtrip");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    try loaded.appendEnrollment("/home/pkoch/.kube/config", "kube-config");
+    try loaded.appendEnrollment("/home/pkoch/.ssh/id_ed25519", "ssh-main");
+    try loaded.saveToFile();
+
+    var reloaded = try config.loadFromFile(allocator, path);
+    defer reloaded.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), reloaded.enrollments.len);
+    try std.testing.expectEqualStrings("/home/pkoch/.kube/config", reloaded.enrollments[0].path);
+    try std.testing.expectEqualStrings("kube-config", reloaded.enrollments[0].object_id);
+    try std.testing.expectEqualStrings("/home/pkoch/.ssh/id_ed25519", reloaded.enrollments[1].path);
+    try std.testing.expectEqualStrings("ssh-main", reloaded.enrollments[1].object_id);
+    try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
+}
+
+test "policy file save removes enrollment and attached decisions" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "remove");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: /home/pkoch/.kube/config
+        \\    object_id: kube-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /home/pkoch/.kube/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: null
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    const index = loaded.findEnrollmentIndex("/home/pkoch/.kube/config").?;
+    loaded.removeDecisionsForPath("/home/pkoch/.kube/config");
+    var removed = loaded.removeEnrollmentAt(index);
+    defer removed.deinit(allocator);
+    try loaded.saveToFile();
+
+    var reloaded = try config.loadFromFile(allocator, path);
+    defer reloaded.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), reloaded.enrollments.len);
+    try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
+}
+
+test "compiled durable decisions respect executable path and uid" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "compiled-rules");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: /tmp/guarded/config
+        \\    object_id: kube-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: null
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: write_capable
+        \\    outcome: deny
+        \\    expires_at: null
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    var compiled = try loaded.compilePolicyRules(allocator);
+    defer compiled.deinit();
+
+    var engine = try policy.Engine.init(allocator, .allow, compiled.items);
+    defer engine.deinit();
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .read,
+        .pid = 42,
+        .uid = 1000,
+        .gid = 20,
+        .executable_path = "/usr/bin/kubectl",
+    }));
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .write,
+        .pid = 42,
+        .uid = 999,
+        .gid = 20,
+        .executable_path = "/usr/bin/kubectl",
+    }));
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .write,
+        .pid = 42,
+        .uid = 1000,
+        .gid = 20,
+        .executable_path = "/usr/bin/bash",
+    }));
+
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .write,
+        .pid = 42,
+        .uid = 1000,
+        .gid = 20,
+        .executable_path = "/usr/bin/kubectl",
+    }));
+}
+
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
     const run_id = std.time.nanoTimestamp();

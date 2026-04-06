@@ -17,7 +17,15 @@ Current state:
 - the new product direction is policy-driven exact-file enrollment through `file-snitch run`
 - `policy.yml` is now loaded from `~/.config/file-snitch/policy.yml` by default, with `--policy` override support
 - an empty or missing policy file is now a clean no-op
-- the current `run` path supports exactly one enrolled file
+- remembered decisions from `policy.yml` now compile into the runtime policy engine using the documented exact-path decision key
+- the CLI now has product-facing verbs:
+  - `run`
+  - `enroll`
+  - `unenroll`
+  - `status`
+  - `doctor`
+- `run` now requires explicit `--foreground` or `--daemon`
+- the current `run` path still supports exactly one enrolled file
 - the first real enrolled-file flow is live for a kubeconfig-style target:
   - mount the real parent directory
   - shadow the enrolled file from `~/.var/file-snitch/guarded-secrets/<object_id>`
@@ -33,6 +41,7 @@ Current state:
 - `src/`: Zig application code
 - `src/root.zig`: shared application module surface for tests and other non-CLI consumers
 - `src/cli.zig`: command-line parsing, env loading, and mount command dispatch
+- `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
 - `src/filesystem.zig`: Zig-owned guarded-root and enrolled-parent filesystem behavior
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
@@ -97,12 +106,18 @@ When debugging a specific area, the build-managed test step above is still the d
 - `src/prompt.zig`
 
 Prompt notes:
-- `file-snitch run [mutable|readonly|prompt] [--policy <path>]` is the new policy-driven entrypoint
+- `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run` currently supports exactly one enrolled file and mounts its real parent directory in place
+- `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
+- `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
+- `file-snitch status` prints the current enrollments plus the derived mount plan
+- `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
+- durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
 - the enrolled file's guarded object is currently resolved as `~/.var/file-snitch/guarded-secrets/<object_id>`
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
 - `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
 - mount mode always writes audit JSON lines to stdout
+- `run prompt --daemon` is intentionally rejected for now because the only prompt broker is interactive
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

@@ -20,6 +20,9 @@ pub const Rule = struct {
     path_prefix: []const u8,
     access_class: AccessClass,
     outcome: Outcome,
+    uid: ?u32 = null,
+    executable_path: ?[]const u8 = null,
+    exact_path: bool = false,
 };
 
 pub const Request = struct {
@@ -28,12 +31,16 @@ pub const Request = struct {
     pid: u32,
     uid: u32,
     gid: u32,
+    executable_path: ?[]const u8 = null,
 };
 
 const StoredRule = struct {
     path_prefix: []u8,
     access_class: AccessClass,
     outcome: Outcome,
+    uid: ?u32,
+    executable_path: ?[]u8,
+    exact_path: bool,
 };
 
 pub const Engine = struct {
@@ -55,11 +62,19 @@ pub const Engine = struct {
         for (source_rules) |rule| {
             const path_prefix = try allocator.dupe(u8, rule.path_prefix);
             errdefer allocator.free(path_prefix);
+            const executable_path = if (rule.executable_path) |value|
+                try allocator.dupe(u8, value)
+            else
+                null;
+            errdefer if (executable_path) |value| allocator.free(value);
 
             try engine.rules.append(allocator, .{
                 .path_prefix = path_prefix,
                 .access_class = rule.access_class,
                 .outcome = rule.outcome,
+                .uid = rule.uid,
+                .executable_path = executable_path,
+                .exact_path = rule.exact_path,
             });
         }
 
@@ -69,6 +84,9 @@ pub const Engine = struct {
     pub fn deinit(self: *Engine) void {
         for (self.rules.items) |rule| {
             self.allocator.free(rule.path_prefix);
+            if (rule.executable_path) |value| {
+                self.allocator.free(value);
+            }
         }
         self.rules.deinit(self.allocator);
         self.* = undefined;
@@ -83,8 +101,21 @@ pub const Engine = struct {
                 continue;
             }
 
-            if (!matchesPathPrefix(rule.path_prefix, request.path)) {
+            if (!matchesPath(rule.path_prefix, request.path, rule.exact_path)) {
                 continue;
+            }
+
+            if (rule.uid) |uid| {
+                if (uid != request.uid) {
+                    continue;
+                }
+            }
+
+            if (rule.executable_path) |executable_path| {
+                const request_executable_path = request.executable_path orelse continue;
+                if (!std.mem.eql(u8, executable_path, request_executable_path)) {
+                    continue;
+                }
             }
 
             if (rule.path_prefix.len < best_length) {
@@ -109,7 +140,11 @@ pub const Engine = struct {
     }
 };
 
-fn matchesPathPrefix(prefix: []const u8, path: []const u8) bool {
+fn matchesPath(prefix: []const u8, path: []const u8, exact_path: bool) bool {
+    if (exact_path) {
+        return std.mem.eql(u8, prefix, path);
+    }
+
     if (std.mem.eql(u8, prefix, "/")) {
         return path.len != 0 and path[0] == '/';
     }
