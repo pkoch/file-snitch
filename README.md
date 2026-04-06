@@ -8,45 +8,24 @@ The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 
 Current state:
 - phase-0 research docs and backlog are in place
-- the repo now has an initial Zig scaffold with a thin C `libfuse` shim
-- the shim exposes a stub session lifecycle that Zig can create, inspect, and destroy
-- the shim now owns a real high-level `fuse_operations` table shape
-- the shim now builds real mount argv and a compiled `fuse_setup`/`fuse_loop` execution path
-- the mounted root now answers `getattr` and `readdir` cleanly as a file-only guarded directory
-- the daemon/session API now supports dry-run inspection of synthetic filesystem behavior without mounting
-- the mount now seeds one-level regular files from a host backing-store directory
-- the mount now supports one-level in-memory regular files for create/read/write/truncate/unlink flows
-- those one-level regular file mutations now write through into the host backing-store directory
-- one-level file rename now updates both the mounted view and the backing-store directory
-- one-level chmod now persists into the backing-store directory
-- one-level uid/gid metadata is now tracked explicitly, and self-`chown` requests now pass through the mounted view
-- macOS `._*` AppleDouble sidecars are treated as transient mount-only files and are not persisted into the backing store
-- one-level xattrs now proxy to the backing-store file on macOS
-- xattrs now bypass prompt/deny policy entirely in the current spike; richer xattr mediation is deferred to future work
-- flush and fsync now act as explicit backing-store sync points for one-level regular files
-- the binary now has an explicit `mount` mode for foreground live-mount runs
-- mutating operations are now controlled by a Zig-owned default mutation outcome instead of a C-owned session flag
-- the daemon now owns an in-memory policy engine with path-prefix rules and `allow` / `deny` / `prompt` outcomes
-- the filesystem model, audit trail, and path semantics now live in Zig
-- the C shim now only owns `libfuse` ABI glue, mount execution, host-fd lock plumbing, and macOS xattr syscalls
-- the daemon now has a CLI prompt broker with default-deny timeout behavior
-- the session now records an in-memory audit trail for reads and mutations
-- mount mode now streams audit JSON to stdout instead of exposing a synthetic audit file inside the mount
-- audit JSON lines now include actor metadata (`pid`/`uid`/`gid`), timestamps, and structured operation fields for rename, xattrs, locks, flock, open/release file info, and fsync mode
-- mount mode can optionally stream status JSON snapshots to a caller-provided FIFO instead of exposing a synthetic status file inside the mount
-- Zig integration tests now exercise the dry-run session path, execution plan, persistence, and policy behavior without mounting
-- a scripted live smoke test now verifies the shared guarded-root flow across Linux and macOS, with host-specific extras layered in through platform helpers
-- a separate scripted macFUSE prompt smoke test now verifies live prompt allow, explicit deny, and timeout behavior
-- the live smoke test now also verifies temp-write replacement over an existing file
-- the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
-- the live smoke test now covers truncate+rewrite, chmod-after-save, swap-file cleanup, and partial overwrite flows
-- the live smoke test now covers xattr set/get/list/remove round-trips on mounted files
-- the live smoke test now covers BSD `flock` and POSIX lock contention/release on mounted files
-- the live smoke test now covers self-`chown` handling on mounted files
-- the mounted root is intentionally file-only beyond `/`; `mkdir` and `rmdir` fail explicitly in the current spike
-- directory support beyond the root itself is deferred out of the current spike scope
-- the live macOS smoke test observed both `._*` sidecar traffic and aggressive xattr probing during normal file activity
-- the same macOS smoke path treats behavioral lock contention/release as the main signal, because callback visibility is partial and style-dependent on macFUSE
+- the repo has a Zig core with a thin C `libfuse` shim and real `fuse_setup`/`fuse_loop` execution
+- the shim preserves raw callback detail; the filesystem model, policy timing, and audit semantics live in Zig
+- mount mode streams audit JSON to stdout and can stream status JSON snapshots to a caller-provided FIFO
+- audit JSON includes actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and structured operation detail
+- the CLI prompt broker is live, default-allow on blank input, and still defaults timeout to deny
+- the legacy guarded-root spike still exists through `file-snitch mount <mount-path> <backing-store-path> ...`
+- the new product direction is policy-driven exact-file enrollment through `file-snitch run`
+- `policy.yml` is now loaded from `~/.config/file-snitch/policy.yml` by default, with `--policy` override support
+- an empty or missing policy file is now a clean no-op
+- the current `run` path supports exactly one enrolled file
+- the first real enrolled-file flow is live for a kubeconfig-style target:
+  - mount the real parent directory
+  - shadow the enrolled file from `~/.var/file-snitch/guarded-secrets/<object_id>`
+  - passthrough sibling files from the preserved underlying parent directory
+- the real macOS demo was verified against `~/.kube/config`:
+  - while mounted, `~/.kube/config` resolved to the guarded object
+  - after unmount, the original host file was unchanged
+- macOS `._*` AppleDouble sidecars remain transient in the new enrolled-parent path and do not persist back into the real directory after unmount
 
 ## Layout
 
@@ -54,11 +33,11 @@ Current state:
 - `src/`: Zig application code
 - `src/root.zig`: shared application module surface for tests and other non-CLI consumers
 - `src/cli.zig`: command-line parsing, env loading, and mount command dispatch
-- `src/filesystem.zig`: Zig-owned guarded-directory model and backing-store behavior
+- `src/filesystem.zig`: Zig-owned guarded-root and enrolled-parent filesystem behavior
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
-- `scripts/`: auxiliary helpers; verification entrypoints now live under `tests/`
+- `vendor/zig-yaml/`: vendored YAML parser used for `policy.yml`
 
 ## Architecture guardrails
 
@@ -118,6 +97,9 @@ When debugging a specific area, the build-managed test step above is still the d
 - `src/prompt.zig`
 
 Prompt notes:
+- `file-snitch run [mutable|readonly|prompt] [--policy <path>]` is the new policy-driven entrypoint
+- `run` currently supports exactly one enrolled file and mounts its real parent directory in place
+- the enrolled file's guarded object is currently resolved as `~/.var/file-snitch/guarded-secrets/<object_id>`
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
 - `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
 - mount mode always writes audit JSON lines to stdout

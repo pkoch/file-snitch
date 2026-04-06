@@ -10,14 +10,15 @@ Status:
 
 ## Current priorities
 
-- `[x]` Finish the remaining phase-0 research before expanding the phase-1 surface further
-- `[x]` Record real file IO behavior for the selected target apps/tools
-  - captured in [docs/research/2 - target-app-matrix.md](./docs/research/2%20-%20target-app-matrix.md)
-  - nine targets produced syscall-backed evidence; OpenRouter turned into an explicit “not a good file-enrollment target” finding instead of a replacement target
-- `[x]` Narrow the v1 mediated operation set based on observed write patterns
-  - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
-- `[x]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
-  - recommendation captured in [docs/research/10 - mount-planner-strategy.md](./docs/research/10%20-%20mount-planner-strategy.md)
+- `[~]` Pivot the spike from a synthetic guarded root to policy-driven exact-file enrollment
+- `[~]` Add `~/.config/file-snitch/policy.yml` as the durable source of truth for enrollments and remembered decisions
+  - enrollments now load from `policy.yml`
+  - remembered decisions are still not consumed from it
+- `[x]` Make an empty policy file a clean no-op
+- `[x]` Derive the mount plan from enrolled files using the minimal non-overlapping mount strategy
+- `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
+  - verified live for a single kubeconfig-style target on macOS
+  - still limited to one enrolled file
 
 ## Cross-cutting guardrails
 
@@ -121,6 +122,25 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
 - `[x]` Package a reproducible spike workflow through the maintained smoke-test entrypoints
 - `[x]` Verify the live guarded-root spike on Linux
+
+## Phase 1.5: policy-driven file enrollment pivot
+
+Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real exact-file enrollment demo driven by durable policy.
+
+- `[x]` Add a YAML parser dependency for `policy.yml`
+- `[x]` Define the initial `policy.yml` schema
+  - `version`
+  - `enrollments`
+  - `decisions`
+- `[x]` Load `policy.yml` from `~/.config/file-snitch/policy.yml` by default
+- `[x]` Accept an override path for `policy.yml` in the CLI
+- `[x]` Make empty or missing enrollments a no-op instead of requiring a synthetic mount root
+- `[~]` Replace the current one-mount `mount <mount-path> <backing-store-path>` product path with policy-driven mount planning
+- `[~]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
+- `[~]` Distinguish guarded files from passthrough files in the Zig-owned lookup model
+- `[ ]` Move directory enumeration out of the root-only shim path so mounted parent directories can expose guarded files plus passthrough siblings
+- `[~]` Demonstrate one real exact-file flow, starting with kubeconfig-style `~/.kube/config`
+  - verified live on macOS against a real `~/.kube/config` shadowed from an alternate guarded object
 
 ## Future work
 

@@ -23,6 +23,18 @@ pub const Config = struct {
     audit_output_file: ?std.fs.File = null,
 };
 
+pub const EnrolledParentConfig = struct {
+    mount_path: []const u8,
+    guarded_file_name: []const u8,
+    guarded_backing_file_path: []const u8,
+    run_in_foreground: bool = true,
+    default_mutation_outcome: policy.Outcome = .deny,
+    policy_rules: []const policy.Rule = &.{},
+    prompt_broker: ?prompt.Broker = null,
+    status_output_file: ?std.fs.File = null,
+    audit_output_file: ?std.fs.File = null,
+};
+
 pub const Description = struct {
     backend_name: []const u8,
     mount_path: []const u8,
@@ -149,6 +161,55 @@ pub const Session = struct {
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
             .backing_store_path = backing_store_path_z,
+            .daemon_state = state,
+            .run_in_foreground = config.run_in_foreground,
+        });
+        errdefer fuse.destroySession(handle);
+
+        const runtime = try fuse.describeSession(handle);
+        state.filesystem.setRuntimeStats(.{
+            .configured_operation_count = runtime.configured_operation_count,
+            .planned_argument_count = runtime.planned_argument_count,
+        });
+
+        return .{
+            .allocator = allocator,
+            .state = state,
+            .handle = handle,
+        };
+    }
+
+    pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Session {
+        const mount_path_z = try allocator.dupeZ(u8, config.mount_path);
+        defer allocator.free(mount_path_z);
+        const guarded_file_name_z = try allocator.dupeZ(u8, config.guarded_file_name);
+        defer allocator.free(guarded_file_name_z);
+        const guarded_backing_file_path_z = try allocator.dupeZ(u8, config.guarded_backing_file_path);
+        defer allocator.free(guarded_backing_file_path_z);
+
+        const state = try allocator.create(State);
+        errdefer allocator.destroy(state);
+        state.* = .{
+            .filesystem = try filesystem.Model.initEnrolledParent(allocator, .{
+                .mount_path = config.mount_path,
+                .guarded_file_name = config.guarded_file_name,
+                .guarded_backing_file_path = config.guarded_backing_file_path,
+                .default_mutation_outcome = config.default_mutation_outcome,
+                .policy_rules = config.policy_rules,
+                .prompt_broker = config.prompt_broker,
+                .status_output_file = config.status_output_file,
+                .audit_output_file = config.audit_output_file,
+            }),
+        };
+        errdefer state.filesystem.deinit();
+
+        const handle = try fuse.createSession(.{
+            .mount_path = mount_path_z,
+            .backing_store_path = null,
+            .guarded_file_name = guarded_file_name_z,
+            .guarded_backing_file_path = guarded_backing_file_path_z,
+            .source_dir_fd = state.filesystem.source_dir.?.fd,
+            .layout_kind = 1,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
         });
@@ -317,6 +378,27 @@ pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
     try ensureDirectory(config.backing_store_path);
 
     var session = try Session.init(allocator, config);
+    defer session.deinit();
+
+    const description = try session.describe();
+    std.debug.print(
+        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
+        .{
+            description.mount_path,
+            description.backing_store_path,
+            description.configured_operation_count,
+            @tagName(description.default_mutation_outcome),
+        },
+    );
+    session.publishStatus();
+
+    try session.run();
+}
+
+pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !void {
+    try ensureDirectory(config.mount_path);
+
+    var session = try Session.initEnrolledParent(allocator, config);
     defer session.deinit();
 
     const description = try session.describe();

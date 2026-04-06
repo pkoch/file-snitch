@@ -1,3 +1,9 @@
+const yaml = @import("yaml");
+comptime {
+    _ = yaml;
+}
+
+pub const config = @import("config.zig");
 pub const daemon = @import("daemon.zig");
 pub const filesystem = @import("filesystem.zig");
 pub const policy = @import("policy.zig");

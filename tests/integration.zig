@@ -1,9 +1,14 @@
 const std = @import("std");
 const app_src = @import("app_src");
+const config = app_src.config;
 const daemon = app_src.daemon;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
 const prompt = app_src.prompt;
+
+pub const std_options: std.Options = .{
+    .log_level = .info,
+};
 
 const seed_name = "seed-from-store.txt";
 const seed_path = "/" ++ seed_name;
@@ -317,6 +322,158 @@ test "transient rename rollback keeps source entry when persist fails" {
         filesystem.NodeKind.missing,
         (try session.inspectPath("/rename-target.txt")).kind,
     );
+}
+
+test "policy file loader treats empty file as a no-op" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "empty");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    file.close();
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), loaded.version);
+    try std.testing.expectEqual(@as(usize, 0), loaded.enrollments.len);
+    try std.testing.expectEqual(@as(usize, 0), loaded.decisions.len);
+
+    var mount_plan = try loaded.deriveMountPlan(allocator);
+    defer mount_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 0), mount_plan.paths.len);
+}
+
+test "policy file loader parses enrollments and collapses mount plan" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "planned");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: /home/pkoch/.kube/config
+        \\    object_id: kube-config
+        \\  - path: /home/pkoch/.config/gh/hosts.yml
+        \\    object_id: gh-hosts
+        \\  - path: /home/pkoch/.config/gh/extensions/foo/token.json
+        \\    object_id: gh-extension-token
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /home/pkoch/.kube/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: null
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), loaded.enrollments.len);
+    try std.testing.expectEqualStrings("/home/pkoch/.kube/config", loaded.enrollments[0].path);
+    try std.testing.expectEqualStrings("kube-config", loaded.enrollments[0].object_id);
+    try std.testing.expectEqual(@as(usize, 1), loaded.decisions.len);
+    try std.testing.expectEqualStrings("/usr/bin/kubectl", loaded.decisions[0].executable_path);
+    try std.testing.expectEqualStrings("read_like", loaded.decisions[0].approval_class);
+    try std.testing.expectEqualStrings("allow", loaded.decisions[0].outcome);
+    try std.testing.expect(loaded.decisions[0].expires_at == null);
+
+    var mount_plan = try loaded.deriveMountPlan(allocator);
+    defer mount_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 2), mount_plan.paths.len);
+    try std.testing.expectEqualStrings("/home/pkoch/.kube", mount_plan.paths[0]);
+    try std.testing.expectEqualStrings("/home/pkoch/.config/gh", mount_plan.paths[1]);
+}
+
+test "enrolled parent shadows the guarded file and passes through siblings" {
+    const allocator = std.testing.allocator;
+    const run_id = std.time.nanoTimestamp();
+    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-{d}", .{run_id});
+    defer allocator.free(source_parent);
+    const backing_file_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-{d}", .{run_id});
+    defer allocator.free(backing_file_path);
+    const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
+    defer allocator.free(source_guarded_path);
+    const sibling_path = try std.fmt.allocPrint(allocator, "{s}/sibling.txt", .{source_parent});
+    defer allocator.free(sibling_path);
+
+    try std.fs.makeDirAbsolute(source_parent);
+    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    defer std.fs.deleteFileAbsolute(backing_file_path) catch {};
+
+    var source_guarded_file = try std.fs.createFileAbsolute(source_guarded_path, .{ .truncate = true });
+    defer source_guarded_file.close();
+    try source_guarded_file.writeAll("host kubeconfig\n");
+
+    var sibling_file = try std.fs.createFileAbsolute(sibling_path, .{ .truncate = true });
+    defer sibling_file.close();
+    try sibling_file.writeAll("plain sibling\n");
+
+    var backing_file = try std.fs.createFileAbsolute(backing_file_path, .{ .truncate = true });
+    defer backing_file.close();
+    try backing_file.writeAll("guarded kubeconfig\n");
+
+    var session = try daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = source_parent,
+        .guarded_file_name = "config",
+        .guarded_backing_file_path = backing_file_path,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .allow,
+    });
+    defer session.deinit();
+
+    const guarded_node = try session.inspectPath("/config");
+    const sibling_node = try session.inspectPath("/sibling.txt");
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, guarded_node.kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, sibling_node.kind);
+
+    const guarded_contents = try session.readPath(allocator, "/config");
+    defer allocator.free(guarded_contents);
+    try std.testing.expectEqualStrings("guarded kubeconfig\n", guarded_contents);
+
+    const sibling_contents = try session.readPath(allocator, "/sibling.txt");
+    defer allocator.free(sibling_contents);
+    try std.testing.expectEqualStrings("plain sibling\n", sibling_contents);
+
+    try session.debugWriteFile("/config", "updated guarded kubeconfig\n");
+    try session.debugWriteFile("/sibling.txt", "updated sibling\n");
+
+    const backing_contents = try readFileAbsoluteAlloc(allocator, backing_file_path);
+    defer allocator.free(backing_contents);
+    try std.testing.expectEqualStrings("updated guarded kubeconfig\n", backing_contents);
+
+    const source_guarded_contents = try readFileAbsoluteAlloc(allocator, source_guarded_path);
+    defer allocator.free(source_guarded_contents);
+    try std.testing.expectEqualStrings("host kubeconfig\n", source_guarded_contents);
+
+    const sibling_host_contents = try readFileAbsoluteAlloc(allocator, sibling_path);
+    defer allocator.free(sibling_host_contents);
+    try std.testing.expectEqualStrings("updated sibling\n", sibling_host_contents);
+}
+
+fn tempPolicyPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "/tmp/file-snitch.policy-{s}-{d}.yml",
+        .{ name, std.time.nanoTimestamp() },
+    );
+}
+
+fn readFileAbsoluteAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    defer file.close();
+    return file.readToEndAlloc(allocator, 1024 * 1024);
 }
 
 fn expectAuditEvent(

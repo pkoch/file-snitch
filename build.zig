@@ -4,12 +4,18 @@ const fuse_support = @import("build/fuse_support.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const yaml_module = b.createModule(.{
+        .root_source_file = b.path("vendor/zig-yaml/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const executable_module = b.createModule(.{
         .root_source_file = b.path("src/cli.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    executable_module.addImport("yaml", yaml_module);
     configureFuseInterop(b, executable_module, target.result.os.tag);
 
     const exe = b.addExecutable(.{
@@ -25,12 +31,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    test_module.addImport("app_src", b.createModule(.{
+    const app_src_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-    }));
+    });
+    app_src_module.addImport("yaml", yaml_module);
+    test_module.addImport("app_src", app_src_module);
     configureFuseInterop(b, test_module, target.result.os.tag);
 
     const tests = b.addTest(.{

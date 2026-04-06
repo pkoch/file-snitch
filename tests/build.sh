@@ -36,7 +36,9 @@ case "$(uname -s)" in
       --dep app_src \
       -Mroot=tests/integration.zig \
       -ODebug \
+      --dep yaml \
       -Mapp_src=src/root.zig \
+      -Myaml=vendor/zig-yaml/src/lib.zig \
       -lc \
       --cache-dir "$cache_dir" \
       --global-cache-dir "$global_cache_dir"

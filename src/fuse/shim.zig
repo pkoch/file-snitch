@@ -13,7 +13,11 @@ const c = struct {
 
     pub const RawSessionConfig = extern struct {
         mount_path: [*:0]const u8,
-        backing_store_path: [*:0]const u8,
+        backing_store_path: ?[*:0]const u8,
+        guarded_file_name: ?[*:0]const u8,
+        guarded_backing_file_path: ?[*:0]const u8,
+        source_dir_fd: i32,
+        layout_kind: u8,
         daemon_state: ?*anyopaque,
         run_in_foreground: u8,
         reserved: [3]u8,
@@ -52,7 +56,11 @@ pub const Environment = struct {
 
 pub const SessionConfig = struct {
     mount_path: [*:0]const u8,
-    backing_store_path: [*:0]const u8,
+    backing_store_path: ?[*:0]const u8 = null,
+    guarded_file_name: ?[*:0]const u8 = null,
+    guarded_backing_file_path: ?[*:0]const u8 = null,
+    source_dir_fd: i32 = -1,
+    layout_kind: u8 = 0,
     daemon_state: ?*anyopaque = null,
     run_in_foreground: bool,
 };
@@ -98,6 +106,10 @@ pub fn createSession(config: SessionConfig) Error!*RawSession {
     var raw_config = c.RawSessionConfig{
         .mount_path = config.mount_path,
         .backing_store_path = config.backing_store_path,
+        .guarded_file_name = config.guarded_file_name,
+        .guarded_backing_file_path = config.guarded_backing_file_path,
+        .source_dir_fd = config.source_dir_fd,
+        .layout_kind = config.layout_kind,
         .daemon_state = config.daemon_state,
         .run_in_foreground = @intFromBool(config.run_in_foreground),
         .reserved = std.mem.zeroes([3]u8),
