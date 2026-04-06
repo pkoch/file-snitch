@@ -24,9 +24,12 @@ Simple live mount runs on both platforms using the current mutable path:
 These are intentionally small tests.
 They are enough to validate the common shell path before moving on to helper-heavy tools or editors.
 
-An additional Linux-only helper-heavy check was also run:
+Additional helper-heavy checks were also run:
 
-4. `gh auth status --json hosts` with `GH_CONFIG_DIR` pointed at a mounted config directory containing:
+4. `gh auth status --json hosts` on Linux with `GH_CONFIG_DIR` pointed at a mounted config directory containing:
+   - `config.yml`
+   - `hosts.yml`
+5. `gh auth status --json hosts` on macOS with `GH_CONFIG_DIR` pointed at a mounted config directory containing:
    - `config.yml`
    - `hosts.yml`
 
@@ -59,6 +62,17 @@ Implication:
   - `read`
   - `write`
   - `rename`
+
+Additional helper-heavy finding:
+- `gh auth status --json hosts` opened both `config.yml` and `hosts.yml`
+- those reads carried:
+  - the `gh` pid
+  - the expected `uid` and `gid`
+  - the Homebrew `gh` executable path
+
+Implication:
+- macOS attribution is not just good for shell and `mv`
+- it is also good for at least one real secret-bearing helper-heavy CLI path on the VFS backend
 
 ### Linux
 
@@ -148,7 +162,7 @@ Where “caller identity” should be based on request-time attribution only.
 
 - helper-heavy and metadata-heavy flows on Linux
 - helper-heavy and metadata-heavy flows on Linux beyond the current `gh` config-read case
-- helper-heavy and metadata-heavy flows on macOS
+- helper-heavy and metadata-heavy flows on macOS beyond the current `gh` config-read case
 - whether any other callbacks besides `release` lose actor identity on Linux
 - how much macOS attribution changes under FSKit-backed setups, if that backend becomes relevant
 

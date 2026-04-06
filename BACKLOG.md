@@ -43,15 +43,18 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 - `[~]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
   - verified for simple shell request-time flows and a real `gh` config-read path; still need broader metadata-heavy validation
+  - important caveat: `release` is not actor-bearing on Linux and must not drive policy or cache decisions
 - `[~]` Verify caller attribution assumptions on macOS with macFUSE
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
-  - verified for simple VFS-backed shell and CLI request-time flows; still need broader validation and backend caveat tracking
+  - verified for simple VFS-backed shell request-time flows and a real `gh` config-read path; still need broader validation and backend caveat tracking
+  - important caveat: current findings are VFS-backed observations, not a blanket claim about the FSKit backend
 - `[ ]` Document prompt latency constraints and timeout assumptions
 - `[x]` Produce a recommendation for the exact Linux spike scope
   - current architecture recommendation captured in [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
   - current scope: exact-path file enrollment, sparse parent-directory virtualization, full unprotected-subtree passthrough, temp files ignored as protected objects
-- `[ ]` Produce a recommendation for the exact v1 approval cache key after attribution validation
-  - floor shape: caller identity + exact enrolled path + approval class
+- `[x]` Produce a recommendation for the exact v1 durable decision key after attribution validation
+  - floor shape: executable path + uid + exact enrolled path + approval class
+  - recommendation captured in [docs/research/6 - durable-decision-key.md](./docs/research/6%20-%20durable-decision-key.md)
 
 ## Phase 1: Linux spike
 
@@ -160,8 +163,10 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[x]` Exact v1 protected scope: per-file enrollment with sparse parent-directory virtualization
   - architecture note: [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
   - exact-path enrollment only, full unprotected-subtree passthrough, ignore temp files as protected objects
-- `[ ]` Exact v1 approval cache key
-  - move to Phase 0 recommendation work after attribution validation
+- `[x]` Exact v1 durable decision key
+  - request-time executable path + uid + exact enrolled path + approval class
+  - one-shot decisions stay ephemeral; time-bounded and persistent decisions live in a watched policy store
+  - recommendation captured in [docs/research/6 - durable-decision-key.md](./docs/research/6%20-%20durable-decision-key.md)
 - `[x]` Whether reads and writes need separate approval classes in v1
   - yes: keep distinct read-like and write-capable approval classes
   - read approval must not silently authorize later write behavior
