@@ -141,7 +141,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export
 - `[ ]` Add debug bundle generation
-- `[ ]` Write threat-model and operations docs
+- `[ ]` Write threat-model and operations docs. Be sure to include the hash of the requesting bin.
 - `[ ]` Write install, usage, and troubleshooting docs
 
 ## Open decisions
