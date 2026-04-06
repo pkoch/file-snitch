@@ -116,6 +116,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[ ]` Add a recent-events view
 - `[ ]` Add a basic rule editor
 - `[ ]` Verify daemon behavior when the UI is unavailable or restarted
+- `[ ]` Add a specific warning for [LOLBins](https://gtfobins.org)
 
 ## Phase 4: macOS port
 
