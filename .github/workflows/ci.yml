@@ -127,4 +127,4 @@ jobs:
             --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
 
       - name: Run Linux live mount smoke
-        run: ./scripts/linux-live-mount-smoke.sh
+        run: ./scripts/live-mount-smoke.sh

@@ -35,7 +35,7 @@ Current state:
 - audit JSON lines now include actor metadata (`pid`/`uid`/`gid`), timestamps, and structured operation fields for rename, xattrs, locks, flock, open/release file info, and fsync mode
 - mount mode can optionally stream status JSON snapshots to a caller-provided FIFO instead of exposing a synthetic status file inside the mount
 - Zig integration tests now exercise the dry-run session path, execution plan, persistence, and policy behavior without mounting
-- a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS
+- a scripted live smoke test now verifies the shared guarded-root flow across Linux and macOS, with host-specific extras layered in through platform helpers
 - a separate scripted macFUSE prompt smoke test now verifies live prompt allow, explicit deny, and timeout behavior
 - the live smoke test now also verifies temp-write replacement over an existing file
 - the live smoke test now covers hidden-temp and backup-style save flows in addition to plain temp replacement
@@ -100,7 +100,6 @@ Current validation workflow:
 zig build
 zig build test
 zig build compile-commands
-./scripts/linux-live-mount-smoke.sh
 ./scripts/live-mount-smoke.sh
 ./scripts/prompt-mount-smoke.sh
 ```
@@ -111,8 +110,7 @@ What each command covers:
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
-- `./scripts/linux-live-mount-smoke.sh`: live Linux `libfuse3` mount verification for the mutable guarded-root path
-- `./scripts/live-mount-smoke.sh`: live macFUSE mount verification for the file-only root, file mutation flows, xattrs, locks, audit stdout, and status FIFO output
+- `./scripts/live-mount-smoke.sh`: live mount verification for the mutable guarded-root path, with one shared core smoke flow plus platform-specific helpers and extra coverage where the host platform supports it
 - `./scripts/prompt-mount-smoke.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
