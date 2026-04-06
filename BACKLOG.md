@@ -12,7 +12,8 @@ Status:
 
 - `[~]` Finish the remaining phase-0 research before expanding the phase-1 surface further
 - `[ ]` Record real file IO behavior for the selected target apps/tools
-- `[ ]` Narrow the v1 mediated operation set based on observed write patterns
+- `[x]` Narrow the v1 mediated operation set based on observed write patterns
+  - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
 - `[ ]` Define the smallest end-to-end Linux spike demo
 - `[ ]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
 
@@ -37,7 +38,8 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
   - temp file plus rename behavior
   - chmod/chown usage
   - file locking behavior
-- `[ ]` Summarize which filesystem operations v1 must mediate
+- `[x]` Summarize which filesystem operations v1 must mediate
+  - current recommendation captured in [docs/research/7 - mediated-operation-set.md](./docs/research/7%20-%20mediated-operation-set.md)
 - `[x]` Compare Linux spike implementation options and record a recommendation
 - `[x]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
 - `[~]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
