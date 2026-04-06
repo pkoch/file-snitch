@@ -40,8 +40,12 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 - `[ ]` Summarize which filesystem operations v1 must mediate
 - `[x]` Compare Linux spike implementation options and record a recommendation
 - `[x]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
-- `[ ]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
-- `[ ]` Verify caller attribution assumptions on macOS with macFUSE
+- `[~]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
+  - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
+  - verified for simple shell and CLI request-time flows; still need broader helper-heavy validation
+- `[~]` Verify caller attribution assumptions on macOS with macFUSE
+  - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
+  - verified for simple VFS-backed shell and CLI request-time flows; still need broader validation and backend caveat tracking
 - `[ ]` Document prompt latency constraints and timeout assumptions
 - `[x]` Produce a recommendation for the exact Linux spike scope
   - current architecture recommendation captured in [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
