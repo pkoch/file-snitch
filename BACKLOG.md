@@ -14,6 +14,7 @@ Status:
 - `[ ]` Record real file IO behavior for the selected target apps/tools
 - `[ ]` Narrow the v1 mediated operation set based on observed write patterns
 - `[ ]` Define the smallest end-to-end Linux spike demo
+- `[ ]` Validate the minimal non-overlapping mount-planner strategy for per-file enrollment
 
 ## Cross-cutting guardrails
 
@@ -42,7 +43,11 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 - `[ ]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
 - `[ ]` Verify caller attribution assumptions on macOS with macFUSE
 - `[ ]` Document prompt latency constraints and timeout assumptions
-- `[ ]` Produce a recommendation for the exact Linux spike scope
+- `[x]` Produce a recommendation for the exact Linux spike scope
+  - current architecture recommendation captured in [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
+  - current scope: exact-path file enrollment, sparse parent-directory virtualization, full unprotected-subtree passthrough, temp files ignored as protected objects
+- `[ ]` Produce a recommendation for the exact v1 approval cache key after attribution validation
+  - floor shape: caller identity + exact enrolled path + approval class
 
 ## Phase 1: Linux spike
 
@@ -148,7 +153,14 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 ## Open decisions
 
 - `[x]` Exact Zig/C boundary for `libfuse` interop after the current model/ABI split cleanup
-- `[ ]` Exact v1 protected scope: per-file enrollment vs path-based trees only
+- `[x]` Exact v1 protected scope: per-file enrollment with sparse parent-directory virtualization
+  - architecture note: [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
+  - exact-path enrollment only, full unprotected-subtree passthrough, ignore temp files as protected objects
 - `[ ]` Exact v1 approval cache key
-- `[ ]` Whether reads and writes need separate approval classes in v1
-- `[ ]` Whether the backing store should expose filenames or only opaque IDs
+  - move to Phase 0 recommendation work after attribution validation
+- `[x]` Whether reads and writes need separate approval classes in v1
+  - yes: keep distinct read-like and write-capable approval classes
+  - read approval must not silently authorize later write behavior
+- `[x]` Whether the backing store should expose filenames or only opaque IDs
+  - use opaque IDs
+  - canonical user paths live in enrollment and policy state, not as backing-store object names
