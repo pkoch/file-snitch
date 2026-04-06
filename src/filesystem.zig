@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
@@ -458,7 +459,7 @@ pub const Model = struct {
         return self.authorizeAccessDetailed(path, access_class, context, null);
     }
 
-    pub fn authorizeOpen(
+    pub fn openFile(
         self: *Model,
         path: []const u8,
         file_request: FileRequestInfo,
@@ -469,7 +470,16 @@ pub const Model = struct {
             return errnoCode(.NOMEM);
         };
         defer self.allocator.free(label);
-        return self.authorizeAccessDetailed(path, access_class, context, label);
+        const auth_result = self.authorizeAccessDetailed(path, access_class, context, label);
+        if (auth_result != 0) {
+            return auth_result;
+        }
+
+        if ((file_request.flags & c.O_TRUNC) != 0 and (file_request.flags & c.O_ACCMODE) != c.O_RDONLY) {
+            return self.truncateOpenedFile(path);
+        }
+
+        return 0;
     }
 
     fn authorizeAccessDetailed(
@@ -671,10 +681,16 @@ pub const Model = struct {
         const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
         defer self.allocator.free(name_z);
 
-        const result = if (c.setxattr(host_path.ptr, name_z.ptr, value.ptr, value.len, position, flags) == 0)
-            0
+        const result = if (builtin.os.tag == .macos)
+            (if (c.setxattr(host_path.ptr, name_z.ptr, value.ptr, value.len, position, flags) == 0)
+                0
+            else
+                errnoCode(std.posix.errno(-1)))
         else
-            errnoCode(std.posix.errno(-1));
+            (if (c.setxattr(host_path.ptr, name_z.ptr, value.ptr, value.len, flags) == 0)
+                0
+            else
+                errnoCode(std.posix.errno(-1)));
         if (result == 0) {
             if (self.findFile(path)) |file| {
                 touchFileChange(file);
@@ -701,7 +717,8 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         _ = context;
-        const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.NOATTR))) {
+        const missing_xattr = if (builtin.os.tag == .macos) std.posix.E.NOATTR else std.posix.E.NODATA;
+        const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(missing_xattr))) {
             .ok => |host_path_z| host_path_z,
             .err => |code| return code,
         };
@@ -710,7 +727,10 @@ pub const Model = struct {
         const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
         defer self.allocator.free(name_z);
 
-        const result = c.getxattr(host_path.ptr, name_z.ptr, if (value.len == 0) null else value.ptr, value.len, position, 0);
+        const result = if (builtin.os.tag == .macos)
+            c.getxattr(host_path.ptr, name_z.ptr, if (value.len == 0) null else value.ptr, value.len, position, 0)
+        else
+            c.getxattr(host_path.ptr, name_z.ptr, if (value.len == 0) null else value.ptr, value.len);
         if (result < 0) {
             return errnoCode(std.posix.errno(-1));
         }
@@ -733,7 +753,10 @@ pub const Model = struct {
         };
         defer self.allocator.free(host_path);
 
-        const result = c.listxattr(host_path.ptr, if (list.len == 0) null else list.ptr, list.len, 0);
+        const result = if (builtin.os.tag == .macos)
+            c.listxattr(host_path.ptr, if (list.len == 0) null else list.ptr, list.len, 0)
+        else
+            c.listxattr(host_path.ptr, if (list.len == 0) null else list.ptr, list.len);
         if (result < 0) {
             return errnoCode(std.posix.errno(-1));
         }
@@ -763,10 +786,16 @@ pub const Model = struct {
         const name_z = self.allocator.dupeZ(u8, name) catch return errnoCode(.NOMEM);
         defer self.allocator.free(name_z);
 
-        const result = if (c.removexattr(host_path.ptr, name_z.ptr, 0) == 0)
-            0
+        const result = if (builtin.os.tag == .macos)
+            (if (c.removexattr(host_path.ptr, name_z.ptr, 0) == 0)
+                0
+            else
+                errnoCode(std.posix.errno(-1)))
         else
-            errnoCode(std.posix.errno(-1));
+            (if (c.removexattr(host_path.ptr, name_z.ptr) == 0)
+                0
+            else
+                errnoCode(std.posix.errno(-1)));
         if (result == 0) {
             if (self.findFile(path)) |file| {
                 touchFileChange(file);
@@ -1014,6 +1043,19 @@ pub const Model = struct {
         defer self.allocator.free(snapshot);
 
         resizeArrayList(self.allocator, &file.content, @intCast(size)) catch |err| {
+            return mapFsError(err);
+        };
+        touchFileContent(file);
+
+        return self.finishContentMutation(path, file, snapshot, 0);
+    }
+
+    fn truncateOpenedFile(self: *Model, path: []const u8) i32 {
+        const file = self.findFile(path) orelse return errnoCode(.NOENT);
+        const snapshot = self.snapshotFileContent(file) catch |err| return mapFsError(err);
+        defer self.allocator.free(snapshot);
+
+        resizeArrayList(self.allocator, &file.content, 0) catch |err| {
             return mapFsError(err);
         };
         touchFileContent(file);

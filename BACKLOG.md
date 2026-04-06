@@ -98,7 +98,8 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[x]` Emit structured JSON audit logs with actor and operation detail
 - `[x]` Test common editor temp-write and rename flows
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
-- `[ ]` Package a reproducible spike workflow
+- `[x]` Package a reproducible spike workflow through the maintained smoke-test entrypoints
+- `[x]` Verify the live guarded-root spike on Linux
 
 ## Future work
 

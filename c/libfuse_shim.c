@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define FUSE_USE_VERSION 312
 
 #include <dirent.h>
@@ -19,6 +20,10 @@
 #include <unistd.h>
 
 #include "libfuse_shim.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /*
  * Shim boundary contract:
@@ -243,7 +248,13 @@ static void fsn_free_argument_vector(char **argv, uint32_t argc);
 static void fsn_capture_file_info(const struct fuse_file_info *fi, struct fsn_bridge_file_info *out);
 static void fsn_capture_lock(int cmd, const struct flock *lock, struct fsn_bridge_lock *out);
 
-static void *fsn_fuse_init(struct fuse_conn_info *conn) {
+static void *
+#ifdef __linux__
+fsn_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+    (void)cfg;
+#else
+fsn_fuse_init(struct fuse_conn_info *conn) {
+#endif
     if (conn != NULL) {
         conn->want |= FUSE_CAP_POSIX_LOCKS;
         conn->want |= FUSE_CAP_FLOCK_LOCKS;
@@ -256,7 +267,13 @@ static void fsn_fuse_destroy(void *private_data) {
     (void)private_data;
 }
 
-static int fsn_fuse_getattr(const char *path, struct stat *stbuf) {
+static int
+#ifdef __linux__
+fsn_fuse_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
+    (void)fi;
+#else
+fsn_fuse_getattr(const char *path, struct stat *stbuf) {
+#endif
     struct fsn_bridge_lookup lookup;
 
     if (path == NULL || stbuf == NULL) {
@@ -302,6 +319,10 @@ static int fsn_fuse_readdir(
     fuse_fill_dir_t filler,
     off_t off,
     struct fuse_file_info *fi
+#ifdef __linux__
+    ,
+    enum fuse_readdir_flags flags
+#endif
 ) {
     struct stat stbuf;
     struct fsn_bridge_lookup directory_lookup;
@@ -311,6 +332,9 @@ static int fsn_fuse_readdir(
 
     (void)off;
     (void)fi;
+#ifdef __linux__
+    (void)flags;
+#endif
 
     if (path == NULL || buf == NULL || filler == NULL) {
         return -EINVAL;
@@ -327,11 +351,19 @@ static int fsn_fuse_readdir(
 
     memset(&stbuf, 0, sizeof(stbuf));
     fsn_fill_stat_from_lookup(&directory_lookup, &stbuf);
-    if (filler(buf, ".", &stbuf, 0) != 0) {
+    if (filler(buf, ".", &stbuf, 0
+#ifdef __linux__
+        , 0
+#endif
+    ) != 0) {
         return 0;
     }
 
-    if (filler(buf, "..", &stbuf, 0) != 0) {
+    if (filler(buf, "..", &stbuf, 0
+#ifdef __linux__
+        , 0
+#endif
+    ) != 0) {
         return 0;
     }
 
@@ -359,7 +391,11 @@ static int fsn_fuse_readdir(
 
         memset(&stbuf, 0, sizeof(stbuf));
         fsn_fill_stat_from_lookup(&lookup, &stbuf);
-        if (filler(buf, name, &stbuf, 0) != 0) {
+        if (filler(buf, name, &stbuf, 0
+#ifdef __linux__
+            , 0
+#endif
+        ) != 0) {
             return 0;
         }
     }
@@ -581,7 +617,13 @@ static int fsn_fuse_write(
     return fsn_daemon_write(session->daemon_state, &request, &file_info, (uint64_t)off, size, buf);
 }
 
-static int fsn_fuse_truncate(const char *path, off_t size) {
+static int
+#ifdef __linux__
+fsn_fuse_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+    (void)fi;
+#else
+fsn_fuse_truncate(const char *path, off_t size) {
+#endif
     struct fsn_bridge_request request;
     struct fsn_fuse_session *session;
 
@@ -597,7 +639,13 @@ static int fsn_fuse_truncate(const char *path, off_t size) {
     return fsn_daemon_truncate(session->daemon_state, &request, (uint64_t)size);
 }
 
-static int fsn_fuse_chmod(const char *path, mode_t mode) {
+static int
+#ifdef __linux__
+fsn_fuse_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    (void)fi;
+#else
+fsn_fuse_chmod(const char *path, mode_t mode) {
+#endif
     struct fsn_bridge_request request;
     struct fsn_fuse_session *session;
 
@@ -613,7 +661,13 @@ static int fsn_fuse_chmod(const char *path, mode_t mode) {
     return fsn_daemon_chmod(session->daemon_state, &request, (uint32_t)mode);
 }
 
-static int fsn_fuse_chown(const char *path, uid_t uid, gid_t gid) {
+static int
+#ifdef __linux__
+fsn_fuse_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
+    (void)fi;
+#else
+fsn_fuse_chown(const char *path, uid_t uid, gid_t gid) {
+#endif
     struct fsn_bridge_request request;
     struct fsn_fuse_session *session;
 
@@ -860,7 +914,15 @@ static int fsn_fuse_rmdir(const char *path) {
     return fsn_daemon_rmdir(session->daemon_state, &request);
 }
 
-static int fsn_fuse_rename(const char *from, const char *to) {
+static int
+#ifdef __linux__
+fsn_fuse_rename(const char *from, const char *to, unsigned int flags) {
+    if (flags != 0) {
+        return -EINVAL;
+    }
+#else
+fsn_fuse_rename(const char *from, const char *to) {
+#endif
     struct fsn_bridge_request request;
     struct fsn_fuse_session *session;
 
@@ -1126,9 +1188,6 @@ int fsn_fuse_session_describe(
 
 int fsn_fuse_session_run(struct fsn_fuse_session *session) {
     char **argv;
-    char *mountpoint;
-    int multithreaded;
-    struct fuse *fuse;
     int loop_result;
 
     if (session == NULL) {
@@ -1140,24 +1199,38 @@ int fsn_fuse_session_run(struct fsn_fuse_session *session) {
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
     }
 
-    mountpoint = NULL;
-    multithreaded = 0;
-    fuse = fuse_setup(
-        (int)session->planned_argument_count,
-        argv,
-        &session->operations,
-        sizeof(session->operations),
-        &mountpoint,
-        &multithreaded,
-        session
-    );
-    if (fuse == NULL) {
-        fsn_free_argument_vector(argv, session->planned_argument_count);
-        return FSN_FUSE_STATUS_SETUP_FAILED;
+#ifdef __linux__
+    {
+        loop_result = fuse_main(
+            (int)session->planned_argument_count,
+            argv,
+            &session->operations,
+            session
+        );
     }
+#else
+    {
+        char *mountpoint = NULL;
+        int multithreaded = 0;
+        struct fuse *fuse = fuse_setup(
+            (int)session->planned_argument_count,
+            argv,
+            &session->operations,
+            sizeof(session->operations),
+            &mountpoint,
+            &multithreaded,
+            session
+        );
 
-    loop_result = multithreaded != 0 ? fuse_loop_mt(fuse) : fuse_loop(fuse);
-    fuse_teardown(fuse, mountpoint);
+        if (fuse == NULL) {
+            fsn_free_argument_vector(argv, session->planned_argument_count);
+            return FSN_FUSE_STATUS_SETUP_FAILED;
+        }
+
+        loop_result = multithreaded != 0 ? fuse_loop_mt(fuse) : fuse_loop(fuse);
+        fuse_teardown(fuse, mountpoint);
+    }
+#endif
     fsn_free_argument_vector(argv, session->planned_argument_count);
     if (loop_result != 0) {
         return FSN_FUSE_STATUS_LOOP_FAILED;
@@ -1260,7 +1333,7 @@ static void fsn_fill_stat_from_lookup(const struct fsn_bridge_lookup *lookup, st
     stbuf->st_gid = lookup->gid;
     stbuf->st_size = (off_t)lookup->size;
     stbuf->st_blocks = (blkcnt_t)lookup->block_count;
-    stbuf->st_blksize = (blksize_t)lookup->block_size;
+    stbuf->st_blksize = lookup->block_size;
 #ifdef __APPLE__
     stbuf->st_atimespec.tv_sec = (time_t)lookup->atime_sec;
     stbuf->st_atimespec.tv_nsec = (long)lookup->atime_nsec;
@@ -1321,7 +1394,11 @@ static void fsn_capture_file_info(const struct fuse_file_info *fi, struct fsn_br
     }
 
     out->flags = fi->flags;
+#ifdef __APPLE__
     out->fh_old = (uint64_t)fi->fh_old;
+#else
+    out->fh_old = 0;
+#endif
     out->writepage = fi->writepage;
     out->direct_io = (uint8_t)fi->direct_io;
     out->keep_cache = (uint8_t)fi->keep_cache;

@@ -552,7 +552,7 @@ pub export fn fsn_daemon_authorize_open(
 ) c_int {
     var request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     defer request.deinit();
-    return @intCast(request.state.filesystem.authorizeOpen(
+    return @intCast(request.state.filesystem.openFile(
         request.path,
         .{
             .flags = raw_file_info.flags,
