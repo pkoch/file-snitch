@@ -72,7 +72,7 @@ assert_file_missing() {
 assert_no_xattr_prompts() {
   local message="$1"
 
-  if grep -F 'file-snitch prompt: xattr ' "$log_file" >/dev/null 2>&1; then
+  if grep -F '"path":"xattr ' "$log_file" >/dev/null 2>&1; then
     fail "$message"
   fi
 }
@@ -185,7 +185,7 @@ verify_allow_case() {
     '"action":"prompt","path":"create O_[^"]* /allowed-note\.txt","result":1' \
     "expected prompt audit for allowed create missing"
   assert_prompt_log \
-    'file-snitch prompt: create O_.* /allowed-note\.txt pid=' \
+    '"action":"prompt","path":"create O_.* /allowed-note\.txt","request_path":"/allowed-note\.txt","access_class":"create","pid":' \
     "expected create prompt to include open mode"
   assert_no_xattr_prompts "expected ordinary xattr traffic to bypass the prompt path"
 
@@ -206,7 +206,7 @@ verify_read_case() {
     '"action":"prompt","path":"open O_RDONLY /seeded-read\.txt","result":1' \
     "expected prompt audit for allowed read missing"
   assert_prompt_log \
-    'file-snitch prompt: open O_RDONLY /seeded-read\.txt pid=' \
+    '"action":"prompt","path":"open O_RDONLY /seeded-read\.txt","request_path":"/seeded-read\.txt","access_class":"read","pid":' \
     "expected read prompt to include open mode"
   assert_no_xattr_prompts "expected seeded read case to avoid xattr prompts"
 

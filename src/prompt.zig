@@ -68,13 +68,18 @@ fn resolveCliWithContext(context: *CliContext, request: Request) Decision {
     context.mutex.lock();
     defer context.mutex.unlock();
 
-    writePrompt(context, request) catch return .unavailable;
+    const label = promptLabel(request) catch return .unavailable;
+    defer if (request.label == null) std.heap.page_allocator.free(label);
 
-    return readDecisionWithTimeout(context) catch |err| switch (err) {
-        error.TimedOut => return .timeout,
-        error.EndOfStream => return .deny,
-        else => return .unavailable,
+    writePrompt(context, request, label) catch return .unavailable;
+
+    const decision = readDecisionWithTimeout(context) catch |err| switch (err) {
+        error.TimedOut => .timeout,
+        error.EndOfStream => .allow,
+        else => .unavailable,
     };
+    finishPrompt(context, request, label, decision) catch {};
+    return decision;
 }
 
 fn resolveScripted(raw_context: ?*anyopaque, request: Request) Decision {
@@ -90,29 +95,49 @@ fn resolveScripted(raw_context: ?*anyopaque, request: Request) Decision {
     return decision;
 }
 
-fn writePrompt(context: *CliContext, request: Request) !void {
-    const label = request.label orelse blk: {
-        break :blk try std.fmt.allocPrint(
-            std.heap.page_allocator,
-            "{s} {s}",
-            .{ accessClassLabel(request.access_class), request.path },
-        );
-    };
-    defer if (request.label == null) std.heap.page_allocator.free(label);
+fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void {
+    try writePromptJson(context, request, label, null);
 
-    const message = try std.fmt.allocPrint(
-        std.heap.page_allocator,
-        "file-snitch prompt: {s} pid={d} uid={d} gid={d} [y/N] ",
-        .{
-            label,
-            request.pid,
-            request.uid,
-            request.gid,
-        },
-    );
+    const message = try std.fmt.allocPrint(std.heap.page_allocator, "allow? [Y/n] ", .{});
     defer std.heap.page_allocator.free(message);
 
     try context.stderr_file.writeAll(message);
+}
+
+fn finishPrompt(context: *CliContext, request: Request, label: []const u8, decision: Decision) !void {
+    try context.stderr_file.writeAll("\n");
+    try writePromptJson(context, request, label, decision);
+}
+
+fn writePromptJson(
+    context: *CliContext,
+    request: Request,
+    label: []const u8,
+    decision: ?Decision,
+) !void {
+    var output: std.io.Writer.Allocating = .init(std.heap.page_allocator);
+    defer output.deinit();
+
+    try std.json.Stringify.value(.{
+        .action = "prompt",
+        .path = label,
+        .request_path = request.path,
+        .access_class = accessClassLabel(request.access_class),
+        .pid = request.pid,
+        .uid = request.uid,
+        .gid = request.gid,
+        .result = if (decision) |value| @intFromEnum(value) else null,
+    }, .{}, &output.writer);
+    try output.writer.writeByte('\n');
+    try context.stderr_file.writeAll(output.written());
+}
+
+fn promptLabel(request: Request) ![]const u8 {
+    return request.label orelse std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "{s} {s}",
+        .{ accessClassLabel(request.access_class), request.path },
+    );
 }
 
 const ReadLineError = error{
@@ -185,7 +210,7 @@ fn skipNewlines(buffer: []const u8, start: usize) usize {
 fn parseDecision(line: []const u8) Decision {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
     if (trimmed.len == 0) {
-        return .deny;
+        return .allow;
     }
 
     if (std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes")) {
@@ -238,6 +263,36 @@ test "cli broker allows yes" {
 
     const writer = std.fs.File{ .handle = fds[1] };
     try writer.writeAll("yes\n");
+
+    var context = CliContext{
+        .timeout_ms = 50,
+        .stdin_file = .{ .handle = fds[0] },
+        .stderr_file = .{ .handle = stderr_fds[1] },
+    };
+    const broker = cliBroker(&context);
+
+    const decision = broker.resolve(.{
+        .path = "/prompted.txt",
+        .access_class = .create,
+        .pid = 10,
+        .uid = 20,
+        .gid = 30,
+    });
+
+    try std.testing.expectEqual(Decision.allow, decision);
+}
+
+test "cli broker allows empty response by default" {
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const stderr_fds = try std.posix.pipe();
+    defer std.posix.close(stderr_fds[0]);
+    defer std.posix.close(stderr_fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    try writer.writeAll("\n");
 
     var context = CliContext{
         .timeout_ms = 50,
