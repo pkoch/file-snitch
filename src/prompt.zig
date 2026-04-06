@@ -4,6 +4,7 @@ const policy = @import("policy.zig");
 pub const Request = struct {
     path: []const u8,
     access_class: policy.AccessClass,
+    label: ?[]const u8 = null,
     pid: u32,
     uid: u32,
     gid: u32,
@@ -90,12 +91,20 @@ fn resolveScripted(raw_context: ?*anyopaque, request: Request) Decision {
 }
 
 fn writePrompt(context: *CliContext, request: Request) !void {
+    const label = request.label orelse blk: {
+        break :blk try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "{s} {s}",
+            .{ accessClassLabel(request.access_class), request.path },
+        );
+    };
+    defer if (request.label == null) std.heap.page_allocator.free(label);
+
     const message = try std.fmt.allocPrint(
         std.heap.page_allocator,
-        "file-snitch prompt: {s} {s} pid={d} uid={d} gid={d} [y/N] ",
+        "file-snitch prompt: {s} pid={d} uid={d} gid={d} [y/N] ",
         .{
-            accessClassLabel(request.access_class),
-            request.path,
+            label,
             request.pid,
             request.uid,
             request.gid,

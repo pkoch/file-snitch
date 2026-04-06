@@ -2,6 +2,7 @@ const std = @import("std");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
+    @cInclude("fcntl.h");
     @cInclude("unistd.h");
     @cInclude("sys/xattr.h");
 });
@@ -67,6 +68,11 @@ pub const Lookup = struct {
     persistent: bool,
 };
 
+pub const FileRequestInfo = struct {
+    flags: i32,
+    handle_id: ?u64 = null,
+};
+
 pub const AuditEvent = struct {
     action: []const u8,
     path: []const u8,
@@ -116,6 +122,18 @@ const MetadataSnapshot = struct {
     gid: u32,
 };
 
+const HandleGrant = struct {
+    can_read: bool,
+    can_write: bool,
+    pid: u32,
+    path: []u8,
+
+    fn deinit(self: *HandleGrant, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
 const RenameMutation = struct {
     source_index: usize,
     original_name: [:0]u8,
@@ -140,6 +158,7 @@ pub const Model = struct {
     prompt_broker: ?prompt.Broker,
     files: std.ArrayListUnmanaged(StoredFile) = .{},
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .{},
+    handle_grants: std.AutoHashMapUnmanaged(u64, HandleGrant) = .{},
     next_inode: u64 = first_dynamic_inode,
     runtime_stats: RuntimeStats = .{},
     root_timestamp: Timestamp,
@@ -228,6 +247,11 @@ pub const Model = struct {
             event.deinit(self.allocator);
         }
         self.audit_events.deinit(self.allocator);
+        var grant_iterator = self.handle_grants.valueIterator();
+        while (grant_iterator.next()) |grant| {
+            grant.deinit(self.allocator);
+        }
+        self.handle_grants.deinit(self.allocator);
 
         self.policy_engine.deinit();
         self.allocator.free(self.mount_path);
@@ -376,6 +400,30 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         context: AccessContext,
     ) i32 {
+        return self.authorizeAccessDetailed(path, access_class, context, null);
+    }
+
+    pub fn authorizeOpen(
+        self: *Model,
+        path: []const u8,
+        file_request: FileRequestInfo,
+        context: AccessContext,
+    ) i32 {
+        const access_class = accessClassForOpenFlags(file_request.flags);
+        const label = formatOpenPromptLabel(self.allocator, "open", path, file_request.flags) catch {
+            return errnoCode(.NOMEM);
+        };
+        defer self.allocator.free(label);
+        return self.authorizeAccessDetailed(path, access_class, context, label);
+    }
+
+    fn authorizeAccessDetailed(
+        self: *Model,
+        path: []const u8,
+        access_class: policy.AccessClass,
+        context: AccessContext,
+        label: ?[]const u8,
+    ) i32 {
         if (access_class == .read and (isStatusPath(path) or isAuditPath(path))) {
             return 0;
         }
@@ -391,10 +439,10 @@ pub const Model = struct {
         return switch (self.policy_engine.evaluate(request)) {
             .allow => 0,
             .deny => blk: {
-                self.recordPolicyAudit(access_class, path, .deny);
+                self.recordPolicyAudit(access_class, path, .deny, label);
                 break :blk errnoCode(.ACCES);
             },
-            .prompt => self.resolvePromptDecision(request),
+            .prompt => self.resolvePromptDecision(request, label),
         };
     }
 
@@ -404,8 +452,12 @@ pub const Model = struct {
         offset: u64,
         buffer: []u8,
         context: AccessContext,
+        file_request: ?FileRequestInfo,
     ) i32 {
-        const auth_result = self.authorizeAccess(path, .read, context);
+        const auth_result = if (file_request) |request|
+            authorizeReadFromOpenFlags(request.flags)
+        else
+            self.authorizeAccess(path, .read, context);
         if (auth_result != 0) {
             self.recordAuditLiteral("read", path, auth_result);
             return auth_result;
@@ -453,7 +505,19 @@ pub const Model = struct {
         mode: u32,
         context: AccessContext,
     ) i32 {
-        const result = self.createFileInternal(path, mode, context);
+        const result = self.createFileInternal(path, mode, context, null);
+        self.recordAuditLiteral("create", path, result);
+        return result;
+    }
+
+    pub fn createFileWithRequest(
+        self: *Model,
+        path: []const u8,
+        mode: u32,
+        context: AccessContext,
+        file_request: FileRequestInfo,
+    ) i32 {
+        const result = self.createFileInternal(path, mode, context, file_request.flags);
         self.recordAuditLiteral("create", path, result);
         return result;
     }
@@ -476,7 +540,20 @@ pub const Model = struct {
         bytes: []const u8,
         context: AccessContext,
     ) i32 {
-        const result = self.writeFileInternal(path, offset, bytes, context);
+        const result = self.writeFileInternal(path, offset, bytes, context, null);
+        self.recordAuditLiteral("write", path, result);
+        return result;
+    }
+
+    pub fn writeFileWithRequest(
+        self: *Model,
+        path: []const u8,
+        offset: u64,
+        bytes: []const u8,
+        context: AccessContext,
+        file_request: FileRequestInfo,
+    ) i32 {
+        const result = self.writeFileInternal(path, offset, bytes, context, file_request);
         self.recordAuditLiteral("write", path, result);
         return result;
     }
@@ -641,6 +718,46 @@ pub const Model = struct {
         return result;
     }
 
+    pub fn recordOpen(
+        self: *Model,
+        path: []const u8,
+        pid: u32,
+        file_request: FileRequestInfo,
+        result: i32,
+        detail: ?[]const u8,
+    ) void {
+        if (result == 0) {
+            if (file_request.handle_id) |handle_id| {
+                const base_grant = grantForOpenFlags(file_request.flags);
+                const grant: HandleGrant = .{
+                    .can_read = base_grant.can_read,
+                    .can_write = base_grant.can_write,
+                    .pid = pid,
+                    .path = self.allocator.dupe(u8, path) catch {
+                        self.recordAudit("open", path, result, detail) catch {};
+                        return;
+                    },
+                };
+                self.handle_grants.put(self.allocator, handle_id, grant) catch {
+                    self.allocator.free(grant.path);
+                    self.recordAudit("open", path, result, detail) catch {};
+                    return;
+                };
+            }
+        }
+        self.recordAudit("open", path, result, detail) catch {};
+    }
+
+    pub fn recordRelease(self: *Model, path: []const u8, file_request: FileRequestInfo, result: i32, detail: ?[]const u8) void {
+        if (file_request.handle_id) |handle_id| {
+            if (self.handle_grants.fetchRemove(handle_id)) |entry| {
+                var grant = entry.value;
+                grant.deinit(self.allocator);
+            }
+        }
+        self.recordAudit("release", path, result, detail) catch {};
+    }
+
     pub fn removeFile(
         self: *Model,
         path: []const u8,
@@ -706,6 +823,7 @@ pub const Model = struct {
         path: []const u8,
         mode: u32,
         context: AccessContext,
+        open_flags: ?i32,
     ) i32 {
         if (!isUserFilePath(path) or isReservedPath(path)) {
             return errnoCode(.INVAL);
@@ -715,7 +833,13 @@ pub const Model = struct {
             return errnoCode(.EXIST);
         }
 
-        const auth_result = self.authorizeAccess(path, .create, context);
+        const auth_result = if (open_flags) |flags| blk: {
+            const label = formatOpenPromptLabel(self.allocator, "create", path, flags) catch {
+                break :blk errnoCode(.NOMEM);
+            };
+            defer self.allocator.free(label);
+            break :blk self.authorizeAccessDetailed(path, .create, context, label);
+        } else self.authorizeAccess(path, .create, context);
         if (auth_result != 0) {
             return auth_result;
         }
@@ -743,8 +867,12 @@ pub const Model = struct {
         offset: u64,
         bytes: []const u8,
         context: AccessContext,
+        file_request: ?FileRequestInfo,
     ) i32 {
-        const auth_result = self.authorizeAccess(path, .write, context);
+        const auth_result = if (file_request) |request|
+            authorizeWriteFromOpenFlags(request.flags)
+        else
+            self.authorizeAccess(path, .write, context);
         if (auth_result != 0) {
             return auth_result;
         }
@@ -771,7 +899,10 @@ pub const Model = struct {
         size: u64,
         context: AccessContext,
     ) i32 {
-        const auth_result = self.authorizeAccess(path, .write, context);
+        const auth_result = if (hasActiveWriteGrant(self, path, context.pid))
+            0
+        else
+            self.authorizeAccess(path, .write, context);
         if (auth_result != 0) {
             return auth_result;
         }
@@ -1279,28 +1410,34 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         path: []const u8,
         outcome: policy.Outcome,
+        label: ?[]const u8,
     ) void {
-        const audit_event_path = std.fmt.allocPrint(
-            self.allocator,
-            "{s} {s}",
-            .{ accessClassLabel(access_class), path },
-        ) catch return;
-        defer self.allocator.free(audit_event_path);
+        const audit_event_path = label orelse blk: {
+            break :blk std.fmt.allocPrint(
+                self.allocator,
+                "{s} {s}",
+                .{ accessClassLabel(access_class), path },
+            ) catch return;
+        };
+        defer if (label == null) self.allocator.free(audit_event_path);
         self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome)), null) catch {};
     }
 
-    fn resolvePromptDecision(self: *Model, request: policy.Request) i32 {
-        const audit_event_path = std.fmt.allocPrint(
-            self.allocator,
-            "{s} {s}",
-            .{ accessClassLabel(request.access_class), request.path },
-        ) catch return errnoCode(.NOMEM);
-        defer self.allocator.free(audit_event_path);
+    fn resolvePromptDecision(self: *Model, request: policy.Request, label: ?[]const u8) i32 {
+        const audit_event_path = label orelse blk: {
+            break :blk std.fmt.allocPrint(
+                self.allocator,
+                "{s} {s}",
+                .{ accessClassLabel(request.access_class), request.path },
+            ) catch return errnoCode(.NOMEM);
+        };
+        defer if (label == null) self.allocator.free(audit_event_path);
 
         const decision = if (self.prompt_broker) |broker|
             broker.resolve(.{
                 .path = request.path,
                 .access_class = request.access_class,
+                .label = label,
                 .pid = request.pid,
                 .uid = request.uid,
                 .gid = request.gid,
@@ -1430,6 +1567,80 @@ fn currentUid() u32 {
 
 fn currentGid() u32 {
     return @intCast(c.getgid());
+}
+
+fn accessClassForOpenFlags(flags: i32) policy.AccessClass {
+    return switch (flags & c.O_ACCMODE) {
+        c.O_WRONLY, c.O_RDWR => .write,
+        else => .read,
+    };
+}
+
+fn grantForOpenFlags(flags: i32) HandleGrant {
+    return switch (flags & c.O_ACCMODE) {
+        c.O_WRONLY => .{ .can_read = false, .can_write = true, .pid = 0, .path = undefined },
+        c.O_RDWR => .{ .can_read = true, .can_write = true, .pid = 0, .path = undefined },
+        else => .{ .can_read = true, .can_write = false, .pid = 0, .path = undefined },
+    };
+}
+
+fn hasActiveWriteGrant(self: *const Model, path: []const u8, pid: u32) bool {
+    var iterator = self.handle_grants.valueIterator();
+    while (iterator.next()) |grant| {
+        if (grant.can_write and grant.pid == pid and std.mem.eql(u8, grant.path, path)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn authorizeReadFromOpenFlags(flags: i32) i32 {
+    return switch (flags & c.O_ACCMODE) {
+        c.O_WRONLY => errnoCode(.BADF),
+        else => 0,
+    };
+}
+
+fn authorizeWriteFromOpenFlags(flags: i32) i32 {
+    return switch (flags & c.O_ACCMODE) {
+        c.O_RDONLY => errnoCode(.BADF),
+        else => 0,
+    };
+}
+
+fn formatOpenPromptLabel(
+    allocator: std.mem.Allocator,
+    operation: []const u8,
+    path: []const u8,
+    flags: i32,
+) ![]u8 {
+    var mode: std.ArrayList(u8) = .{};
+    defer mode.deinit(allocator);
+
+    switch (flags & c.O_ACCMODE) {
+        c.O_WRONLY => try mode.appendSlice(allocator, "O_WRONLY"),
+        c.O_RDWR => try mode.appendSlice(allocator, "O_RDWR"),
+        else => try mode.appendSlice(allocator, "O_RDONLY"),
+    }
+
+    const flag_bits = [_]struct {
+        mask: i32,
+        name: []const u8,
+    }{
+        .{ .mask = c.O_APPEND, .name = "O_APPEND" },
+        .{ .mask = c.O_CREAT, .name = "O_CREAT" },
+        .{ .mask = c.O_EXCL, .name = "O_EXCL" },
+        .{ .mask = c.O_TRUNC, .name = "O_TRUNC" },
+    };
+
+    for (flag_bits) |flag_bit| {
+        if ((flags & flag_bit.mask) != 0) {
+            try mode.appendSlice(allocator, "|");
+            try mode.appendSlice(allocator, flag_bit.name);
+        }
+    }
+
+    return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ operation, mode.items, path });
 }
 
 fn accessClassLabel(access_class: policy.AccessClass) []const u8 {

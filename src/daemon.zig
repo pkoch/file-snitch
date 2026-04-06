@@ -213,7 +213,7 @@ pub const Session = struct {
         const buffer = try allocator.alloc(u8, @intCast(node.size));
         errdefer allocator.free(buffer);
 
-        const result = self.state.filesystem.readInto(path, 0, buffer, .{});
+        const result = self.state.filesystem.readInto(path, 0, buffer, .{}, null);
         if (result < 0) {
             return error.DebugReadFailed;
         }
@@ -364,6 +364,24 @@ fn requireDecodedContext(
     };
 }
 
+fn fileRequestFromRaw(raw_file_info: ?*const RawFileInfo) ?filesystem.FileRequestInfo {
+    const file_info = raw_file_info orelse return null;
+    return .{
+        .flags = file_info.flags,
+        .handle_id = handleIdFromRaw(file_info),
+    };
+}
+
+fn handleIdFromRaw(file_info: *const RawFileInfo) ?u64 {
+    if (file_info.fh != 0) {
+        return file_info.fh;
+    }
+    if (file_info.fh_old != 0) {
+        return file_info.fh_old;
+    }
+    return null;
+}
+
 fn modeForNode(node: NodeInfo) u32 {
     return switch (node.kind) {
         .missing => 0,
@@ -461,9 +479,30 @@ pub export fn fsn_daemon_read(
     size: usize,
     buf: [*]u8,
 ) c_int {
-    _ = raw_file_info;
     const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
-    return @intCast(request.state.filesystem.readInto(request.path, offset, buf[0..size], request.context));
+    return @intCast(request.state.filesystem.readInto(
+        request.path,
+        offset,
+        buf[0..size],
+        request.context,
+        fileRequestFromRaw(raw_file_info),
+    ));
+}
+
+pub export fn fsn_daemon_authorize_open(
+    daemon_state: ?*anyopaque,
+    raw_request: *const RawRequest,
+    raw_file_info: *const RawFileInfo,
+) c_int {
+    const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    return @intCast(request.state.filesystem.authorizeOpen(
+        request.path,
+        .{
+            .flags = raw_file_info.flags,
+            .handle_id = handleIdFromRaw(raw_file_info),
+        },
+        request.context,
+    ));
 }
 
 pub export fn fsn_daemon_create(
@@ -472,8 +511,10 @@ pub export fn fsn_daemon_create(
     mode: u32,
     raw_file_info: ?*const RawFileInfo,
 ) c_int {
-    _ = raw_file_info;
     const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        return @intCast(request.state.filesystem.createFileWithRequest(request.path, mode, request.context, file_request));
+    }
     return @intCast(request.state.filesystem.createFile(request.path, mode, request.context));
 }
 
@@ -494,8 +535,16 @@ pub export fn fsn_daemon_write(
     size: usize,
     buf: [*]const u8,
 ) c_int {
-    _ = raw_file_info;
     const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        return @intCast(request.state.filesystem.writeFileWithRequest(
+            request.path,
+            offset,
+            buf[0..size],
+            request.context,
+            file_request,
+        ));
+    }
     return @intCast(request.state.filesystem.writeFile(request.path, offset, buf[0..size], request.context));
 }
 
@@ -651,7 +700,11 @@ pub export fn fsn_daemon_record_open(
     const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const detail = formatFileInfoDetail(request.state.filesystem.allocator, raw_file_info) catch return errnoCode(.NOMEM);
     defer if (detail) |value| request.state.filesystem.allocator.free(value);
-    request.state.filesystem.recordPlatformAudit("open", request.path, result, detail);
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        request.state.filesystem.recordOpen(request.path, request.context.pid, file_request, result, detail);
+    } else {
+        request.state.filesystem.recordPlatformAudit("open", request.path, result, detail);
+    }
     return 0;
 }
 
@@ -664,7 +717,11 @@ pub export fn fsn_daemon_record_release(
     const request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     const detail = formatFileInfoDetail(request.state.filesystem.allocator, raw_file_info) catch return errnoCode(.NOMEM);
     defer if (detail) |value| request.state.filesystem.allocator.free(value);
-    request.state.filesystem.recordPlatformAudit("release", request.path, result, detail);
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        request.state.filesystem.recordRelease(request.path, file_request, result, detail);
+    } else {
+        request.state.filesystem.recordPlatformAudit("release", request.path, result, detail);
+    }
     return 0;
 }
 

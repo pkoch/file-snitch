@@ -20,6 +20,13 @@
 
 #include "libfuse_shim.h"
 
+/*
+ * Shim boundary contract:
+ * - keep this layer as a faithful FUSE callback harness
+ * - preserve raw callback detail and callback timing when handing data to Zig
+ * - do not move product-policy decisions here unless the FUSE API itself forces it
+ */
+
 enum fsn_open_kind {
     FSN_OPEN_MISSING = 0,
     FSN_OPEN_DIRECTORY = 1,
@@ -85,6 +92,11 @@ struct fsn_bridge_lookup {
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
 extern uint32_t fsn_daemon_root_entry_count(void *daemon_state);
 extern const char *fsn_daemon_root_entry_name_at(void *daemon_state, uint32_t index);
+extern int fsn_daemon_authorize_open(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info
+);
 extern int fsn_daemon_read(
     void *daemon_state,
     const struct fsn_bridge_request *request,
@@ -396,23 +408,6 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
             }
             break;
         case FSN_OPEN_USER_FILE:
-            if (lookup.persistent != 0) {
-                struct fsn_file_handle *handle = fsn_create_file_handle();
-                int backing_fd;
-
-                if (handle == NULL) {
-                    return -ENOMEM;
-                }
-
-                backing_fd = fsn_open_backing_store_fd(session, path, fi->flags);
-                if (backing_fd < 0) {
-                    free(handle);
-                    return backing_fd;
-                }
-
-                handle->backing_fd = backing_fd;
-                fi->fh = (uint64_t)(uintptr_t)handle;
-            }
             break;
         case FSN_OPEN_DIRECTORY:
             return -EISDIR;
@@ -421,6 +416,30 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
     }
 
     fsn_capture_file_info(fi, &file_info);
+    {
+        int result = fsn_daemon_authorize_open(session->daemon_state, &request, &file_info);
+        if (result != 0) {
+            return result;
+        }
+    }
+    if (lookup.open_kind == FSN_OPEN_USER_FILE && lookup.persistent != 0) {
+        struct fsn_file_handle *handle = fsn_create_file_handle();
+        int backing_fd;
+
+        if (handle == NULL) {
+            return -ENOMEM;
+        }
+
+        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags);
+        if (backing_fd < 0) {
+            free(handle);
+            return backing_fd;
+        }
+
+        handle->backing_fd = backing_fd;
+        fi->fh = (uint64_t)(uintptr_t)handle;
+        fsn_capture_file_info(fi, &file_info);
+    }
     fsn_daemon_record_open(session->daemon_state, &request, &file_info, 0);
     return 0;
 }

@@ -77,6 +77,24 @@ assert_no_xattr_prompts() {
   fi
 }
 
+assert_prompt_audit() {
+  local regex="$1"
+  local message="$2"
+
+  if ! grep -E "$regex" "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
+    fail "$message"
+  fi
+}
+
+assert_prompt_log() {
+  local regex="$1"
+  local message="$2"
+
+  if ! grep -E "$regex" "$log_file" >/dev/null 2>&1; then
+    fail "$message"
+  fi
+}
+
 expect_create_denied() {
   local path="$1"
   local message="$2"
@@ -163,9 +181,12 @@ verify_allow_case() {
     "allowed through prompt" \
     "expected prompted allow contents to persist"
 
-  if ! grep -F '"action":"prompt","path":"create /allowed-note.txt","result":1' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
-    fail "expected prompt audit for allowed create missing"
-  fi
+  assert_prompt_audit \
+    '"action":"prompt","path":"create O_[^"]* /allowed-note\.txt","result":1' \
+    "expected prompt audit for allowed create missing"
+  assert_prompt_log \
+    'file-snitch prompt: create O_.* /allowed-note\.txt pid=' \
+    "expected create prompt to include open mode"
   assert_no_xattr_prompts "expected ordinary xattr traffic to bypass the prompt path"
 
   cleanup_case
@@ -181,9 +202,12 @@ verify_read_case() {
     "seeded read through prompt" \
     "expected prompt allow to gate seeded regular-file reads"
 
-  if ! grep -F '"action":"prompt","path":"read /seeded-read.txt","result":1' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
-    fail "expected prompt audit for allowed read missing"
-  fi
+  assert_prompt_audit \
+    '"action":"prompt","path":"open O_RDONLY /seeded-read\.txt","result":1' \
+    "expected prompt audit for allowed read missing"
+  assert_prompt_log \
+    'file-snitch prompt: open O_RDONLY /seeded-read\.txt pid=' \
+    "expected read prompt to include open mode"
   assert_no_xattr_prompts "expected seeded read case to avoid xattr prompts"
 
   cleanup_case
@@ -201,9 +225,9 @@ verify_deny_case() {
     "$store_dir/denied-note.txt" \
     "expected denied prompt path to remain absent from backing store"
 
-  if ! grep -F '"action":"prompt","path":"create /denied-note.txt","result":2' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
-    fail "expected prompt audit for denied create missing"
-  fi
+  assert_prompt_audit \
+    '"action":"prompt","path":"create O_[^"]* /denied-note\.txt","result":2' \
+    "expected prompt audit for denied create missing"
   assert_no_xattr_prompts "expected denied case to avoid xattr prompts"
 
   cleanup_case
@@ -220,9 +244,9 @@ verify_timeout_case() {
     "$store_dir/timed-out-note.txt" \
     "expected timed-out prompt path to remain absent from backing store"
 
-  if ! grep -F '"action":"prompt","path":"create /timed-out-note.txt","result":3' "$mount_dir/file-snitch-audit" >/dev/null 2>&1; then
-    fail "expected prompt audit for timed-out create missing"
-  fi
+  assert_prompt_audit \
+    '"action":"prompt","path":"create O_[^"]* /timed-out-note\.txt","result":3' \
+    "expected prompt audit for timed-out create missing"
   assert_no_xattr_prompts "expected timeout case to avoid xattr prompts"
 
   cleanup_case

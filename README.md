@@ -60,6 +60,15 @@ Current state:
 - `docs/`: brief and research notes
 - `scripts/`: verification helpers including live-mount smoke tests
 
+## Architecture guardrails
+
+These are project-wide invariants. Refactors should preserve them unless the product direction changes explicitly.
+
+- The C shim is a faithful FUSE harness, not a product-policy layer. It should preserve callback timing and raw callback data, and it should not drop or embellish information before handing it to Zig.
+- Fine-grained callback visibility must remain available even when Zig chooses not to emit a user-facing audit line for a given action. Audit filtering is a Zig/business decision, not a reason to weaken the shim.
+- Authorization must align with intent. If a handle was authorized for read-like access and later attempts write-like behavior, that later behavior must still be independently mediable.
+- Prompting must happen before the guarded operation takes effect. The system should prevent behavior, not merely report it after the fact.
+
 ## Build notes
 
 This scaffold expects:
@@ -101,7 +110,9 @@ When debugging a specific area, the build-managed test step above is still the d
 
 Prompt notes:
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
-- in `prompt` mode, regular file reads and mutations both prompt; `readonly` still allows reads and denies mutations
+- on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
+- later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
+- `readonly` still allows reads and denies mutations
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

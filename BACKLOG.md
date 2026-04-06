@@ -15,6 +15,14 @@ Status:
 - `[ ]` Narrow the v1 mediated operation set based on observed write patterns
 - `[ ]` Define the smallest end-to-end Linux spike demo
 
+## Cross-cutting guardrails
+
+These are not backlog items to “finish.” They are constraints that future changes should preserve.
+
+- Keep the C shim as a faithful FUSE harness. It should expose complete callback detail upward even if Zig later filters or suppresses user-facing audit output.
+- Keep authorization aligned with the requested behavior. A granted read-like handle must not silently authorize later write-like behavior.
+- Keep prompts ahead of side effects. Authorization decisions should happen before the guarded operation takes effect.
+
 ## Phase 0: ground-truth research
 
 Deliverable: a short report covering 10 target apps/tools, their secret file locations, and their real file IO behavior.
@@ -97,6 +105,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[ ]` Add directory support beyond the root itself
 - `[ ]` Revisit xattr mediation beyond the current passthrough-only path
 - `[ ]` Add prompt decisions beyond allow once, deny once, and timeout
+- `[ ]` Align editor probe and save flows, including Vim writability probes and temp-file save semantics
 
 ## Phase 2: encryption layer
 
