@@ -1,0 +1,59 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "customDatasources": {
+    "zig_x86_64_linux": {
+      "defaultRegistryUrlTemplate": "https://ziglang.org/download/index.json",
+      "transformTemplates": [
+        "{ \"releases\": $map($filter($keys($), function($version) { $exists($match($version, /^\\d+\\.\\d+\\.\\d+$/)) and $exists($lookup($lookup($, $version), \"x86_64-linux\")) }), function($version) { { \"version\": $version, \"digest\": $lookup($lookup($lookup($, $version), \"x86_64-linux\"), \"shasum\"), \"isStable\": true } }) }"
+      ]
+    },
+    "zig_aarch64_macos": {
+      "defaultRegistryUrlTemplate": "https://ziglang.org/download/index.json",
+      "transformTemplates": [
+        "{ \"releases\": $map($filter($keys($), function($version) { $exists($match($version, /^\\d+\\.\\d+\\.\\d+$/)) and $exists($lookup($lookup($, $version), \"aarch64-macos\")) }), function($version) { { \"version\": $version, \"digest\": $lookup($lookup($lookup($, $version), \"aarch64-macos\"), \"shasum\"), \"isStable\": true } }) }"
+      ]
+    }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)zig-toolchain\\.json$/"
+      ],
+      "matchStringsStrategy": "combination",
+      "matchStrings": [
+        "\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
+        "\"linux_x86_64\"\\s*:\\s*\\{[^}]*\"sha256\"\\s*:\\s*\"(?<currentDigest>[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "custom.zig_x86_64_linux",
+      "depNameTemplate": "ziglang/zig-linux-x86_64",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)zig-toolchain\\.json$/"
+      ],
+      "matchStringsStrategy": "combination",
+      "matchStrings": [
+        "\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
+        "\"macos_aarch64\"\\s*:\\s*\\{[^}]*\"sha256\"\\s*:\\s*\"(?<currentDigest>[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "custom.zig_aarch64_macos",
+      "depNameTemplate": "ziglang/zig-macos-aarch64",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDepNames": [
+        "ziglang/zig-linux-x86_64",
+        "ziglang/zig-macos-aarch64"
+      ],
+      "groupName": "Zig toolchain"
+    }
+  ]
+}

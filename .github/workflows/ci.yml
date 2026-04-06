@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  tier1:
+    name: Tier 1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config fuse3 libfuse3-dev
+
+      - name: Read Zig toolchain
+        run: |
+          echo "ZIG_VERSION=$(jq -r '.version' zig-toolchain.json)" >> "$GITHUB_ENV"
+          echo "ZIG_LINUX_X86_64_SHA256=$(jq -r '.platforms.linux_x86_64.sha256' zig-toolchain.json)" >> "$GITHUB_ENV"
+
+      - name: Install Zig
+        run: |
+          curl -L \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "${ZIG_LINUX_X86_64_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+
+      - name: Run Tier 1 checks
+        run: ./scripts/ci-tier1.sh

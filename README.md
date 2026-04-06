@@ -76,6 +76,15 @@ This scaffold expects:
 - `libfuse` development headers and libraries on Linux
 - macFUSE `libfuse` compatibility libraries on macOS
 
+Toolchain pinning:
+- `zig-toolchain.json` is the source of truth for the Zig toolchain we care about today:
+  - one shared Zig version
+  - one SHA256 per pinned platform archive
+  - Linux `x86_64` for CI
+  - macOS `aarch64` for local development on Apple Silicon
+- CI reads `zig-toolchain.json` and verifies the downloaded Linux archive checksum before unpacking it
+- `renovate.json` updates the shared Zig version plus both platform SHA256 values from Zig's official download index, filtering to stable releases only and grouping the updates as one Zig toolchain change
+
 FUSE discovery:
 - the Zig build now prefers `pkg-config` when available
 - Linux falls back to standard `fuse3` system locations if `pkg-config` is absent

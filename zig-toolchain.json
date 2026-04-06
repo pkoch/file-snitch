@@ -1,0 +1,11 @@
+{
+  "version": "0.15.2",
+  "platforms": {
+    "linux_x86_64": {
+      "sha256": "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+    },
+    "macos_aarch64": {
+      "sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
+    }
+  }
+}
