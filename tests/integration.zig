@@ -113,7 +113,8 @@ test "session exercise is covered by integration assertions" {
     defer allocator.free(audit_events);
     try expectAuditEvent(audit_events, "create", created_note_path, 0);
     try expectAuditEvent(audit_events, "write", created_note_path, 23);
-    try expectAuditEvent(audit_events, "rename", "/demo-note.txt -> /renamed-note.txt", 0);
+    try expectAuditEvent(audit_events, "rename", created_note_path, 0);
+    try expectRenameAudit(audit_events, created_note_path, note_path, 0);
     try expectAuditEvent(audit_events, "fsync", note_path, 0);
 
     var reloaded_session = try daemon.Session.init(allocator, .{
@@ -340,6 +341,29 @@ fn expectAuditEvent(
     std.debug.print(
         "missing audit event action={s} path={s} result={d}\n",
         .{ action, path, result },
+    );
+    return error.TestExpectedAuditEvent;
+}
+
+fn expectRenameAudit(
+    events: []const daemon.AuditEvent,
+    from: []const u8,
+    to: []const u8,
+    result: i32,
+) !void {
+    for (events) |event| {
+        if (!std.mem.eql(u8, event.action, "rename")) continue;
+        if (!std.mem.eql(u8, event.path, from)) continue;
+        if (event.result != result) continue;
+        const rename = event.rename orelse continue;
+        if (!std.mem.eql(u8, rename.from, from)) continue;
+        if (!std.mem.eql(u8, rename.to, to)) continue;
+        return;
+    }
+
+    std.debug.print(
+        "missing rename audit from={s} to={s} result={d}\n",
+        .{ from, to, result },
     );
     return error.TestExpectedAuditEvent;
 }

@@ -32,6 +32,7 @@ Current state:
 - the daemon now has a CLI prompt broker with default-deny timeout behavior
 - the session now records an in-memory audit trail for reads and mutations
 - mount mode now streams audit JSON to stdout instead of exposing a synthetic audit file inside the mount
+- audit JSON lines now include actor metadata (`pid`/`uid`/`gid`), timestamps, and structured operation fields for rename, xattrs, locks, flock, open/release file info, and fsync mode
 - mount mode can optionally stream status JSON snapshots to a caller-provided FIFO instead of exposing a synthetic status file inside the mount
 - Zig integration tests now exercise the dry-run session path, execution plan, persistence, and policy behavior without mounting
 - a scripted macFUSE smoke test now verifies live mount, read, write, rename, audit, and teardown on macOS

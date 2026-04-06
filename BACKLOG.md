@@ -95,7 +95,7 @@ Goal: a single guarded root with top-level files only, in-memory policy, and a C
 - `[x]` Reject `mkdir` and `rmdir` explicitly while the spike remains file-only
 - `[x]` Add an in-memory policy engine with allow, deny, and prompt outcomes
 - `[x]` Add one-shot prompt decisions for allow once, deny once, and timeout
-- `[ ]` Emit structured JSON audit logs
+- `[x]` Emit structured JSON audit logs with actor and operation detail
 - `[x]` Test common editor temp-write and rename flows
 - `[x]` Verify live prompt allow, deny, and timeout flows on macOS
 - `[ ]` Package a reproducible spike workflow

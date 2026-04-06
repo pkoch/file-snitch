@@ -8,6 +8,7 @@ pub const Request = struct {
     pid: u32,
     uid: u32,
     gid: u32,
+    executable_path: ?[]const u8 = null,
 };
 
 pub const Decision = enum(i32) {
@@ -158,6 +159,7 @@ fn writePromptJson(
         .pid = request.pid,
         .uid = request.uid,
         .gid = request.gid,
+        .executable_path = request.executable_path,
         .result = if (decision) |value| @intFromEnum(value) else null,
     }, .{}, &output.writer);
     try output.writer.writeByte('\n');

@@ -28,6 +28,7 @@ pub const AccessContext = struct {
     uid: u32 = 0,
     gid: u32 = 0,
     umask: u32 = 0,
+    executable_path: ?[]const u8 = null,
 };
 
 pub const Timestamp = struct {
@@ -66,25 +67,131 @@ pub const FileRequestInfo = struct {
     handle_id: ?u64 = null,
 };
 
+pub const AuditFileInfo = struct {
+    flags: i32,
+    fh_old: u64,
+    writepage: i32,
+    direct_io: u8,
+    keep_cache: u8,
+    flush: u8,
+    nonseekable: u8,
+    flock_release: u8,
+    padding_bits: u32,
+    purge_attr: u8,
+    purge_ubc: u8,
+    fh: u64,
+    lock_owner: u64,
+};
+
+pub const AuditLockInfo = struct {
+    cmd: i32,
+    lock_type: i16,
+    whence: i16,
+    pid: i32,
+    start: i64,
+    len: i64,
+};
+
+pub const AuditFlockInfo = struct {
+    operation: i32,
+};
+
+pub const AuditXattrInfo = struct {
+    name: ?[]const u8 = null,
+    size: ?u64 = null,
+    flags: ?i32 = null,
+    position: ?u32 = null,
+};
+
+pub const AuditRenameInfo = struct {
+    from: []const u8,
+    to: []const u8,
+};
+
+pub const AuditSyncInfo = struct {
+    datasync: bool,
+};
+
+pub const AuditMetadata = struct {
+    context: AccessContext = .{},
+    file_info: ?AuditFileInfo = null,
+    lock: ?AuditLockInfo = null,
+    flock: ?AuditFlockInfo = null,
+    xattr: ?AuditXattrInfo = null,
+    rename: ?AuditRenameInfo = null,
+    fsync: ?AuditSyncInfo = null,
+};
+
 pub const AuditEvent = struct {
     action: []const u8,
     path: []const u8,
     result: i32,
-    detail: ?[]const u8,
+    timestamp: Timestamp,
+    pid: u32,
+    uid: u32,
+    gid: u32,
+    executable_path: ?[]const u8,
+    file_info: ?AuditFileInfo,
+    lock: ?AuditLockInfo,
+    flock: ?AuditFlockInfo,
+    xattr: ?AuditXattrInfo,
+    rename: ?AuditRenameInfo,
+    fsync: ?AuditSyncInfo,
 };
 
 const StoredAuditEvent = struct {
     action: []u8,
     path: []u8,
     result: i32,
-    detail: ?[]u8,
+    timestamp: Timestamp,
+    pid: u32,
+    uid: u32,
+    gid: u32,
+    executable_path: ?[]u8,
+    file_info: ?AuditFileInfo,
+    lock: ?AuditLockInfo,
+    flock: ?AuditFlockInfo,
+    xattr: ?StoredAuditXattrInfo,
+    rename: ?StoredAuditRenameInfo,
+    fsync: ?AuditSyncInfo,
 
     fn deinit(self: *StoredAuditEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.action);
         allocator.free(self.path);
-        if (self.detail) |detail| {
-            allocator.free(detail);
+        if (self.executable_path) |value| {
+            allocator.free(value);
         }
+        if (self.xattr) |*xattr| {
+            xattr.deinit(allocator);
+        }
+        if (self.rename) |*rename| {
+            rename.deinit(allocator);
+        }
+        self.* = undefined;
+    }
+};
+
+const StoredAuditXattrInfo = struct {
+    name: ?[]u8 = null,
+    size: ?u64 = null,
+    flags: ?i32 = null,
+    position: ?u32 = null,
+
+    fn deinit(self: *StoredAuditXattrInfo, allocator: std.mem.Allocator) void {
+        if (self.name) |name| {
+            allocator.free(name);
+        }
+        self.* = undefined;
+    }
+};
+
+const StoredAuditRenameInfo = struct {
+    from: []u8,
+    to: []u8,
+
+    fn deinit(self: *StoredAuditRenameInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.from);
+        allocator.free(self.to);
         self.* = undefined;
     }
 };
@@ -383,10 +490,10 @@ pub const Model = struct {
         return switch (self.policy_engine.evaluate(request)) {
             .allow => 0,
             .deny => blk: {
-                self.recordPolicyAudit(access_class, path, .deny, label);
+                self.recordPolicyAudit(access_class, path, .deny, context, label);
                 break :blk errnoCode(.ACCES);
             },
-            .prompt => self.resolvePromptDecision(request, label),
+            .prompt => self.resolvePromptDecision(request, context, label),
         };
     }
 
@@ -403,23 +510,23 @@ pub const Model = struct {
         else
             self.authorizeAccess(path, .read, context);
         if (auth_result != 0) {
-            self.recordAuditLiteral("read", path, auth_result);
+            self.recordAuditLiteral("read", path, auth_result, context);
             return auth_result;
         }
 
         if (offset > std.math.maxInt(usize)) {
-            self.recordAuditLiteral("read", path, errnoCode(.INVAL));
+            self.recordAuditLiteral("read", path, errnoCode(.INVAL), context);
             return errnoCode(.INVAL);
         }
 
         const file = self.findFile(path) orelse {
-            self.recordAuditLiteral("read", path, errnoCode(.NOENT));
+            self.recordAuditLiteral("read", path, errnoCode(.NOENT), context);
             return errnoCode(.NOENT);
         };
         touchFileAtime(file);
 
         const result = copySlice(file.content.items, buffer, @intCast(offset));
-        self.recordAuditLiteral("read", path, result);
+        self.recordAuditLiteral("read", path, result, context);
         return result;
     }
 
@@ -430,7 +537,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.createFileInternal(path, mode, context, null);
-        self.recordAuditLiteral("create", path, result);
+        self.recordAuditLiteral("create", path, result, context);
         return result;
     }
 
@@ -442,7 +549,7 @@ pub const Model = struct {
         file_request: FileRequestInfo,
     ) i32 {
         const result = self.createFileInternal(path, mode, context, file_request.flags);
-        self.recordAuditLiteral("create", path, result);
+        self.recordAuditLiteral("create", path, result, context);
         return result;
     }
 
@@ -453,7 +560,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = createDirectoryNotSupported(path, mode, context);
-        self.recordAuditLiteral("mkdir", path, result);
+        self.recordAuditLiteral("mkdir", path, result, context);
         return result;
     }
 
@@ -465,7 +572,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.writeFileInternal(path, offset, bytes, context, null);
-        self.recordAuditLiteral("write", path, result);
+        self.recordAuditLiteral("write", path, result, context);
         return result;
     }
 
@@ -478,7 +585,7 @@ pub const Model = struct {
         file_request: FileRequestInfo,
     ) i32 {
         const result = self.writeFileInternal(path, offset, bytes, context, file_request);
-        self.recordAuditLiteral("write", path, result);
+        self.recordAuditLiteral("write", path, result, context);
         return result;
     }
 
@@ -489,7 +596,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.truncateFileInternal(path, size, context);
-        self.recordAuditLiteral("truncate", path, result);
+        self.recordAuditLiteral("truncate", path, result, context);
         return result;
     }
 
@@ -500,7 +607,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.chmodFileInternal(path, mode, context);
-        self.recordAuditLiteral("chmod", path, result);
+        self.recordAuditLiteral("chmod", path, result, context);
         return result;
     }
 
@@ -512,16 +619,21 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.chownFileInternal(path, uid, gid, context);
-        self.recordAuditLiteral("chown", path, result);
+        self.recordAuditLiteral("chown", path, result, context);
         return result;
     }
 
     pub fn flushPath(
         self: *Model,
         path: []const u8,
+        context: AccessContext,
+        file_info: ?AuditFileInfo,
     ) i32 {
         const result = self.syncPathInternal(path);
-        self.recordAuditLiteral("flush", path, result);
+        self.recordAudit("flush", path, result, .{
+            .context = context,
+            .file_info = file_info,
+        }) catch {};
         return result;
     }
 
@@ -529,9 +641,15 @@ pub const Model = struct {
         self: *Model,
         path: []const u8,
         datasync: bool,
+        context: AccessContext,
+        file_info: ?AuditFileInfo,
     ) i32 {
         const result = self.syncPathInternal(path);
-        self.recordAudit("fsync", path, result, if (datasync) "datasync" else null) catch {};
+        self.recordAudit("fsync", path, result, .{
+            .context = context,
+            .file_info = file_info,
+            .fsync = .{ .datasync = datasync },
+        }) catch {};
         return result;
     }
 
@@ -542,6 +660,7 @@ pub const Model = struct {
         value: []const u8,
         flags: i32,
         position: u32,
+        context: AccessContext,
     ) i32 {
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
             .ok => |host_path_z| host_path_z,
@@ -561,7 +680,15 @@ pub const Model = struct {
                 touchFileChange(file);
             }
         }
-        self.recordAudit("setxattr", path, result, name) catch {};
+        self.recordAudit("setxattr", path, result, .{
+            .context = context,
+            .xattr = .{
+                .name = name,
+                .size = value.len,
+                .flags = flags,
+                .position = position,
+            },
+        }) catch {};
         return result;
     }
 
@@ -571,7 +698,9 @@ pub const Model = struct {
         name: []const u8,
         value: []u8,
         position: u32,
+        context: AccessContext,
     ) i32 {
+        _ = context;
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.NOATTR))) {
             .ok => |host_path_z| host_path_z,
             .err => |code| return code,
@@ -596,6 +725,7 @@ pub const Model = struct {
         self: *Model,
         path: []const u8,
         list: []u8,
+        context: AccessContext,
     ) i32 {
         const host_path = switch (self.hostXattrPathAllocZ(path, 0)) {
             .ok => |host_path_z| host_path_z,
@@ -611,7 +741,10 @@ pub const Model = struct {
             touchFileAtime(file);
         }
 
-        self.recordAudit("listxattr", path, @intCast(result), null) catch {};
+        self.recordAudit("listxattr", path, @intCast(result), .{
+            .context = context,
+            .xattr = .{ .size = list.len },
+        }) catch {};
         return @intCast(result);
     }
 
@@ -619,6 +752,7 @@ pub const Model = struct {
         self: *Model,
         path: []const u8,
         name: []const u8,
+        context: AccessContext,
     ) i32 {
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
             .ok => |host_path_z| host_path_z,
@@ -638,17 +772,20 @@ pub const Model = struct {
                 touchFileChange(file);
             }
         }
-        self.recordAudit("removexattr", path, result, name) catch {};
+        self.recordAudit("removexattr", path, result, .{
+            .context = context,
+            .xattr = .{ .name = name },
+        }) catch {};
         return result;
     }
 
     pub fn recordOpen(
         self: *Model,
         path: []const u8,
-        pid: u32,
+        context: AccessContext,
         file_request: FileRequestInfo,
         result: i32,
-        detail: ?[]const u8,
+        file_info: ?AuditFileInfo,
     ) void {
         if (result == 0) {
             if (file_request.handle_id) |handle_id| {
@@ -656,30 +793,49 @@ pub const Model = struct {
                 const grant: HandleGrant = .{
                     .can_read = base_grant.can_read,
                     .can_write = base_grant.can_write,
-                    .pid = pid,
+                    .pid = context.pid,
                     .path = self.allocator.dupe(u8, path) catch {
-                        self.recordAudit("open", path, result, detail) catch {};
+                        self.recordAudit("open", path, result, .{
+                            .context = context,
+                            .file_info = file_info,
+                        }) catch {};
                         return;
                     },
                 };
                 self.handle_grants.put(self.allocator, handle_id, grant) catch {
                     self.allocator.free(grant.path);
-                    self.recordAudit("open", path, result, detail) catch {};
+                    self.recordAudit("open", path, result, .{
+                        .context = context,
+                        .file_info = file_info,
+                    }) catch {};
                     return;
                 };
             }
         }
-        self.recordAudit("open", path, result, detail) catch {};
+        self.recordAudit("open", path, result, .{
+            .context = context,
+            .file_info = file_info,
+        }) catch {};
     }
 
-    pub fn recordRelease(self: *Model, path: []const u8, file_request: FileRequestInfo, result: i32, detail: ?[]const u8) void {
+    pub fn recordRelease(
+        self: *Model,
+        path: []const u8,
+        context: AccessContext,
+        file_request: FileRequestInfo,
+        result: i32,
+        file_info: ?AuditFileInfo,
+    ) void {
         if (file_request.handle_id) |handle_id| {
             if (self.handle_grants.fetchRemove(handle_id)) |entry| {
                 var grant = entry.value;
                 grant.deinit(self.allocator);
             }
         }
-        self.recordAudit("release", path, result, detail) catch {};
+        self.recordAudit("release", path, result, .{
+            .context = context,
+            .file_info = file_info,
+        }) catch {};
     }
 
     pub fn removeFile(
@@ -688,7 +844,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.removeFileInternal(path, context);
-        self.recordAuditLiteral("unlink", path, result);
+        self.recordAuditLiteral("unlink", path, result, context);
         return result;
     }
 
@@ -698,7 +854,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = removeDirectoryNotSupported(path, context);
-        self.recordAuditLiteral("rmdir", path, result);
+        self.recordAuditLiteral("rmdir", path, result, context);
         return result;
     }
 
@@ -709,7 +865,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const result = self.renameFileInternal(from, to, context);
-        self.recordRenameAudit(from, to, result);
+        self.recordRenameAudit(from, to, result, context);
         return result;
     }
 
@@ -728,7 +884,25 @@ pub const Model = struct {
             .action = stored.action,
             .path = stored.path,
             .result = stored.result,
-            .detail = stored.detail,
+            .timestamp = stored.timestamp,
+            .pid = stored.pid,
+            .uid = stored.uid,
+            .gid = stored.gid,
+            .executable_path = stored.executable_path,
+            .file_info = stored.file_info,
+            .lock = stored.lock,
+            .flock = stored.flock,
+            .xattr = if (stored.xattr) |xattr| .{
+                .name = xattr.name,
+                .size = xattr.size,
+                .flags = xattr.flags,
+                .position = xattr.position,
+            } else null,
+            .rename = if (stored.rename) |rename| .{
+                .from = rename.from,
+                .to = rename.to,
+            } else null,
+            .fsync = stored.fsync,
         };
     }
 
@@ -737,9 +911,9 @@ pub const Model = struct {
         action: []const u8,
         path: []const u8,
         result: i32,
-        detail: ?[]const u8,
+        metadata: AuditMetadata,
     ) void {
-        self.recordAudit(action, path, result, detail) catch {};
+        self.recordAudit(action, path, result, metadata) catch {};
     }
 
     fn createFileInternal(
@@ -1271,6 +1445,7 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         path: []const u8,
         outcome: policy.Outcome,
+        context: AccessContext,
         label: ?[]const u8,
     ) void {
         const audit_event_path = label orelse blk: {
@@ -1281,10 +1456,12 @@ pub const Model = struct {
             ) catch return;
         };
         defer if (label == null) self.allocator.free(audit_event_path);
-        self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome)), null) catch {};
+        self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome)), .{
+            .context = context,
+        }) catch {};
     }
 
-    fn resolvePromptDecision(self: *Model, request: policy.Request, label: ?[]const u8) i32 {
+    fn resolvePromptDecision(self: *Model, request: policy.Request, context: AccessContext, label: ?[]const u8) i32 {
         const audit_event_path = label orelse blk: {
             break :blk std.fmt.allocPrint(
                 self.allocator,
@@ -1302,25 +1479,32 @@ pub const Model = struct {
                 .pid = request.pid,
                 .uid = request.uid,
                 .gid = request.gid,
+                .executable_path = context.executable_path,
             })
         else
             prompt.Decision.unavailable;
 
-        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision), null) catch {};
+        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision), .{
+            .context = context,
+        }) catch {};
         return switch (decision) {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
         };
     }
 
-    fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32) void {
-        const audit_event_path = std.fmt.allocPrint(self.allocator, "{s} -> {s}", .{ from, to }) catch return;
-        defer self.allocator.free(audit_event_path);
-        self.recordAudit("rename", audit_event_path, result, null) catch {};
+    fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32, context: AccessContext) void {
+        self.recordAudit("rename", from, result, .{
+            .context = context,
+            .rename = .{
+                .from = from,
+                .to = to,
+            },
+        }) catch {};
     }
 
-    fn recordAuditLiteral(self: *Model, action: []const u8, path: []const u8, result: i32) void {
-        self.recordAudit(action, path, result, null) catch {};
+    fn recordAuditLiteral(self: *Model, action: []const u8, path: []const u8, result: i32, context: AccessContext) void {
+        self.recordAudit(action, path, result, .{ .context = context }) catch {};
     }
 
     fn recordAudit(
@@ -1328,15 +1512,34 @@ pub const Model = struct {
         action: []const u8,
         path: []const u8,
         result: i32,
-        detail: ?[]const u8,
+        metadata: AuditMetadata,
     ) !void {
+        const timestamp = currentTimestamp();
         try self.audit_events.append(self.allocator, .{
             .action = try self.allocator.dupe(u8, action),
             .path = try self.allocator.dupe(u8, path),
             .result = result,
-            .detail = if (detail) |value| try self.allocator.dupe(u8, value) else null,
+            .timestamp = timestamp,
+            .pid = metadata.context.pid,
+            .uid = metadata.context.uid,
+            .gid = metadata.context.gid,
+            .executable_path = if (metadata.context.executable_path) |value| try self.allocator.dupe(u8, value) else null,
+            .file_info = metadata.file_info,
+            .lock = metadata.lock,
+            .flock = metadata.flock,
+            .xattr = if (metadata.xattr) |xattr| .{
+                .name = if (xattr.name) |name| try self.allocator.dupe(u8, name) else null,
+                .size = xattr.size,
+                .flags = xattr.flags,
+                .position = xattr.position,
+            } else null,
+            .rename = if (metadata.rename) |rename| .{
+                .from = try self.allocator.dupe(u8, rename.from),
+                .to = try self.allocator.dupe(u8, rename.to),
+            } else null,
+            .fsync = metadata.fsync,
         });
-        self.emitAuditLine(action, path, result, detail);
+        self.emitAuditLine(action, path, result, timestamp, metadata);
     }
 
     fn touchStatus(self: *Model) void {
@@ -1370,7 +1573,8 @@ pub const Model = struct {
         action: []const u8,
         path: []const u8,
         result: i32,
-        detail: ?[]const u8,
+        timestamp: Timestamp,
+        metadata: AuditMetadata,
     ) void {
         const output_file = self.audit_output_file orelse return;
 
@@ -1381,7 +1585,17 @@ pub const Model = struct {
             .action = action,
             .path = path,
             .result = result,
-            .detail = detail,
+            .timestamp = timestamp,
+            .pid = metadata.context.pid,
+            .uid = metadata.context.uid,
+            .gid = metadata.context.gid,
+            .executable_path = metadata.context.executable_path,
+            .file_info = metadata.file_info,
+            .lock = metadata.lock,
+            .flock = metadata.flock,
+            .xattr = metadata.xattr,
+            .rename = metadata.rename,
+            .fsync = metadata.fsync,
         }, .{}, &line.writer) catch return;
         line.writer.writeByte('\n') catch return;
 
