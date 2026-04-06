@@ -17,12 +17,13 @@ Status:
 - `[~]` Replace the spike-oriented CLI surface with product verbs
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `run` now requires explicit `--daemon` or `--foreground`
-  - current runtime path is still limited to one enrolled file
+  - current runtime path is limited to one planned mount, not one enrolled file
 - `[x]` Make an empty policy file a clean no-op
 - `[x]` Derive the mount plan from enrolled files using the minimal non-overlapping mount strategy
 - `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
-  - verified live for a single kubeconfig-style target on macOS
-  - still limited to one enrolled file
+  - verified live for a real kubeconfig-style target on macOS
+  - verified live for multiple guarded siblings under one mounted parent on macOS
+  - still limited to one planned mount per `run`
 
 ## Cross-cutting guardrails
 
@@ -151,11 +152,14 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Make `status` report enrollments, derived mounts, and daemon-relevant configuration from `policy.yml`
 - `[x]` Make `doctor` validate the policy file, guarded objects, and target-path health without mutating state
 - `[~]` Replace the current one-mount `mount <mount-path> <backing-store-path>` product path with policy-driven mount planning
-- `[~]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
-- `[~]` Distinguish guarded files from passthrough files in the Zig-owned lookup model
-- `[ ]` Move directory enumeration out of the root-only shim path so mounted parent directories can expose guarded files plus passthrough siblings
-- `[~]` Demonstrate one real exact-file flow, starting with kubeconfig-style `~/.kube/config`
+- `[x]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
+- `[x]` Distinguish guarded files from passthrough files in the Zig-owned lookup model
+- `[x]` Move directory enumeration out of the root-only shim path so mounted parent directories can expose guarded files plus passthrough siblings
+  - the shim still owns `readdir`, but it no longer hardcodes a single guarded root entry
+- `[x]` Demonstrate one real exact-file flow, starting with kubeconfig-style `~/.kube/config`
   - verified live on macOS against a real `~/.kube/config` shadowed from an alternate guarded object
+  - same projection model also verified live for multiple guarded siblings under one mounted parent
+- `[ ]` Support multiple planned mounts in one `run` invocation
 
 ## Future work
 

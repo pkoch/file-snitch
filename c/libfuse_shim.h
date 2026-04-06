@@ -30,8 +30,6 @@ struct fsn_fuse_session;
 struct fsn_fuse_session_config {
     const char *mount_path;
     const char *backing_store_path;
-    const char *guarded_file_name;
-    const char *guarded_backing_file_path;
     int32_t source_dir_fd;
     uint8_t layout_kind;
     void *daemon_state;

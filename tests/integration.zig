@@ -572,8 +572,10 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
 
     var session = try daemon.Session.initEnrolledParent(allocator, .{
         .mount_path = source_parent,
-        .guarded_file_name = "config",
-        .guarded_backing_file_path = backing_file_path,
+        .guarded_entries = &.{.{
+            .file_name = "config",
+            .backing_file_path = backing_file_path,
+        }},
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -606,6 +608,113 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     const sibling_host_contents = try readFileAbsoluteAlloc(allocator, sibling_path);
     defer allocator.free(sibling_host_contents);
     try std.testing.expectEqualStrings("updated sibling\n", sibling_host_contents);
+}
+
+test "enrolled parent can shadow multiple guarded siblings under one mount" {
+    const allocator = std.testing.allocator;
+    const run_id = std.time.nanoTimestamp();
+    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-multi-{d}", .{run_id});
+    defer allocator.free(source_parent);
+    const first_backing_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-a-{d}", .{run_id});
+    defer allocator.free(first_backing_path);
+    const second_backing_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-b-{d}", .{run_id});
+    defer allocator.free(second_backing_path);
+    const first_source_path = try std.fmt.allocPrint(allocator, "{s}/a.key", .{source_parent});
+    defer allocator.free(first_source_path);
+    const second_source_path = try std.fmt.allocPrint(allocator, "{s}/b.key", .{source_parent});
+    defer allocator.free(second_source_path);
+    const sibling_path = try std.fmt.allocPrint(allocator, "{s}/pubring.kbx", .{source_parent});
+    defer allocator.free(sibling_path);
+
+    try std.fs.makeDirAbsolute(source_parent);
+    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    defer std.fs.deleteFileAbsolute(first_backing_path) catch {};
+    defer std.fs.deleteFileAbsolute(second_backing_path) catch {};
+
+    {
+        var file = try std.fs.createFileAbsolute(first_source_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("host first\n");
+    }
+    {
+        var file = try std.fs.createFileAbsolute(second_source_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("host second\n");
+    }
+    {
+        var file = try std.fs.createFileAbsolute(sibling_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("host sibling\n");
+    }
+    {
+        var file = try std.fs.createFileAbsolute(first_backing_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("guarded first\n");
+    }
+    {
+        var file = try std.fs.createFileAbsolute(second_backing_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("guarded second\n");
+    }
+
+    var session = try daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = source_parent,
+        .guarded_entries = &.{
+            .{
+                .file_name = "a.key",
+                .backing_file_path = first_backing_path,
+            },
+            .{
+                .file_name = "b.key",
+                .backing_file_path = second_backing_path,
+            },
+        },
+        .run_in_foreground = true,
+        .default_mutation_outcome = .allow,
+    });
+    defer session.deinit();
+
+    const first_contents = try session.readPath(allocator, "/a.key");
+    defer allocator.free(first_contents);
+    try std.testing.expectEqualStrings("guarded first\n", first_contents);
+
+    const second_contents = try session.readPath(allocator, "/b.key");
+    defer allocator.free(second_contents);
+    try std.testing.expectEqualStrings("guarded second\n", second_contents);
+
+    const sibling_contents = try session.readPath(allocator, "/pubring.kbx");
+    defer allocator.free(sibling_contents);
+    try std.testing.expectEqualStrings("host sibling\n", sibling_contents);
+
+    try session.debugWriteFile("/a.key", "updated guarded first\n");
+    try session.debugWriteFile("/b.key", "updated guarded second\n");
+    try session.debugWriteFile("/pubring.kbx", "updated sibling\n");
+
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, first_backing_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("updated guarded first\n", contents);
+    }
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, second_backing_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("updated guarded second\n", contents);
+    }
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, first_source_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("host first\n", contents);
+    }
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, second_source_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("host second\n", contents);
+    }
+    {
+        const contents = try readFileAbsoluteAlloc(allocator, sibling_path);
+        defer allocator.free(contents);
+        try std.testing.expectEqualStrings("updated sibling\n", contents);
+    }
 }
 
 fn tempPolicyPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {

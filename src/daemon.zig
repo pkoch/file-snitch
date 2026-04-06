@@ -25,8 +25,7 @@ pub const Config = struct {
 
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
-    guarded_file_name: []const u8,
-    guarded_backing_file_path: []const u8,
+    guarded_entries: []const filesystem.GuardedEntryConfig,
     run_in_foreground: bool = true,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
@@ -182,18 +181,13 @@ pub const Session = struct {
     pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Session {
         const mount_path_z = try allocator.dupeZ(u8, config.mount_path);
         defer allocator.free(mount_path_z);
-        const guarded_file_name_z = try allocator.dupeZ(u8, config.guarded_file_name);
-        defer allocator.free(guarded_file_name_z);
-        const guarded_backing_file_path_z = try allocator.dupeZ(u8, config.guarded_backing_file_path);
-        defer allocator.free(guarded_backing_file_path_z);
 
         const state = try allocator.create(State);
         errdefer allocator.destroy(state);
         state.* = .{
             .filesystem = try filesystem.Model.initEnrolledParent(allocator, .{
                 .mount_path = config.mount_path,
-                .guarded_file_name = config.guarded_file_name,
-                .guarded_backing_file_path = config.guarded_backing_file_path,
+                .guarded_entries = config.guarded_entries,
                 .default_mutation_outcome = config.default_mutation_outcome,
                 .policy_rules = config.policy_rules,
                 .prompt_broker = config.prompt_broker,
@@ -206,8 +200,6 @@ pub const Session = struct {
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
             .backing_store_path = null,
-            .guarded_file_name = guarded_file_name_z,
-            .guarded_backing_file_path = guarded_backing_file_path_z,
             .source_dir_fd = state.filesystem.source_dir.?.fd,
             .layout_kind = 1,
             .daemon_state = state,
@@ -596,6 +588,16 @@ pub export fn fsn_daemon_lookup_path(
         .reserved = std.mem.zeroes([2]u8),
     };
     return 0;
+}
+
+pub export fn fsn_daemon_open_persistent_backing_fd(
+    daemon_state: ?*anyopaque,
+    raw_path: ?[*:0]const u8,
+    requested_flags: c_int,
+) c_int {
+    const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
+    const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
+    return @intCast(state.filesystem.openPersistentBackingFd(path, requested_flags));
 }
 
 pub export fn fsn_daemon_root_entry_count(daemon_state: ?*anyopaque) u32 {

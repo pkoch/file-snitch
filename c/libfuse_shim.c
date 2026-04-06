@@ -100,6 +100,7 @@ struct fsn_bridge_lookup {
 };
 
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
+extern int fsn_daemon_open_persistent_backing_fd(void *daemon_state, const char *path, int requested_flags);
 extern uint32_t fsn_daemon_root_entry_count(void *daemon_state);
 extern const char *fsn_daemon_root_entry_name_at(void *daemon_state, uint32_t index);
 extern int fsn_daemon_authorize_open(
@@ -207,8 +208,6 @@ struct fsn_file_handle {
 struct fsn_fuse_session {
     char *mount_path;
     char *backing_store_path;
-    char *guarded_file_name;
-    char *guarded_backing_file_path;
     int source_dir_fd;
     uint8_t layout_kind;
     void *daemon_state;
@@ -224,10 +223,6 @@ static int fsn_is_root_path(const char *path);
 static int fsn_is_non_root_path(const char *path);
 static int fsn_is_top_level_user_file_path(const char *path);
 static int fsn_is_transient_sidecar_path(const char *path);
-static int fsn_path_matches_guarded_file(
-    const struct fsn_fuse_session *session,
-    const char *path
-);
 static int fsn_build_request(
     struct fsn_bridge_request *out,
     const char *path,
@@ -258,17 +253,14 @@ static int fsn_open_passthrough_fd(
     const char *path,
     int requested_flags
 );
-static int fsn_open_guarded_backing_fd(
-    const struct fsn_fuse_session *session,
-    int requested_flags
-);
 static struct fsn_file_handle *fsn_create_file_handle(void);
 static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
 static void fsn_clear_file_handle(struct fuse_file_info *fi);
 static int fsn_open_backing_store_fd(
     const struct fsn_fuse_session *session,
     const char *path,
-    int requested_flags
+    int requested_flags,
+    int persistent
 );
 static void fsn_fuse_configure_operations(struct fsn_fuse_session *session);
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session);
@@ -402,7 +394,6 @@ static int fsn_fuse_readdir(
         DIR *directory;
         struct dirent *entry;
         int directory_fd;
-        int saw_guarded_entry = 0;
 
         if (fsn_is_root_path(path)) {
             directory_fd = dup(session->source_dir_fd);
@@ -435,32 +426,14 @@ static int fsn_fuse_readdir(
                 continue;
             }
 
-            if (
-                fsn_is_root_path(path) &&
-                session->guarded_file_name != NULL &&
-                strcmp(entry->d_name, session->guarded_file_name) == 0
-            ) {
-                if (fsn_build_virtual_path(session->guarded_file_name, child_path, sizeof(child_path)) != 0) {
-                    closedir(directory);
-                    return -ENAMETOOLONG;
-                }
+            if (fsn_build_child_virtual_path(path, entry->d_name, child_path, sizeof(child_path)) != 0) {
+                closedir(directory);
+                return -ENAMETOOLONG;
+            }
 
-                if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
-                    closedir(directory);
-                    return -EIO;
-                }
-
-                saw_guarded_entry = 1;
-            } else {
-                if (fsn_build_child_virtual_path(path, entry->d_name, child_path, sizeof(child_path)) != 0) {
-                    closedir(directory);
-                    return -ENAMETOOLONG;
-                }
-
-                if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
-                    closedir(directory);
-                    return -EIO;
-                }
+            if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
+                closedir(directory);
+                return -EIO;
             }
 
             memset(&stbuf, 0, sizeof(stbuf));
@@ -506,34 +479,6 @@ static int fsn_fuse_readdir(
                 memset(&stbuf, 0, sizeof(stbuf));
                 fsn_fill_stat_from_lookup(&lookup, &stbuf);
                 if (filler(buf, name, &stbuf, 0
-#ifdef __linux__
-                    , 0
-#endif
-                ) != 0) {
-                    closedir(directory);
-                    return 0;
-                }
-            }
-        }
-
-        if (fsn_is_root_path(path) && session->guarded_file_name != NULL && !saw_guarded_entry) {
-            char guarded_path[PATH_MAX];
-            struct fsn_bridge_lookup guarded_lookup;
-
-            if (fsn_build_virtual_path(session->guarded_file_name, guarded_path, sizeof(guarded_path)) != 0) {
-                closedir(directory);
-                return -ENAMETOOLONG;
-            }
-
-            if (fsn_lookup_path(session, guarded_path, &guarded_lookup) != 0) {
-                closedir(directory);
-                return -EIO;
-            }
-
-            if (guarded_lookup.open_kind != FSN_OPEN_MISSING) {
-                memset(&stbuf, 0, sizeof(stbuf));
-                fsn_fill_stat_from_lookup(&guarded_lookup, &stbuf);
-                if (filler(buf, session->guarded_file_name, &stbuf, 0
 #ifdef __linux__
                     , 0
 #endif
@@ -656,7 +601,7 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
             return -ENOMEM;
         }
 
-        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags);
+        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags, lookup.persistent != 0);
         if (backing_fd < 0) {
             free(handle);
             return backing_fd;
@@ -711,7 +656,7 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
             return -ENOMEM;
         }
 
-        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags);
+        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags, lookup.persistent != 0);
         if (backing_fd < 0) {
             free(handle);
             return backing_fd;
@@ -1328,13 +1273,7 @@ int fsn_fuse_session_create(
     }
 
     if (config->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
-        if (
-            config->source_dir_fd < 0 ||
-            config->guarded_file_name == NULL ||
-            config->guarded_backing_file_path == NULL ||
-            config->guarded_file_name[0] == '\0' ||
-            config->guarded_backing_file_path[0] == '\0'
-        ) {
+        if (config->source_dir_fd < 0) {
             return FSN_FUSE_STATUS_INVALID_ARGUMENT;
         }
     } else {
@@ -1354,17 +1293,9 @@ int fsn_fuse_session_create(
     if (config->backing_store_path != NULL) {
         session->backing_store_path = fsn_strdup(config->backing_store_path);
     }
-    if (config->guarded_file_name != NULL) {
-        session->guarded_file_name = fsn_strdup(config->guarded_file_name);
-    }
-    if (config->guarded_backing_file_path != NULL) {
-        session->guarded_backing_file_path = fsn_strdup(config->guarded_backing_file_path);
-    }
     if (
         session->mount_path == NULL ||
-        (config->backing_store_path != NULL && session->backing_store_path == NULL) ||
-        (config->guarded_file_name != NULL && session->guarded_file_name == NULL) ||
-        (config->guarded_backing_file_path != NULL && session->guarded_backing_file_path == NULL)
+        (config->backing_store_path != NULL && session->backing_store_path == NULL)
     ) {
         fsn_fuse_session_destroy(session);
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
@@ -1389,8 +1320,6 @@ void fsn_fuse_session_destroy(struct fsn_fuse_session *session) {
 
     free(session->mount_path);
     free(session->backing_store_path);
-    free(session->guarded_file_name);
-    free(session->guarded_backing_file_path);
     fsn_free_planned_arguments(session);
     free(session);
 }
@@ -1520,26 +1449,6 @@ static int fsn_is_top_level_user_file_path(const char *path) {
 
 static int fsn_is_transient_sidecar_path(const char *path) {
     return path != NULL && strncmp(path, "/._", 3) == 0;
-}
-
-static int fsn_path_matches_guarded_file(
-    const struct fsn_fuse_session *session,
-    const char *path
-) {
-    size_t name_length;
-
-    if (
-        session == NULL ||
-        session->layout_kind != FSN_LAYOUT_ENROLLED_PARENT ||
-        session->guarded_file_name == NULL ||
-        path == NULL ||
-        path[0] != '/'
-    ) {
-        return 0;
-    }
-
-    name_length = strlen(session->guarded_file_name);
-    return path[1] != '\0' && path[1 + name_length] == '\0' && strcmp(path + 1, session->guarded_file_name) == 0;
 }
 
 static int fsn_build_request(
@@ -1769,11 +1678,12 @@ static void fsn_clear_file_handle(struct fuse_file_info *fi) {
 static int fsn_open_backing_store_fd(
     const struct fsn_fuse_session *session,
     const char *path,
-    int requested_flags
+    int requested_flags,
+    int persistent
 ) {
     if (session != NULL && session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
-        if (fsn_path_matches_guarded_file(session, path)) {
-            return fsn_open_guarded_backing_fd(session, requested_flags);
+        if (persistent) {
+            return fsn_daemon_open_persistent_backing_fd(session->daemon_state, path, requested_flags);
         }
         return fsn_open_passthrough_fd(session, path, requested_flags);
     }
@@ -1792,24 +1702,6 @@ static int fsn_open_backing_store_fd(
     }
 
     descriptor = open(host_path, requested_flags);
-    if (descriptor < 0) {
-        return -errno;
-    }
-
-    return descriptor;
-}
-
-static int fsn_open_guarded_backing_fd(
-    const struct fsn_fuse_session *session,
-    int requested_flags
-) {
-    int descriptor;
-
-    if (session == NULL || session->guarded_backing_file_path == NULL) {
-        return -EINVAL;
-    }
-
-    descriptor = open(session->guarded_backing_file_path, requested_flags);
     if (descriptor < 0) {
         return -errno;
     }

@@ -25,7 +25,8 @@ Current state:
   - `status`
   - `doctor`
 - `run` now requires explicit `--foreground` or `--daemon`
-- the current `run` path still supports exactly one enrolled file
+- the current `run` path supports multiple enrolled files under one planned mount
+- the remaining runtime limit is multiple planned mounts in one invocation
 - the first real enrolled-file flow is live for a kubeconfig-style target:
   - mount the real parent directory
   - shadow the enrolled file from `~/.var/file-snitch/guarded-secrets/<object_id>`
@@ -33,6 +34,10 @@ Current state:
 - the real macOS demo was verified against `~/.kube/config`:
   - while mounted, `~/.kube/config` resolved to the guarded object
   - after unmount, the original host file was unchanged
+- the same enrolled-parent path now also works for multiple guarded files under one mounted parent:
+  - guarded siblings project from their backing objects
+  - unguarded siblings still passthrough
+  - unmount restores the original host files unchanged
 - macOS `._*` AppleDouble sidecars remain transient in the new enrolled-parent path and do not persist back into the real directory after unmount
 
 ## Layout
@@ -107,7 +112,8 @@ When debugging a specific area, the build-managed test step above is still the d
 
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
-- `run` currently supports exactly one enrolled file and mounts its real parent directory in place
+- `run` currently supports one planned mount and mounts its real parent directory in place
+- multiple enrolled files under that one mounted parent are supported
 - `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan

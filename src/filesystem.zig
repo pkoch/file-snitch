@@ -205,6 +205,7 @@ const StoredAuditRenameInfo = struct {
 const StoredFile = struct {
     name: [:0]u8,
     path: [:0]u8,
+    backing_path: ?[]u8 = null,
     content: std.ArrayListUnmanaged(u8) = .{},
     mode: u32,
     uid: u32,
@@ -217,6 +218,9 @@ const StoredFile = struct {
     fn deinit(self: *StoredFile, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.path);
+        if (self.backing_path) |value| {
+            allocator.free(value);
+        }
         self.content.deinit(allocator);
         self.* = undefined;
     }
@@ -248,6 +252,11 @@ const RenameMutation = struct {
     replaced_target: ?StoredFile,
 };
 
+pub const GuardedEntryConfig = struct {
+    file_name: []const u8,
+    backing_file_path: []const u8,
+};
+
 pub const Config = struct {
     mount_path: []const u8,
     backing_store_path: []const u8,
@@ -260,8 +269,7 @@ pub const Config = struct {
 
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
-    guarded_file_name: []const u8,
-    guarded_backing_file_path: []const u8,
+    guarded_entries: []const GuardedEntryConfig,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
     prompt_broker: ?prompt.Broker = null,
@@ -275,8 +283,6 @@ pub const Model = struct {
     mount_path: []u8,
     backing_store_path: []u8,
     source_dir: ?std.fs.Dir = null,
-    guarded_file_name: ?[]u8 = null,
-    guarded_virtual_path: ?[]u8 = null,
     policy_engine: policy.Engine,
     prompt_broker: ?prompt.Broker,
     status_output_file: ?std.fs.File,
@@ -312,9 +318,6 @@ pub const Model = struct {
     }
 
     pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Model {
-        const guarded_virtual_path = try std.fmt.allocPrint(allocator, "/{s}", .{config.guarded_file_name});
-        errdefer allocator.free(guarded_virtual_path);
-
         var source_dir = try std.fs.openDirAbsolute(config.mount_path, .{ .iterate = true });
         errdefer source_dir.close();
 
@@ -322,10 +325,8 @@ pub const Model = struct {
             .allocator = allocator,
             .layout = .enrolled_parent,
             .mount_path = try allocator.dupe(u8, config.mount_path),
-            .backing_store_path = try allocator.dupe(u8, config.guarded_backing_file_path),
+            .backing_store_path = try allocator.dupe(u8, config.mount_path),
             .source_dir = source_dir,
-            .guarded_file_name = try allocator.dupe(u8, config.guarded_file_name),
-            .guarded_virtual_path = guarded_virtual_path,
             .policy_engine = try policy.Engine.init(
                 allocator,
                 config.default_mutation_outcome,
@@ -338,7 +339,7 @@ pub const Model = struct {
         };
         errdefer model.deinit();
 
-        try model.loadGuardedBackingFile();
+        try model.loadGuardedBackingFiles(config.guarded_entries);
         return model;
     }
 
@@ -379,6 +380,7 @@ pub const Model = struct {
                 @intCast(stat.mode & 0o777),
                 @intCast(posix_stat.uid),
                 @intCast(posix_stat.gid),
+                null,
             );
             const imported_now = currentTimestamp();
             imported.atime = imported_now;
@@ -396,7 +398,7 @@ pub const Model = struct {
         }
     }
 
-    fn loadGuardedBackingFile(self: *Model) !void {
+    fn loadGuardedBackingFiles(self: *Model, guarded_entries: []const GuardedEntryConfig) !void {
         if (self.layout != .enrolled_parent) {
             return error.InvalidLayout;
         }
@@ -405,28 +407,33 @@ pub const Model = struct {
             return error.BackingStoreAlreadyLoaded;
         }
 
-        const guarded_path = self.guarded_virtual_path orelse return error.InvalidLayout;
-        var file = try std.fs.openFileAbsolute(self.backing_store_path, .{ .mode = .read_only });
-        defer file.close();
+        for (guarded_entries) |entry| {
+            const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.file_name});
+            defer self.allocator.free(guarded_path);
 
-        const stat = try file.stat();
-        const posix_stat = try std.posix.fstat(file.handle);
-        const imported = try self.appendFile(
-            guarded_path,
-            @intCast(stat.mode & 0o777),
-            @intCast(posix_stat.uid),
-            @intCast(posix_stat.gid),
-        );
-        imported.atime = timestampFromStatNanos(stat.atime);
-        imported.mtime = timestampFromStatNanos(stat.mtime);
-        imported.ctime = timestampFromStatNanos(stat.ctime);
+            var file = try std.fs.openFileAbsolute(entry.backing_file_path, .{ .mode = .read_only });
+            defer file.close();
 
-        if (stat.size > 0) {
-            try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
-            imported.content.items.len = @intCast(stat.size);
-            const read_count = try file.readAll(imported.content.items);
-            if (read_count != imported.content.items.len) {
-                return error.UnexpectedEof;
+            const stat = try file.stat();
+            const posix_stat = try std.posix.fstat(file.handle);
+            const imported = try self.appendFile(
+                guarded_path,
+                @intCast(stat.mode & 0o777),
+                @intCast(posix_stat.uid),
+                @intCast(posix_stat.gid),
+                entry.backing_file_path,
+            );
+            imported.atime = timestampFromStatNanos(stat.atime);
+            imported.mtime = timestampFromStatNanos(stat.mtime);
+            imported.ctime = timestampFromStatNanos(stat.ctime);
+
+            if (stat.size > 0) {
+                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
+                imported.content.items.len = @intCast(stat.size);
+                const read_count = try file.readAll(imported.content.items);
+                if (read_count != imported.content.items.len) {
+                    return error.UnexpectedEof;
+                }
             }
         }
     }
@@ -450,12 +457,6 @@ pub const Model = struct {
         self.policy_engine.deinit();
         if (self.source_dir) |*dir| {
             dir.close();
-        }
-        if (self.guarded_file_name) |value| {
-            self.allocator.free(value);
-        }
-        if (self.guarded_virtual_path) |value| {
-            self.allocator.free(value);
         }
         self.allocator.free(self.mount_path);
         self.allocator.free(self.backing_store_path);
@@ -545,10 +546,9 @@ pub const Model = struct {
         if (self.layout == .enrolled_parent) {
             var count: u32 = 0;
             for (self.files.items) |file| {
-                if (self.guarded_virtual_path) |guarded_path| {
-                    if (std.mem.eql(u8, file.path, guarded_path)) continue;
+                if (self.shouldExposeAsSyntheticRootEntry(&file)) {
+                    count += 1;
                 }
-                count += 1;
             }
             return count;
         }
@@ -559,11 +559,10 @@ pub const Model = struct {
         if (self.layout == .enrolled_parent) {
             var visible_index: u32 = 0;
             for (self.files.items) |file| {
-                if (self.guarded_virtual_path) |guarded_path| {
-                    if (std.mem.eql(u8, file.path, guarded_path)) continue;
+                if (self.shouldExposeAsSyntheticRootEntry(&file)) {
+                    if (visible_index == index) return file.name.ptr;
+                    visible_index += 1;
                 }
-                if (visible_index == index) return file.name.ptr;
-                visible_index += 1;
             }
             return null;
         }
@@ -599,12 +598,6 @@ pub const Model = struct {
                 .open_kind = .user_file,
                 .persistent = self.isGuardedPath(path),
             };
-        }
-
-        if (self.guarded_virtual_path) |guarded_path| {
-            if (std.mem.eql(u8, path, guarded_path)) {
-                return missingLookup();
-            }
         }
 
         return self.lookupPassthroughPath(path);
@@ -675,6 +668,23 @@ pub const Model = struct {
             },
             .persistent = false,
         };
+    }
+
+    fn shouldExposeAsSyntheticRootEntry(self: *const Model, file: *const StoredFile) bool {
+        if (self.layout != .enrolled_parent) {
+            return true;
+        }
+
+        if (file.backing_path == null) {
+            return true;
+        }
+
+        const dir = self.source_dir orelse return true;
+        _ = dir.statFile(file.name) catch |err| switch (err) {
+            error.FileNotFound => return true,
+            else => return true,
+        };
+        return false;
     }
 
     pub fn authorizeAccess(
@@ -1221,7 +1231,7 @@ pub const Model = struct {
             return auth_result;
         }
 
-        const file = self.appendFile(path, mode, currentUid(), currentGid()) catch |err| {
+        const file = self.appendFile(path, mode, currentUid(), currentGid(), null) catch |err| {
             return mapFsError(err);
         };
         errdefer self.removeFileAtIndex(self.files.items.len - 1);
@@ -1495,14 +1505,14 @@ pub const Model = struct {
             if (auth_result != 0) {
                 return auth_result;
             }
-            return self.replaceGuardedFileFromPassthrough(from);
+            return self.replaceGuardedFileFromPassthrough(from, to);
         }
 
         const auth_result = self.authorizeAccess(from, .rename, context);
         if (auth_result != 0) {
             return auth_result;
         }
-        return self.moveGuardedFileToPassthrough(to);
+        return self.moveGuardedFileToPassthrough(from, to);
     }
 
     fn readPassthroughInto(
@@ -1613,10 +1623,13 @@ pub const Model = struct {
         return 0;
     }
 
-    fn replaceGuardedFileFromPassthrough(self: *Model, from: []const u8) i32 {
+    fn replaceGuardedFileFromPassthrough(self: *Model, from: []const u8, to: []const u8) i32 {
         const from_relative = relativeMountedPath(from) orelse return errnoCode(.INVAL);
         const dir = self.source_dir orelse return errnoCode(.IO);
-        const file = self.findGuardedFile() orelse return errnoCode(.NOENT);
+        const file = self.findFile(to) orelse return errnoCode(.NOENT);
+        if (file.backing_path == null) {
+            return errnoCode(.NOENT);
+        }
         var source_file = dir.openFile(from_relative, .{ .mode = .read_only }) catch |err| return mapFsError(err);
         defer source_file.close();
 
@@ -1642,10 +1655,13 @@ pub const Model = struct {
         return 0;
     }
 
-    fn moveGuardedFileToPassthrough(self: *Model, to: []const u8) i32 {
+    fn moveGuardedFileToPassthrough(self: *Model, from: []const u8, to: []const u8) i32 {
         const to_relative = relativeMountedPath(to) orelse return errnoCode(.INVAL);
         const dir = self.source_dir orelse return errnoCode(.IO);
-        const file = self.findGuardedFile() orelse return errnoCode(.NOENT);
+        const file = self.findFile(from) orelse return errnoCode(.NOENT);
+        if (file.backing_path == null) {
+            return errnoCode(.NOENT);
+        }
         var target_file = dir.createFile(to_relative, .{ .read = true, .truncate = true }) catch |err| return mapFsError(err);
         defer target_file.close();
 
@@ -1656,12 +1672,13 @@ pub const Model = struct {
         target_file.chown(file.uid, file.gid) catch |err| return mapFsError(err);
         target_file.sync() catch |err| return mapFsError(err);
 
-        const remove_result = self.removeGuardedBackingFile();
+        const remove_result = self.removeGuardedBackingFile(file);
         if (remove_result != 0) {
             return remove_result;
         }
 
-        self.removeFileAtIndex(0);
+        const source_index = self.findFileIndex(from) orelse return errnoCode(.NOENT);
+        self.removeFileAtIndex(source_index);
         self.touchStatus();
         return 0;
     }
@@ -1835,16 +1852,23 @@ pub const Model = struct {
         mode: u32,
         uid: u32,
         gid: u32,
+        backing_path: ?[]const u8,
     ) !*StoredFile {
         const now = currentTimestamp();
         const name = try self.allocator.dupeZ(u8, path[1..]);
         errdefer self.allocator.free(name);
         const owned_path = try self.allocator.dupeZ(u8, path);
         errdefer self.allocator.free(owned_path);
+        const owned_backing_path = if (backing_path) |value|
+            try self.allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (owned_backing_path) |value| self.allocator.free(value);
 
         try self.files.append(self.allocator, .{
             .name = name,
             .path = owned_path,
+            .backing_path = owned_backing_path,
             .mode = mode & 0o777,
             .uid = uid,
             .gid = gid,
@@ -1879,11 +1903,6 @@ pub const Model = struct {
         return @constCast(&self.files.items[index]);
     }
 
-    fn findGuardedFile(self: *const Model) ?*StoredFile {
-        const guarded_path = self.guarded_virtual_path orelse return null;
-        return self.findFile(guarded_path);
-    }
-
     fn findFileIndex(self: *const Model, path: []const u8) ?usize {
         for (self.files.items, 0..) |file, index| {
             if (std.mem.eql(u8, file.path, path)) {
@@ -1894,7 +1913,10 @@ pub const Model = struct {
     }
 
     fn syncFileToBackingStore(self: *Model, file: *const StoredFile) i32 {
-        const host_path = self.hostPathAlloc(file.path) catch |err| return mapFsError(err);
+        const host_path = if (file.backing_path) |value|
+            self.allocator.dupe(u8, value) catch return errnoCode(.NOMEM)
+        else
+            self.hostPathAlloc(file.path) catch |err| return mapFsError(err);
         defer self.allocator.free(host_path);
 
         var host_file = std.fs.createFileAbsolute(host_path, .{
@@ -1913,8 +1935,10 @@ pub const Model = struct {
         return 0;
     }
 
-    fn removeGuardedBackingFile(self: *Model) i32 {
-        std.fs.deleteFileAbsolute(self.backing_store_path) catch |err| return mapFsError(err);
+    fn removeGuardedBackingFile(self: *Model, file: *const StoredFile) i32 {
+        _ = self;
+        const backing_path = file.backing_path orelse return errnoCode(.NOENT);
+        std.fs.deleteFileAbsolute(backing_path) catch |err| return mapFsError(err);
         return 0;
     }
 
@@ -1922,8 +1946,8 @@ pub const Model = struct {
         if (self.layout != .enrolled_parent) {
             return true;
         }
-        const guarded_path = self.guarded_virtual_path orelse return false;
-        return std.mem.eql(u8, path, guarded_path);
+        const file = self.findFile(path) orelse return false;
+        return file.backing_path != null;
     }
 
     fn hostXattrPathAllocZ(
@@ -1943,8 +1967,9 @@ pub const Model = struct {
             return .{ .err = errnoCode(.NOENT) };
         }
 
-        const host_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.backing_store_path, path[1..] }) catch {
-            return .{ .err = errnoCode(.NOMEM) };
+        const host_path = self.hostPathAlloc(path) catch |err| switch (err) {
+            error.InvalidPath, error.FileNotFound => return .{ .err = missing_result },
+            else => return .{ .err = errnoCode(.NOMEM) },
         };
         defer self.allocator.free(host_path);
 
@@ -1964,13 +1989,28 @@ pub const Model = struct {
                 break :blk std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.backing_store_path, path[1..] });
             },
             .enrolled_parent => blk: {
-                if (!self.isGuardedPath(path)) {
-                    break :blk error.InvalidPath;
+                const file = self.findFile(path) orelse break :blk error.FileNotFound;
+                if (file.backing_path) |value| {
+                    break :blk try self.allocator.dupe(u8, value);
                 }
-
-                break :blk self.allocator.dupe(u8, self.backing_store_path);
+                break :blk error.InvalidPath;
             },
         };
+    }
+
+    pub fn openPersistentBackingFd(self: *const Model, path: []const u8, requested_flags: i32) i32 {
+        const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
+        defer self.allocator.free(host_path);
+
+        const host_path_z = self.allocator.dupeZ(u8, host_path) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(host_path_z);
+
+        const descriptor = c.open(host_path_z.ptr, requested_flags, @as(std.posix.mode_t, 0));
+        if (descriptor < 0) {
+            return -std.c._errno().*;
+        }
+
+        return descriptor;
     }
 
     fn createDirectoryNotSupported(path: []const u8, mode: u32, context: AccessContext) i32 {

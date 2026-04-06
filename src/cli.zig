@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const daemon = @import("daemon.zig");
+const filesystem = @import("filesystem.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 
@@ -342,18 +343,28 @@ fn runWithPolicy(command: RunCommand) !void {
     var mount_plan = try loaded_policy.deriveMountPlan(allocator);
     defer mount_plan.deinit();
 
-    if (loaded_policy.enrollments.len != 1 or mount_plan.paths.len != 1) {
+    if (mount_plan.paths.len != 1) {
         std.debug.print(
-            "error: `run` currently supports exactly one enrolled file; got {d} enrollments and {d} planned mounts in {s}\n",
-            .{ loaded_policy.enrollments.len, mount_plan.paths.len, loaded_policy.source_path },
+            "error: `run` currently supports exactly one planned mount; got {d} planned mounts in {s}\n",
+            .{ mount_plan.paths.len, loaded_policy.source_path },
         );
         return error.InvalidUsage;
     }
 
-    const enrollment = loaded_policy.enrollments[0];
-    const guarded_file_name = std.fs.path.basename(enrollment.path);
-    const guarded_backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id);
-    defer allocator.free(guarded_backing_file_path);
+    var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, loaded_policy.enrollments.len);
+    defer {
+        for (guarded_entries) |entry| {
+            allocator.free(entry.backing_file_path);
+        }
+        allocator.free(guarded_entries);
+    }
+
+    for (loaded_policy.enrollments, 0..) |enrollment, index| {
+        guarded_entries[index] = .{
+            .file_name = std.fs.path.basename(enrollment.path),
+            .backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id),
+        };
+    }
 
     var cli_prompt_context = prompt.CliContext{
         .timeout_ms = command.prompt_timeout_ms,
@@ -366,8 +377,7 @@ fn runWithPolicy(command: RunCommand) !void {
 
     try daemon.mountEnrolledParent(allocator, .{
         .mount_path = mount_plan.paths[0],
-        .guarded_file_name = guarded_file_name,
-        .guarded_backing_file_path = guarded_backing_file_path,
+        .guarded_entries = guarded_entries,
         .run_in_foreground = command.run_in_foreground,
         .default_mutation_outcome = command.default_mutation_outcome,
         .policy_rules = compiled_rules.items,
@@ -508,7 +518,7 @@ fn runDoctor(command: PolicyCommand) !void {
     if (loaded_policy.enrollments.len > 1 or mount_plan.paths.len > 1) {
         has_errors = true;
         std.debug.print(
-            "error: current `run` path still supports exactly one enrolled file and one planned mount\n",
+            "error: current `run` path still supports exactly one planned mount\n",
             .{},
         );
     }
@@ -797,7 +807,7 @@ fn printUsage() void {
         \\notes:
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - `run` exits cleanly when no enrollments are configured
-        \\  - `run` currently supports exactly one enrolled file
+        \\  - `run` currently supports multiple enrolled files under exactly one planned mount
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems
