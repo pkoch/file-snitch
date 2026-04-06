@@ -33,7 +33,7 @@ jobs:
 
       - run: ./tests/build.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: file-snitch-linux
           path: zig-out/bin/file-snitch
@@ -52,7 +52,7 @@ jobs:
             fuse3 \
           ;
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: file-snitch-linux
           path: zig-out/bin
