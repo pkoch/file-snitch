@@ -42,7 +42,7 @@ Deliverable: a short report covering 10 target apps/tools, their secret file loc
 - `[x]` Define the Zig/C boundary if the spike uses Zig with a thin C `libfuse` shim
 - `[~]` Verify caller attribution assumptions on Linux with `fuse_get_context()`
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
-  - verified for simple shell and CLI request-time flows; still need broader helper-heavy validation
+  - verified for simple shell request-time flows and a real `gh` config-read path; still need broader metadata-heavy validation
 - `[~]` Verify caller attribution assumptions on macOS with macFUSE
   - current findings in [docs/research/5 - attribution-notes.md](./docs/research/5%20-%20attribution-notes.md)
   - verified for simple VFS-backed shell and CLI request-time flows; still need broader validation and backend caveat tracking
