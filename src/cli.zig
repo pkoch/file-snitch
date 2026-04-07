@@ -10,13 +10,14 @@ pub const std_options: std.Options = .{
 };
 
 const allocator = std.heap.page_allocator;
+var supervisor_shutdown_signal = std.atomic.Value(i32).init(0);
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     run(args[1..]) catch |err| switch (err) {
-        error.InvalidUsage, error.DoctorFailed => std.process.exit(1),
+        error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
         else => return err,
     };
 }
@@ -67,10 +68,14 @@ const RunCommand = struct {
     prompt_timeout_ms: u32,
     run_in_foreground: bool,
     status_fifo_path: ?[]const u8 = null,
+    mount_path_filter: ?[]const u8 = null,
 
     fn deinit(self: RunCommand, alloc: std.mem.Allocator) void {
         alloc.free(self.policy_path);
         if (self.status_fifo_path) |path| {
+            alloc.free(path);
+        }
+        if (self.mount_path_filter) |path| {
             alloc.free(path);
         }
     }
@@ -190,6 +195,15 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
                 return error.InvalidUsage;
             }
             command.status_fifo_path = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--mount-path")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            command.mount_path_filter = try resolvePathArgument(args[index]);
             continue;
         }
 
@@ -343,52 +357,114 @@ fn runWithPolicy(command: RunCommand) !void {
     var mount_plan = try loaded_policy.deriveMountPlan(allocator);
     defer mount_plan.deinit();
 
-    if (mount_plan.paths.len != 1) {
+    if (command.mount_path_filter) |filtered_mount| {
+        var filtered: usize = 0;
+        for (mount_plan.paths) |mount_path| {
+            if (std.mem.eql(u8, mount_path, filtered_mount)) {
+                mount_plan.paths[0] = mount_path;
+                filtered = 1;
+                break;
+            }
+        }
+        mount_plan.paths.len = filtered;
+        if (filtered == 0) {
+            std.debug.print("error: requested mount path is not part of the current plan: {s}\n", .{filtered_mount});
+            return error.InvalidUsage;
+        }
+    }
+
+    if (mount_plan.paths.len == 0) {
+        std.debug.print("file-snitch: no planned mounts derived from {s}; nothing to do\n", .{loaded_policy.source_path});
+        return;
+    }
+
+    if (mount_plan.paths.len > 1 and command.default_mutation_outcome == .prompt) {
+        std.debug.print("error: multi-mount `run prompt` is not supported yet\n", .{});
+        return error.InvalidUsage;
+    }
+
+    if (!command.run_in_foreground and mount_plan.paths.len != 1) {
         std.debug.print(
-            "error: `run` currently supports exactly one planned mount; got {d} planned mounts in {s}\n",
+            "error: multi-mount `run --daemon` is not supported yet; got {d} planned mounts in {s}\n",
             .{ mount_plan.paths.len, loaded_policy.source_path },
         );
         return error.InvalidUsage;
     }
 
-    var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, loaded_policy.enrollments.len);
-    defer {
-        for (guarded_entries) |entry| {
-            allocator.free(entry.relative_path);
-            allocator.free(entry.backing_file_path);
-        }
-        allocator.free(guarded_entries);
+    if (mount_plan.paths.len > 1 and command.mount_path_filter == null) {
+        try superviseMountChildren(command, mount_plan.paths);
+        return;
     }
 
-    for (loaded_policy.enrollments, 0..) |enrollment, index| {
-        guarded_entries[index] = .{
-            .relative_path = try relativeEnrollmentPath(allocator, mount_plan.paths[0], enrollment.path),
-            .backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id),
-        };
+    const status_output_file = if (command.status_fifo_path) |path|
+        try openStatusFifo(path)
+    else
+        null;
+    defer {
+        if (status_output_file) |file| file.close();
     }
 
     var cli_prompt_context = prompt.CliContext{
         .timeout_ms = command.prompt_timeout_ms,
     };
-    const status_output_file = if (command.status_fifo_path) |path|
-        try openStatusFifo(path)
-    else
-        null;
-    defer if (status_output_file) |file| file.close();
+    const PlannedMount = struct {
+        mount_path: []const u8,
+        guarded_entries: []filesystem.GuardedEntryConfig,
+    };
 
-    try daemon.mountEnrolledParent(allocator, .{
-        .mount_path = mount_plan.paths[0],
-        .guarded_entries = guarded_entries,
-        .run_in_foreground = command.run_in_foreground,
-        .default_mutation_outcome = command.default_mutation_outcome,
-        .policy_rules = compiled_rules.items,
-        .prompt_broker = if (command.default_mutation_outcome == .prompt)
-            prompt.cliBroker(&cli_prompt_context)
-        else
-            null,
-        .status_output_file = status_output_file,
-        .audit_output_file = std.fs.File.stdout(),
-    });
+    var planned_mounts = try allocator.alloc(PlannedMount, mount_plan.paths.len);
+    defer {
+        for (planned_mounts) |planned| {
+            for (planned.guarded_entries) |entry| {
+                allocator.free(entry.relative_path);
+                allocator.free(entry.backing_file_path);
+            }
+            allocator.free(planned.guarded_entries);
+        }
+        allocator.free(planned_mounts);
+    }
+
+    for (mount_plan.paths, 0..) |mount_path, mount_index| {
+        var entry_count: usize = 0;
+        for (loaded_policy.enrollments) |enrollment| {
+            if (coversEnrollmentPath(mount_path, enrollment.path)) {
+                entry_count += 1;
+            }
+        }
+
+        var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, entry_count);
+        var entry_index: usize = 0;
+        for (loaded_policy.enrollments) |enrollment| {
+            if (!coversEnrollmentPath(mount_path, enrollment.path)) continue;
+            guarded_entries[entry_index] = .{
+                .relative_path = try relativeEnrollmentPath(allocator, mount_path, enrollment.path),
+                .backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id),
+            };
+            entry_index += 1;
+        }
+
+        planned_mounts[mount_index] = .{
+            .mount_path = mount_path,
+            .guarded_entries = guarded_entries,
+        };
+    }
+
+    if (planned_mounts.len == 1) {
+        try daemon.mountEnrolledParent(allocator, .{
+            .mount_path = planned_mounts[0].mount_path,
+            .guarded_entries = planned_mounts[0].guarded_entries,
+            .run_in_foreground = command.run_in_foreground,
+            .default_mutation_outcome = command.default_mutation_outcome,
+            .policy_rules = compiled_rules.items,
+            .prompt_broker = if (command.default_mutation_outcome == .prompt)
+                prompt.cliBroker(&cli_prompt_context)
+            else
+                null,
+            .status_output_file = status_output_file,
+            .audit_output_file = std.fs.File.stdout(),
+        });
+        return;
+    }
 }
 
 fn enrollPath(command: PathCommand) !void {
@@ -515,14 +591,6 @@ fn runDoctor(command: PolicyCommand) !void {
 
     std.debug.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     std.debug.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
-
-    if (loaded_policy.enrollments.len > 1 or mount_plan.paths.len > 1) {
-        has_errors = true;
-        std.debug.print(
-            "error: current `run` path still supports exactly one planned mount\n",
-            .{},
-        );
-    }
 
     for (loaded_policy.enrollments) |enrollment| {
         const parent_dir = std.fs.path.dirname(enrollment.path) orelse {
@@ -733,6 +801,178 @@ fn relativeEnrollmentPath(
     return alloc.dupe(u8, enrollment_path[mount_path.len + 1 ..]);
 }
 
+fn coversEnrollmentPath(mount_path: []const u8, enrollment_path: []const u8) bool {
+    return std.mem.startsWith(u8, enrollment_path, mount_path) and
+        enrollment_path.len > mount_path.len and
+        enrollment_path[mount_path.len] == '/';
+}
+
+fn superviseMountChildren(command: RunCommand, mount_paths: []const []const u8) !void {
+    const signal_handlers = installSupervisorSignalHandlers();
+    defer signal_handlers.restore();
+
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+
+    const ChildRunner = struct {
+        child: std.process.Child,
+        argv: []const []const u8,
+        mount_path: []const u8,
+        alive: bool = false,
+        term: ?std.process.Child.Term = null,
+    };
+
+    var children = try allocator.alloc(ChildRunner, mount_paths.len);
+    defer {
+        for (children) |runner| {
+            allocator.free(runner.argv);
+        }
+        allocator.free(children);
+    }
+
+    for (mount_paths, 0..) |mount_path, index| {
+        const extra_args: usize = if (command.status_fifo_path != null) 2 else 0;
+        const argv = try allocator.alloc([]const u8, 8 + extra_args);
+        argv[0] = exe_path;
+        argv[1] = "run";
+        argv[2] = outcomeArg(command.default_mutation_outcome);
+        argv[3] = "--foreground";
+        argv[4] = "--policy";
+        argv[5] = command.policy_path;
+        argv[6] = "--mount-path";
+        argv[7] = mount_path;
+        if (command.status_fifo_path) |status_fifo_path| {
+            argv[8] = "--status-fifo";
+            argv[9] = status_fifo_path;
+        }
+
+        var child = std.process.Child.init(argv, allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+
+        children[index] = .{
+            .child = child,
+            .argv = argv,
+            .mount_path = mount_path,
+        };
+        try children[index].child.spawn();
+        children[index].alive = true;
+    }
+
+    var remaining = children.len;
+    var shutdown_requested = false;
+    while (remaining > 0) {
+        const shutdown_signal = supervisor_shutdown_signal.load(.acquire);
+        if (shutdown_signal != 0 and !shutdown_requested) {
+            shutdown_requested = true;
+            signalChildrenForShutdown(children, @intCast(shutdown_signal));
+        }
+
+        var reaped_any = false;
+        for (children, 0..) |runner, child_index| {
+            if (!runner.alive) continue;
+
+            const waited = std.posix.waitpid(runner.child.id, std.posix.W.NOHANG);
+            if (waited.pid == 0) continue;
+
+            reaped_any = true;
+            children[child_index].alive = false;
+            children[child_index].term = termFromWaitStatus(waited.status);
+            remaining -= 1;
+
+            if (!shutdown_requested) {
+                shutdown_requested = true;
+                signalChildrenForShutdown(children, std.posix.SIG.INT);
+            }
+        }
+
+        if (!reaped_any and remaining > 0) {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+        }
+    }
+
+    for (children) |runner| {
+        switch (runner.term orelse continue) {
+            .Exited => |code| {
+                if (code != 0) {
+                    std.debug.print("error: mount child exited non-zero for {s}: {d}\n", .{ runner.mount_path, code });
+                    return error.RunFailed;
+                }
+            },
+            .Signal => |sig| {
+                if (sig != std.posix.SIG.INT and sig != std.posix.SIG.TERM) {
+                    std.debug.print("error: mount child died from signal for {s}: {d}\n", .{ runner.mount_path, sig });
+                    return error.RunFailed;
+                }
+            },
+            else => {
+                std.debug.print("error: mount child terminated unexpectedly for {s}\n", .{runner.mount_path});
+                return error.RunFailed;
+            },
+        }
+    }
+}
+
+fn signalChildrenForShutdown(children: anytype, signal: u8) void {
+    for (children) |runner| {
+        if (!runner.alive) continue;
+        std.posix.kill(runner.child.id, signal) catch {};
+    }
+}
+
+fn termFromWaitStatus(status: u32) std.process.Child.Term {
+    if ((status & 0x7f) == 0) {
+        return .{ .Exited = @intCast((status >> 8) & 0xff) };
+    }
+    if ((status & 0xff) == 0x7f) {
+        return .{ .Stopped = @intCast((status >> 8) & 0xff) };
+    }
+    return .{ .Signal = @intCast(status & 0x7f) };
+}
+
+fn outcomeArg(outcome: policy.Outcome) []const u8 {
+    return switch (outcome) {
+        .allow => "allow",
+        .deny => "deny",
+        .prompt => "prompt",
+    };
+}
+
+const SupervisorSignalHandlers = struct {
+    previous_int: std.posix.Sigaction,
+    previous_term: std.posix.Sigaction,
+
+    fn restore(self: SupervisorSignalHandlers) void {
+        std.posix.sigaction(std.posix.SIG.INT, &self.previous_int, null);
+        std.posix.sigaction(std.posix.SIG.TERM, &self.previous_term, null);
+        supervisor_shutdown_signal.store(0, .release);
+    }
+};
+
+fn installSupervisorSignalHandlers() SupervisorSignalHandlers {
+    supervisor_shutdown_signal.store(0, .release);
+
+    const action: std.posix.Sigaction = .{
+        .handler = .{ .handler = handleSupervisorSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+
+    var previous_int: std.posix.Sigaction = undefined;
+    var previous_term: std.posix.Sigaction = undefined;
+    std.posix.sigaction(std.posix.SIG.INT, &action, &previous_int);
+    std.posix.sigaction(std.posix.SIG.TERM, &action, &previous_term);
+    return .{
+        .previous_int = previous_int,
+        .previous_term = previous_term,
+    };
+}
+
+fn handleSupervisorSignal(signal_number: i32) callconv(.c) void {
+    supervisor_shutdown_signal.store(signal_number, .release);
+}
+
 fn allocateObjectId() ![]u8 {
     var bytes: [16]u8 = undefined;
     var object_id_buffer: [32]u8 = undefined;
@@ -822,7 +1062,8 @@ fn printUsage() void {
         \\notes:
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - `run` exits cleanly when no enrollments are configured
-        \\  - `run` currently supports multiple enrolled files under exactly one planned mount
+        \\  - `run --foreground` supports multiple planned mounts by supervising one child mount process per path
+        \\  - `run prompt` and multi-mount `run --daemon` are still unsupported
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems

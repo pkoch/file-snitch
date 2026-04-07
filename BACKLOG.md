@@ -17,14 +17,15 @@ Status:
 - `[~]` Replace the spike-oriented CLI surface with product verbs
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `run` now requires explicit `--daemon` or `--foreground`
-  - current runtime path is limited to one planned mount, not one enrolled file
+  - foreground `run` now supports multiple planned mounts
+  - remaining runtime limits are multi-mount `run --daemon` and multi-mount `run prompt`
 - `[x]` Make an empty policy file a clean no-op
 - `[x]` Derive the mount plan from enrolled files using the minimal non-overlapping mount strategy
 - `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
   - verified live for a real kubeconfig-style target on macOS
   - verified live for multiple guarded siblings under one mounted parent on macOS
   - verified live for nested guarded paths under one mounted parent on macOS
-  - still limited to one planned mount per `run`
+  - verified live for simultaneous `.kube` and `.ssh` projections under one foreground `run` on macOS
 
 ## Cross-cutting guardrails
 
@@ -162,7 +163,9 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
   - same projection model also verified live for multiple guarded siblings under one mounted parent
 - `[x]` Support nested guarded paths inside a mounted parent tree
   - verified in integration coverage and live on macOS with a guarded `extensions/foo/token.json`-style path
-- `[ ]` Support multiple planned mounts in one `run` invocation
+- `[x]` Support multiple planned mounts in one foreground `run` invocation
+  - implemented as one supervised child mount process per planned parent path
+  - verified live on macOS with simultaneous `.kube` and `.ssh` projections plus clean `SIGINT` teardown
 
 ## Future work
 

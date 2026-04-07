@@ -25,8 +25,10 @@ Current state:
   - `status`
   - `doctor`
 - `run` now requires explicit `--foreground` or `--daemon`
-- the current `run` path supports multiple enrolled files under one planned mount
-- the remaining runtime limit is multiple planned mounts in one invocation
+- `run --foreground` now supports multiple planned mounts by supervising one child mount process per path
+- the remaining runtime limits are:
+  - multi-mount `run --daemon`
+  - multi-mount `run prompt`
 - the first real enrolled-file flow is live for a kubeconfig-style target:
   - mount the real parent directory
   - shadow the enrolled file from `~/.var/file-snitch/guarded-secrets/<object_id>`
@@ -39,6 +41,10 @@ Current state:
   - nested guarded paths project through synthetic intermediate directories inside the mount
   - unguarded siblings still passthrough
   - unmount restores the original host files unchanged
+- the same runtime now also supervises multiple planned mounts in one foreground run:
+  - one child mount process per planned parent path
+  - verified live on macOS with simultaneous `.kube` and `.ssh` projections
+  - parent `SIGINT` cleanly tears down the child mounts and restores the original host view
 - macOS `._*` AppleDouble sidecars remain transient in the new enrolled-parent path and do not persist back into the real directory after unmount
 
 ## Layout
@@ -113,8 +119,10 @@ When debugging a specific area, the build-managed test step above is still the d
 
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
-- `run` currently supports one planned mount and mounts its real parent directory in place
-- multiple enrolled files under that one mounted tree are supported, including nested guarded paths
+- `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
+- each planned mount is still projected as its own child mount process
+- multiple enrolled files under one mounted tree are supported, including nested guarded paths
+- multi-mount `run prompt` and multi-mount `run --daemon` are still unsupported
 - `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan
