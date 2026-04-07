@@ -82,7 +82,6 @@ stop_run_fixture() {
 
   if [[ -n "${daemon_pid:-}" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
     kill -INT "$daemon_pid" 2>/dev/null || true
-    wait "$daemon_pid" || status=$?
   fi
 
   for mount_path in "${mount_paths[@]}"; do
@@ -90,6 +89,10 @@ stop_run_fixture() {
       platform_stop_mount_path "$mount_path" || true
     fi
   done
+
+  if [[ -n "${daemon_pid:-}" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
+    wait "$daemon_pid" || status=$?
+  fi
 
   if declare -F fixture_cleanup_extra >/dev/null 2>&1; then
     fixture_cleanup_extra
