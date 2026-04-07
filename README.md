@@ -100,8 +100,11 @@ Current validation workflow:
 zig build
 zig build test
 zig build compile-commands
-./tests/smoke/mount-allow.sh
-./tests/smoke/mount-prompt.sh
+./tests/smoke/run-empty-policy.sh
+./tests/smoke/policy-lifecycle.sh
+./tests/smoke/run-single-enrollment.sh
+./tests/smoke/run-multi-mount.sh
+./tests/smoke/run-prompt-single.sh
 ```
 
 What each command covers:
@@ -110,8 +113,11 @@ What each command covers:
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
-- `./tests/smoke/mount-allow.sh`: live mount verification for the allow-by-default guarded-root path, with one shared core smoke flow plus platform-specific helpers and extra coverage where the host platform supports it
-- `./tests/smoke/mount-prompt.sh`: live macFUSE prompt verification for allow once, deny once, timeout, audit stdout, and status FIFO output
+- `./tests/smoke/run-empty-policy.sh`: black-box verification that `run` no-ops cleanly on an empty policy
+- `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
+- `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
+- `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
+- `./tests/smoke/run-prompt-single.sh`: live verification of single-mount `run prompt` allow, deny, and timeout behavior
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/integration.zig`

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+
+source "$repo_root/tests/smoke/lib/assertions.sh"
+source "$repo_root/tests/smoke/lib/run-fixture.sh"
+
+case "$(uname -s)" in
+  Darwin) source "$repo_root/tests/smoke/lib/platform-Darwin.sh" ;;
+  Linux) source "$repo_root/tests/smoke/lib/platform-Linux.sh" ;;
+  *)
+    echo "unsupported platform: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+cleanup() {
+  cleanup_run_fixture
+}
+
+extract_guarded_object_path() {
+  guarded_object_path_for "$1"
+}
+
+main() {
+  trap cleanup EXIT
+
+  prepare_run_fixture "policy-lifecycle"
+  mkdir -p "$home_dir/.kube"
+  printf 'plain kube config\n' >"$home_dir/.kube/config"
+
+  enroll_output="$(capture_file_snitch enroll "$home_dir/.kube/config")"
+  if ! grep -F "file-snitch: enrolled $home_dir/.kube/config as " <<<"$enroll_output" >/dev/null 2>&1; then
+    fail "expected enroll output to mention the target path"
+  fi
+
+  assert_file_missing \
+    "$home_dir/.kube/config" \
+    "expected enroll to evacuate the plaintext file from its original path"
+
+  object_path="$(extract_guarded_object_path "$home_dir/.kube/config")"
+  assert_file_exists \
+    "$object_path" \
+    "expected enroll to create a guarded backing object"
+  assert_eq \
+    "$(cat "$object_path")" \
+    "plain kube config" \
+    "expected guarded object to preserve the enrolled plaintext"
+
+  status_output="$(capture_file_snitch status)"
+  grep -F "policy: $policy_file" <<<"$status_output" >/dev/null || fail "expected status to print the policy path"
+  grep -F "enrollments: 1" <<<"$status_output" >/dev/null || fail "expected one enrollment in status"
+  grep -F "planned_mounts: 1" <<<"$status_output" >/dev/null || fail "expected one planned mount in status"
+  grep -F "mount: $home_dir/.kube" <<<"$status_output" >/dev/null || fail "expected the kube parent mount in status"
+  grep -F "enrollment: path=$home_dir/.kube/config " <<<"$status_output" >/dev/null || fail "expected enrollment details in status"
+
+  doctor_output="$(capture_file_snitch doctor)"
+  grep -F "policy: ok ($policy_file)" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the policy file"
+  grep -F "mount_plan: 1 mounts for 1 enrollments" <<<"$doctor_output" >/dev/null || fail "expected doctor to report one mount"
+  grep -F "ok: guarded object exists: $object_path" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
+  grep -F "ok: target path currently absent: $home_dir/.kube/config" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the evacuated target path"
+
+  unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
+  grep -F "file-snitch: unenrolled $home_dir/.kube/config from $policy_file" <<<"$unenroll_output" >/dev/null || fail "expected unenroll output to mention the target path"
+
+  assert_file_exists \
+    "$home_dir/.kube/config" \
+    "expected unenroll to restore the plaintext file"
+  assert_eq \
+    "$(cat "$home_dir/.kube/config")" \
+    "plain kube config" \
+    "expected unenroll to restore the original plaintext contents"
+  assert_file_missing \
+    "$object_path" \
+    "expected unenroll to remove the guarded object"
+
+  status_output="$(capture_file_snitch status)"
+  grep -F "enrollments: 0" <<<"$status_output" >/dev/null || fail "expected no enrollments after unenroll"
+  grep -F "planned_mounts: 0" <<<"$status_output" >/dev/null || fail "expected no planned mounts after unenroll"
+}
+
+main "$@"
