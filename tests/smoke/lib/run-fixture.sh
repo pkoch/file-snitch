@@ -1,4 +1,5 @@
 home_dir=""
+config_home_dir=""
 policy_file=""
 guarded_store_dir=""
 log_file=""
@@ -10,7 +11,8 @@ prepare_run_fixture() {
   local fixture_name="$1"
 
   home_dir="$(mktemp -d "$TMP_ROOT/${fixture_name}-home.XXXXXX")"
-  policy_file="$home_dir/.config/file-snitch/policy.yml"
+  config_home_dir="$home_dir/.config"
+  policy_file="$config_home_dir/file-snitch/policy.yml"
   guarded_store_dir="$home_dir/.var/file-snitch/guarded-secrets"
   log_file="$(mktemp "$TMP_ROOT/${fixture_name}-log.XXXXXX")"
   daemon_pid=""
@@ -18,7 +20,7 @@ prepare_run_fixture() {
   mount_paths=()
 
   mkdir -p \
-    "$home_dir/.config/file-snitch" \
+    "$config_home_dir/file-snitch" \
     "$guarded_store_dir"
 
   if declare -F fixture_prepare_extra >/dev/null 2>&1; then
@@ -27,20 +29,20 @@ prepare_run_fixture() {
 }
 
 run_file_snitch() {
-  HOME="$home_dir" "$repo_root/zig-out/bin/file-snitch" "$@"
+  HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" "$@"
 }
 
 capture_file_snitch() {
-  HOME="$home_dir" "$repo_root/zig-out/bin/file-snitch" "$@" 2>&1
+  HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" "$@" 2>&1
 }
 
 start_file_snitch_run() {
   local mode="$1"
 
   if [[ -n "$run_input_fd" ]]; then
-    HOME="$home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground <&$run_input_fd >"$log_file" 2>&1 &
+    HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground <&$run_input_fd >"$log_file" 2>&1 &
   else
-    HOME="$home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground >"$log_file" 2>&1 &
+    HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground >"$log_file" 2>&1 &
   fi
   daemon_pid="$!"
   wait_for_mounts_ready
@@ -108,6 +110,7 @@ cleanup_run_fixture() {
   [[ -n "$home_dir" ]] && rm -rf "$home_dir"
 
   home_dir=""
+  config_home_dir=""
   policy_file=""
   guarded_store_dir=""
   log_file=""
