@@ -7,45 +7,33 @@ Guarded FUSE mounts for secret files.
 The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 
 Current state:
-- phase-0 research docs and backlog are in place
-- the repo has a Zig core with a thin C `libfuse` shim and real `fuse_setup`/`fuse_loop` execution
-- the shim preserves raw callback detail; the filesystem model, policy timing, and audit semantics live in Zig
-- mount mode streams audit JSON to stdout and can stream status JSON snapshots to a caller-provided FIFO
-- audit JSON includes actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and structured operation detail
-- the CLI prompt broker is live, default-allow on blank input, and still defaults timeout to deny
-- the legacy guarded-root spike still exists through `file-snitch mount <mount-path> <backing-store-path> ...`
-- the new product direction is policy-driven exact-file enrollment through `file-snitch run`
-- `policy.yml` is now loaded from `~/.config/file-snitch/policy.yml` by default, with `--policy` override support
-- an empty or missing policy file is now a clean no-op
-- remembered decisions from `policy.yml` now compile into the runtime policy engine using the documented exact-path decision key
-- the CLI now has product-facing verbs:
+- The repo has a real Zig `libfuse` core with a thin C shim. The shim preserves raw callback detail; policy timing, filesystem behavior, prompting, and audit semantics live in Zig.
+- The product path is now policy-driven exact-file enrollment, not the old synthetic guarded-root demo. `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default, derives the mount plan, and exits cleanly when the policy is empty.
+- The product-facing CLI surface is in place:
   - `run`
   - `enroll`
   - `unenroll`
   - `status`
   - `doctor`
-- `run` now requires explicit `--foreground` or `--daemon`
-- `run --foreground` now supports multiple planned mounts by supervising one child mount process per path
-- the remaining runtime limits are:
+- `enroll` currently migrates plaintext into `~/.var/file-snitch/guarded-secrets/<object_id>`, records the exact enrolled path in `policy.yml`, and `unenroll` restores it.
+- The live projection model now works for real parent directories:
+  - an enrolled file is projected back into its original parent directory from the guarded object
+  - unguarded siblings passthrough from the preserved underlying directory
+  - nested guarded paths under one mounted tree are supported
+  - multiple planned mounts are supported in `run --foreground` by supervising one child mount process per mount path
+- This has been verified live on macOS for:
+  - a real kubeconfig-style target
+  - multiple guarded files under one mounted parent
+  - simultaneous `.kube` and `.ssh` projections in one foreground run
+  - clean `SIGINT` teardown back to the original host view
+- Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key.
+- Audit output is structured JSON on stdout and can include status snapshots via FIFO. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
+- The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
+- The remaining runtime limits are:
   - multi-mount `run --daemon`
-  - multi-mount `run prompt`
-- the first real enrolled-file flow is live for a kubeconfig-style target:
-  - mount the real parent directory
-  - shadow the enrolled file from `~/.var/file-snitch/guarded-secrets/<object_id>`
-  - passthrough sibling files from the preserved underlying parent directory
-- the real macOS demo was verified against `~/.kube/config`:
-  - while mounted, `~/.kube/config` resolved to the guarded object
-  - after unmount, the original host file was unchanged
-- the same enrolled-parent path now also works for multiple guarded files under one mounted parent:
-  - guarded siblings project from their backing objects
-  - nested guarded paths project through synthetic intermediate directories inside the mount
-  - unguarded siblings still passthrough
-  - unmount restores the original host files unchanged
-- the same runtime now also supervises multiple planned mounts in one foreground run:
-  - one child mount process per planned parent path
-  - verified live on macOS with simultaneous `.kube` and `.ssh` projections
-  - parent `SIGINT` cleanly tears down the child mounts and restores the original host view
-- macOS `._*` AppleDouble sidecars remain transient in the new enrolled-parent path and do not persist back into the real directory after unmount
+  - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
+  - guarded contents are still plaintext in the guarded object store, so custody-at-rest is not solved yet
+- The old guarded-root spike still exists behind `file-snitch mount <mount-path> <backing-store-path> ...`, but it is now legacy scaffolding rather than the product direction.
 
 ## Layout
 
@@ -128,7 +116,7 @@ Prompt notes:
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
-- multi-mount `run prompt` and multi-mount `run --daemon` are still unsupported
+- multi-mount `run --daemon` is still unsupported
 - `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan
@@ -138,7 +126,8 @@ Prompt notes:
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
 - `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
 - mount mode always writes audit JSON lines to stdout
-- `run prompt --daemon` is intentionally rejected for now because the only prompt broker is interactive
+- `run prompt --daemon` is intentionally rejected for now because the current broker is interactive
+- the long-term goal is an agent-style broker, more like `ssh-agent` or `gpg-agent`, not richer local TTY prompting per daemon
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

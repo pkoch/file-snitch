@@ -10,22 +10,31 @@ Status:
 
 ## Current priorities
 
-- `[~]` Pivot the spike from a synthetic guarded root to policy-driven exact-file enrollment
-- `[~]` Add `~/.config/file-snitch/policy.yml` as the durable source of truth for enrollments and remembered decisions
-  - enrollments now load from `policy.yml`
-  - remembered decisions now compile into the runtime policy engine for exact-path enforcement
-- `[~]` Replace the spike-oriented CLI surface with product verbs
+- `[~]` Make policy-driven exact-file enrollment the default product path
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
-  - `run` now requires explicit `--daemon` or `--foreground`
-  - foreground `run` now supports multiple planned mounts
-  - remaining runtime limits are multi-mount `run --daemon` and multi-mount `run prompt`
-- `[x]` Make an empty policy file a clean no-op
-- `[x]` Derive the mount plan from enrolled files using the minimal non-overlapping mount strategy
-- `[~]` Replace the guarded-root demo with an in-place exact-file demo that guards the enrolled file and passes through siblings
-  - verified live for a real kubeconfig-style target on macOS
-  - verified live for multiple guarded siblings under one mounted parent on macOS
-  - verified live for nested guarded paths under one mounted parent on macOS
-  - verified live for simultaneous `.kube` and `.ssh` projections under one foreground `run` on macOS
+  - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
+  - the old `mount <mount-path> <backing-store-path>` path still exists as legacy scaffolding
+- `[ ]` Move from projection-only protection to real secret custody
+  - `enroll` already evacuates plaintext from the original path
+  - guarded objects are still plaintext at rest under `~/.var/file-snitch/guarded-secrets/<object_id>`
+  - a dead mount should not reveal the secret again
+- `[ ]` Make the daemon reconcile policy changes without restart
+  - watch `policy.yml` for external edits
+  - add and remove mounts as enrollments change
+  - reload durable decisions without daemon restart
+- `[ ]` Replace the current local TTY prompt path with an agent-style broker model
+  - the current CLI prompt is acceptable as a bootstrap and debugging broker only
+  - define one broker protocol that mount daemons can talk to locally or over forwarding
+  - support forwarding prompt requests from remote hosts back to the workstation where the user is active
+  - stop treating multi-mount local `run prompt` as the product goal
+- `[ ]` Close the remaining daemon/runtime gap
+  - multi-mount `run --daemon`
+- `[x]` Replace the old guarded-root smoke coverage with policy-driven black-box smoke tests
+  - empty policy
+  - policy lifecycle
+  - single-enrollment projection
+  - multi-mount projection
+  - single-mount prompt behavior
 
 ## Cross-cutting guardrails
 
@@ -153,7 +162,9 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Make `unenroll` restore the guarded file to its original path and remove policy state
 - `[x]` Make `status` report enrollments, derived mounts, and daemon-relevant configuration from `policy.yml`
 - `[x]` Make `doctor` validate the policy file, guarded objects, and target-path health without mutating state
-- `[~]` Replace the current one-mount `mount <mount-path> <backing-store-path>` product path with policy-driven mount planning
+- `[~]` Replace the legacy guarded-root product path with policy-driven mount planning
+  - `run` is now the real product path
+  - `mount` still exists as legacy scaffolding and should not remain the public center of gravity
 - `[x]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
 - `[x]` Distinguish guarded files from passthrough files in the Zig-owned lookup model
 - `[x]` Move directory enumeration out of the root-only shim path so mounted parent directories can expose guarded files plus passthrough siblings
@@ -166,6 +177,12 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Support multiple planned mounts in one foreground `run` invocation
   - implemented as one supervised child mount process per planned parent path
   - verified live on macOS with simultaneous `.kube` and `.ssh` projections plus clean `SIGINT` teardown
+- `[x]` Replace the old guarded-root smoke suite with policy-driven black-box smoke coverage
+  - `run-empty-policy.sh`
+  - `policy-lifecycle.sh`
+  - `run-single-enrollment.sh`
+  - `run-multi-mount.sh`
+  - `run-prompt-single.sh`
 
 ## Future work
 
@@ -183,10 +200,12 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[ ]` Add key bootstrap via passphrase or OS keystore
 - `[ ]` Verify ciphertext-only persistence at rest
 
-## Phase 3: GUI prompt broker
+## Phase 3: agent-style prompt broker
 
 - `[ ]` Define daemon-to-broker protocol
-- `[ ]` Implement a desktop prompt with default-deny timeout behavior
+- `[ ]` Implement a local agent-style broker with default-deny timeout behavior
+- `[ ]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
+- `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
 - `[ ]` Add decisions: allow once, deny once, allow 5 min, always allow, always deny
 - `[ ]` Persist rules independently from the daemon process
 - `[ ]` Add a recent-events view
