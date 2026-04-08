@@ -393,3 +393,79 @@ fn decodeStoredObject(allocator: Allocator, encoded: []const u8) !Object {
         .content = content,
     };
 }
+
+test "mock backend round-trips objects" {
+    const allocator = std.testing.allocator;
+
+    var state = MockState{};
+    defer state.deinit(allocator);
+
+    var backend = Backend.initMock(&state);
+    defer backend.deinit(allocator);
+
+    try backend.putObject(allocator, "kube-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 501,
+            .gid = 20,
+            .atime_nsec = 11,
+            .mtime_nsec = 22,
+        },
+        .content = "secret\n",
+    });
+
+    try std.testing.expect(try backend.exists(allocator, "kube-config"));
+
+    var loaded = try backend.loadObject(allocator, "kube-config");
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u32, 0o600), loaded.metadata.mode);
+    try std.testing.expectEqual(@as(u32, 501), loaded.metadata.uid);
+    try std.testing.expectEqual(@as(u32, 20), loaded.metadata.gid);
+    try std.testing.expectEqual(@as(i128, 11), loaded.metadata.atime_nsec);
+    try std.testing.expectEqual(@as(i128, 22), loaded.metadata.mtime_nsec);
+    try std.testing.expectEqualStrings("secret\n", loaded.content);
+
+    try backend.removeObject(allocator, "kube-config");
+    try std.testing.expect(!(try backend.exists(allocator, "kube-config")));
+}
+
+test "stored object encoding round-trips metadata and content" {
+    const allocator = std.testing.allocator;
+
+    const object: ObjectView = .{
+        .metadata = .{
+            .mode = 0o640,
+            .uid = 42,
+            .gid = 7,
+            .atime_nsec = 123456789,
+            .mtime_nsec = 987654321,
+        },
+        .content = "top secret bytes",
+    };
+
+    const encoded = try encodeStoredObject(allocator, object);
+    defer allocator.free(encoded);
+
+    var decoded = try decodeStoredObject(allocator, encoded);
+    defer decoded.deinit(allocator);
+
+    try std.testing.expectEqual(object.metadata.mode, decoded.metadata.mode);
+    try std.testing.expectEqual(object.metadata.uid, decoded.metadata.uid);
+    try std.testing.expectEqual(object.metadata.gid, decoded.metadata.gid);
+    try std.testing.expectEqual(object.metadata.atime_nsec, decoded.metadata.atime_nsec);
+    try std.testing.expectEqual(object.metadata.mtime_nsec, decoded.metadata.mtime_nsec);
+    try std.testing.expectEqualStrings(object.content, decoded.content);
+}
+
+test "stored object decode rejects unsupported version" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(
+        error.InvalidStoredObject,
+        decodeStoredObject(
+            allocator,
+            "{\"version\":2,\"mode\":384,\"uid\":1,\"gid\":2,\"atime_nsec\":3,\"mtime_nsec\":4,\"content_base64\":\"YQ==\"}",
+        ),
+    );
+}

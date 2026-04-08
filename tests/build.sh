@@ -49,6 +49,12 @@ case "$(uname -s)" in
       -lc \
       --cache-dir "$cache_dir" \
       --global-cache-dir "$global_cache_dir"
+
+    echo "==> zig test src/store.zig"
+    zig test \
+      src/store.zig \
+      --cache-dir "$cache_dir" \
+      --global-cache-dir "$global_cache_dir"
     ;;
   *)
     echo "==> zig build test"

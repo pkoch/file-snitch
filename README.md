@@ -17,6 +17,7 @@ Current state:
   - `doctor`
 - `enroll` now migrates plaintext into a store-backed guarded object, records the exact enrolled path in `policy.yml`, and `unenroll` restores it.
 - the current store backend is `pass`, using entries under a `file-snitch/` subtree.
+- the real `pass` path has now been verified end to end on macOS against a disposable temp home and a real local GPG key.
 - The live projection model now works for real parent directories:
   - an enrolled file is projected back into its original parent directory from the guarded object
   - unguarded siblings passthrough from the preserved underlying directory
@@ -101,6 +102,7 @@ What each command covers:
 - `zig build test`: run both Zig test roots wired in `build.zig`
   - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
+  - `src/store.zig`: guarded-store unit tests for object serialization and the mock backend
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that `run` no-ops cleanly on an empty policy
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
@@ -124,12 +126,18 @@ Prompt notes:
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
+- the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
 - `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
 - mount mode always writes audit JSON lines to stdout
 - `run prompt --daemon` is intentionally rejected for now because the current broker is interactive
 - the long-term goal is an agent-style broker, more like `ssh-agent` or `gpg-agent`, not richer local TTY prompting per daemon
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
+- a real local `pass` drill has been run outside CI with:
+  - a disposable temp home
+  - a disposable password store
+  - a real local GPG key
+  - `enroll -> run --foreground -> read/write -> unenroll`
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

@@ -57,9 +57,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_prompt_tests = b.addRunArtifact(prompt_tests);
 
+    const store_test_module = b.createModule(.{
+        .root_source_file = b.path("src/store.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const store_tests = b.addTest(.{
+        .root_module = store_test_module,
+    });
+    const run_store_tests = b.addRunArtifact(store_tests);
+
     const test_step = b.step("test", "Run integration tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
+    test_step.dependOn(&run_store_tests.step);
 }
 
 fn configureFuseInterop(
