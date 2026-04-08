@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const store = @import("store.zig");
 const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
@@ -205,7 +206,8 @@ const StoredAuditRenameInfo = struct {
 const StoredFile = struct {
     name: [:0]u8,
     path: [:0]u8,
-    backing_path: ?[]u8 = null,
+    backing_object_id: ?[]u8 = null,
+    lock_anchor_path: ?[]u8 = null,
     content: std.ArrayListUnmanaged(u8) = .{},
     mode: u32,
     uid: u32,
@@ -218,7 +220,10 @@ const StoredFile = struct {
     fn deinit(self: *StoredFile, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.path);
-        if (self.backing_path) |value| {
+        if (self.backing_object_id) |value| {
+            allocator.free(value);
+        }
+        if (self.lock_anchor_path) |value| {
             allocator.free(value);
         }
         self.content.deinit(allocator);
@@ -254,7 +259,8 @@ const RenameMutation = struct {
 
 pub const GuardedEntryConfig = struct {
     relative_path: []const u8,
-    backing_file_path: []const u8,
+    object_id: []const u8,
+    lock_anchor_path: []const u8,
 };
 
 pub const Config = struct {
@@ -270,6 +276,7 @@ pub const Config = struct {
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const GuardedEntryConfig,
+    guarded_store: store.Backend,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
     prompt_broker: ?prompt.Broker = null,
@@ -283,6 +290,7 @@ pub const Model = struct {
     mount_path: []u8,
     backing_store_path: []u8,
     source_dir: ?std.fs.Dir = null,
+    guarded_store: ?store.Backend = null,
     policy_engine: policy.Engine,
     prompt_broker: ?prompt.Broker,
     status_output_file: ?std.fs.File,
@@ -327,6 +335,7 @@ pub const Model = struct {
             .mount_path = try allocator.dupe(u8, config.mount_path),
             .backing_store_path = try allocator.dupe(u8, config.mount_path),
             .source_dir = source_dir,
+            .guarded_store = config.guarded_store,
             .policy_engine = try policy.Engine.init(
                 allocator,
                 config.default_mutation_outcome,
@@ -381,6 +390,7 @@ pub const Model = struct {
                 @intCast(posix_stat.uid),
                 @intCast(posix_stat.gid),
                 null,
+                null,
             );
             const imported_now = currentTimestamp();
             imported.atime = imported_now;
@@ -407,33 +417,27 @@ pub const Model = struct {
             return error.BackingStoreAlreadyLoaded;
         }
 
+        const guarded_store = &(self.guarded_store orelse return error.InvalidLayout);
         for (guarded_entries) |entry| {
             const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.relative_path});
             defer self.allocator.free(guarded_path);
 
-            var file = try std.fs.openFileAbsolute(entry.backing_file_path, .{ .mode = .read_only });
-            defer file.close();
-
-            const stat = try file.stat();
-            const posix_stat = try std.posix.fstat(file.handle);
+            var object = try guarded_store.loadObject(self.allocator, entry.object_id);
+            defer object.deinit(self.allocator);
             const imported = try self.appendFile(
                 guarded_path,
-                @intCast(stat.mode & 0o777),
-                @intCast(posix_stat.uid),
-                @intCast(posix_stat.gid),
-                entry.backing_file_path,
+                object.metadata.mode,
+                object.metadata.uid,
+                object.metadata.gid,
+                entry.object_id,
+                entry.lock_anchor_path,
             );
-            imported.atime = timestampFromStatNanos(stat.atime);
-            imported.mtime = timestampFromStatNanos(stat.mtime);
-            imported.ctime = timestampFromStatNanos(stat.ctime);
+            imported.atime = timestampFromNanos(object.metadata.atime_nsec);
+            imported.mtime = timestampFromNanos(object.metadata.mtime_nsec);
+            imported.ctime = currentTimestamp();
 
-            if (stat.size > 0) {
-                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
-                imported.content.items.len = @intCast(stat.size);
-                const read_count = try file.readAll(imported.content.items);
-                if (read_count != imported.content.items.len) {
-                    return error.UnexpectedEof;
-                }
+            if (object.content.len > 0) {
+                try imported.content.appendSlice(self.allocator, object.content);
             }
         }
     }
@@ -455,6 +459,9 @@ pub const Model = struct {
         self.handle_grants.deinit(self.allocator);
 
         self.policy_engine.deinit();
+        if (self.guarded_store) |*guarded_store| {
+            guarded_store.deinit(self.allocator);
+        }
         if (self.source_dir) |*dir| {
             dir.close();
         }
@@ -1285,7 +1292,7 @@ pub const Model = struct {
             return auth_result;
         }
 
-        const file = self.appendFile(path, mode, currentUid(), currentGid(), null) catch |err| {
+        const file = self.appendFile(path, mode, currentUid(), currentGid(), null, null) catch |err| {
             return mapFsError(err);
         };
         errdefer self.removeFileAtIndex(self.files.items.len - 1);
@@ -1466,9 +1473,17 @@ pub const Model = struct {
 
         const index = self.findFileIndex(path) orelse return errnoCode(.NOENT);
         if (shouldPersistPath(path)) {
-            const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-            defer self.allocator.free(host_path);
-            std.fs.deleteFileAbsolute(host_path) catch |err| return mapFsError(err);
+            const file = &self.files.items[index];
+            if (file.backing_object_id != null) {
+                const remove_result = self.removeGuardedBackingFile(file);
+                if (remove_result != 0) {
+                    return remove_result;
+                }
+            } else {
+                const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
+                defer self.allocator.free(host_path);
+                std.fs.deleteFileAbsolute(host_path) catch |err| return mapFsError(err);
+            }
         }
 
         self.removeFileAtIndex(index);
@@ -1681,7 +1696,7 @@ pub const Model = struct {
         const from_relative = relativeMountedPath(from) orelse return errnoCode(.INVAL);
         const dir = self.source_dir orelse return errnoCode(.IO);
         const file = self.findFile(to) orelse return errnoCode(.NOENT);
-        if (file.backing_path == null) {
+        if (file.backing_object_id == null) {
             return errnoCode(.NOENT);
         }
         var source_file = dir.openFile(from_relative, .{ .mode = .read_only }) catch |err| return mapFsError(err);
@@ -1713,7 +1728,7 @@ pub const Model = struct {
         const to_relative = relativeMountedPath(to) orelse return errnoCode(.INVAL);
         const dir = self.source_dir orelse return errnoCode(.IO);
         const file = self.findFile(from) orelse return errnoCode(.NOENT);
-        if (file.backing_path == null) {
+        if (file.backing_object_id == null) {
             return errnoCode(.NOENT);
         }
         var target_file = dir.createFile(to_relative, .{ .read = true, .truncate = true }) catch |err| return mapFsError(err);
@@ -1783,6 +1798,14 @@ pub const Model = struct {
     ) i32 {
         if (!shouldPersistPath(path)) {
             return 0;
+        }
+
+        if (file.backing_object_id != null) {
+            const persist_result = self.syncFileToBackingStore(file);
+            if (persist_result != 0) {
+                restoreFileMetadata(file, snapshot);
+            }
+            return persist_result;
         }
 
         const host_path = self.hostPathAlloc(path) catch |err| {
@@ -1906,23 +1929,30 @@ pub const Model = struct {
         mode: u32,
         uid: u32,
         gid: u32,
-        backing_path: ?[]const u8,
+        backing_object_id: ?[]const u8,
+        lock_anchor_path: ?[]const u8,
     ) !*StoredFile {
         const now = currentTimestamp();
         const name = try self.allocator.dupeZ(u8, path[1..]);
         errdefer self.allocator.free(name);
         const owned_path = try self.allocator.dupeZ(u8, path);
         errdefer self.allocator.free(owned_path);
-        const owned_backing_path = if (backing_path) |value|
+        const owned_backing_object_id = if (backing_object_id) |value|
             try self.allocator.dupe(u8, value)
         else
             null;
-        errdefer if (owned_backing_path) |value| self.allocator.free(value);
+        errdefer if (owned_backing_object_id) |value| self.allocator.free(value);
+        const owned_lock_anchor_path = if (lock_anchor_path) |value|
+            try self.allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (owned_lock_anchor_path) |value| self.allocator.free(value);
 
         try self.files.append(self.allocator, .{
             .name = name,
             .path = owned_path,
-            .backing_path = owned_backing_path,
+            .backing_object_id = owned_backing_object_id,
+            .lock_anchor_path = owned_lock_anchor_path,
             .mode = mode & 0o777,
             .uid = uid,
             .gid = gid,
@@ -1967,10 +1997,22 @@ pub const Model = struct {
     }
 
     fn syncFileToBackingStore(self: *Model, file: *const StoredFile) i32 {
-        const host_path = if (file.backing_path) |value|
-            self.allocator.dupe(u8, value) catch return errnoCode(.NOMEM)
-        else
-            self.hostPathAlloc(file.path) catch |err| return mapFsError(err);
+        if (file.backing_object_id) |object_id| {
+            const guarded_store = &(self.guarded_store orelse return errnoCode(.IO));
+            guarded_store.putObject(self.allocator, object_id, .{
+                .metadata = .{
+                    .mode = file.mode,
+                    .uid = file.uid,
+                    .gid = file.gid,
+                    .atime_nsec = nanosFromTimestamp(file.atime),
+                    .mtime_nsec = nanosFromTimestamp(file.mtime),
+                },
+                .content = file.content.items,
+            }) catch return errnoCode(.IO);
+            return 0;
+        }
+
+        const host_path = self.hostPathAlloc(file.path) catch |err| return mapFsError(err);
         defer self.allocator.free(host_path);
 
         var host_file = std.fs.createFileAbsolute(host_path, .{
@@ -1990,9 +2032,9 @@ pub const Model = struct {
     }
 
     fn removeGuardedBackingFile(self: *Model, file: *const StoredFile) i32 {
-        _ = self;
-        const backing_path = file.backing_path orelse return errnoCode(.NOENT);
-        std.fs.deleteFileAbsolute(backing_path) catch |err| return mapFsError(err);
+        const object_id = file.backing_object_id orelse return errnoCode(.NOENT);
+        const guarded_store = &(self.guarded_store orelse return errnoCode(.IO));
+        guarded_store.removeObject(self.allocator, object_id) catch |err| return mapFsError(err);
         return 0;
     }
 
@@ -2001,7 +2043,7 @@ pub const Model = struct {
             return true;
         }
         const file = self.findFile(path) orelse return false;
-        return file.backing_path != null;
+        return file.backing_object_id != null;
     }
 
     fn hostXattrPathAllocZ(
@@ -2044,8 +2086,8 @@ pub const Model = struct {
             },
             .enrolled_parent => blk: {
                 const file = self.findFile(path) orelse break :blk error.FileNotFound;
-                if (file.backing_path) |value| {
-                    break :blk try self.allocator.dupe(u8, value);
+                if (file.backing_object_id != null) {
+                    break :blk error.InvalidPath;
                 }
                 break :blk error.InvalidPath;
             },
@@ -2053,6 +2095,21 @@ pub const Model = struct {
     }
 
     pub fn openPersistentBackingFd(self: *const Model, path: []const u8, requested_flags: i32) i32 {
+        if (self.layout == .enrolled_parent) {
+            const file = self.findFile(path) orelse return errnoCode(.NOENT);
+            const lock_anchor_path = file.lock_anchor_path orelse return errnoCode(.NOENT);
+            ensureParentDirectoryAbsolute(lock_anchor_path) catch |err| return mapFsError(err);
+
+            const lock_anchor_z = self.allocator.dupeZ(u8, lock_anchor_path) catch return errnoCode(.NOMEM);
+            defer self.allocator.free(lock_anchor_z);
+
+            const descriptor = c.open(lock_anchor_z.ptr, c.O_RDWR | c.O_CREAT, @as(std.posix.mode_t, 0o600));
+            if (descriptor < 0) {
+                return -std.c._errno().*;
+            }
+            return descriptor;
+        }
+
         const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
         defer self.allocator.free(host_path);
 
@@ -2305,11 +2362,24 @@ fn currentTimestamp() Timestamp {
     };
 }
 
-fn timestampFromStatNanos(nanos: i128) Timestamp {
+fn ensureParentDirectoryAbsolute(path: []const u8) !void {
+    const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
+    try std.fs.cwd().makePath(parent_dir);
+}
+
+fn nanosFromTimestamp(timestamp: Timestamp) i128 {
+    return @as(i128, timestamp.sec) * std.time.ns_per_s + timestamp.nsec;
+}
+
+fn timestampFromNanos(nanos: i128) Timestamp {
     return .{
         .sec = @intCast(@divTrunc(nanos, std.time.ns_per_s)),
         .nsec = @intCast(@mod(nanos, std.time.ns_per_s)),
     };
+}
+
+fn timestampFromStatNanos(nanos: i128) Timestamp {
+    return timestampFromNanos(nanos);
 }
 
 fn timestampFromPosixStat(sec: i64, nsec: u64) Timestamp {
@@ -2532,10 +2602,13 @@ fn mapFsError(err: anyerror) i32 {
     return switch (err) {
         error.AccessDenied => errnoCode(.ACCES),
         error.FileNotFound => errnoCode(.NOENT),
+        error.ObjectNotFound => errnoCode(.NOENT),
         error.PathAlreadyExists => errnoCode(.EXIST),
         error.NameTooLong => errnoCode(.NAMETOOLONG),
         error.NotDir => errnoCode(.NOTDIR),
         error.IsDir => errnoCode(.ISDIR),
+        error.InvalidPath => errnoCode(.OPNOTSUPP),
+        error.InvalidStoredObject, error.StoreCommandFailed, error.StoreUnavailable => errnoCode(.IO),
         error.FileBusy, error.Locked => errnoCode(.BUSY),
         error.ReadOnlyFileSystem => errnoCode(.ROFS),
         error.NoSpaceLeft => errnoCode(.NOSPC),

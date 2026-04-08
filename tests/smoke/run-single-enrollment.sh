@@ -28,11 +28,12 @@ main() {
   printf 'plain sibling\n' >"$home_dir/.kube/cache"
 
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
-  object_path="$(guarded_object_path_for "$home_dir/.kube/config")"
-  printf 'guarded kube\n' >"$object_path"
+  guarded_store_write_for "$home_dir/.kube/config" 'guarded kube
+'
 
   mount_paths=("$home_dir/.kube")
   start_file_snitch_run allow
+  platform_prime_guarded_path "$home_dir/.kube/config"
 
   assert_eq \
     "$(cat "$home_dir/.kube/config")" \
@@ -43,9 +44,10 @@ main() {
     "plain sibling" \
     "expected sibling files to passthrough unchanged"
 
+  platform_prime_guarded_path "$home_dir/.kube/config"
   printf 'updated guarded kube\n' >"$home_dir/.kube/config"
   assert_eq \
-    "$(cat "$object_path")" \
+    "$(guarded_store_show_for "$home_dir/.kube/config")" \
     "updated guarded kube" \
     "expected writes through the mount to update the guarded object"
 

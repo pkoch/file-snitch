@@ -16,8 +16,10 @@ Status:
   - the old `mount <mount-path> <backing-store-path>` path still exists as legacy scaffolding
 - `[ ]` Move from projection-only protection to real secret custody
   - `enroll` already evacuates plaintext from the original path
-  - guarded objects are still plaintext at rest under `~/.var/file-snitch/guarded-secrets/<object_id>`
-  - a dead mount should not reveal the secret again
+  - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`
+  - the current backend is `pass` under a `file-snitch/` subtree
+  - keep the boundary generic enough to add `1password` and `bitwarden` backends later
+  - verify the current `pass` path end to end against a real local `pass` installation
 - `[ ]` Make the daemon reconcile policy changes without restart
   - watch `policy.yml` for external edits
   - add and remove mounts as enrollments change

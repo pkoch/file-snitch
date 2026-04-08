@@ -4,6 +4,7 @@ const daemon = @import("daemon.zig");
 const filesystem = @import("filesystem.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const store = @import("store.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -18,6 +19,22 @@ pub fn main() !void {
 
     run(args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
+        error.StoreUnavailable => {
+            std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
+            std.process.exit(1);
+        },
+        error.StoreCommandFailed => {
+            std.debug.print("error: the `pass` backend command failed\n", .{});
+            std.process.exit(1);
+        },
+        error.ObjectNotFound => {
+            std.debug.print("error: guarded object missing from the configured store\n", .{});
+            std.process.exit(1);
+        },
+        error.InvalidStoredObject => {
+            std.debug.print("error: guarded object is corrupt or has an unsupported format\n", .{});
+            std.process.exit(1);
+        },
         else => return err,
     };
 }
@@ -417,12 +434,16 @@ fn runWithPolicy(command: RunCommand) !void {
         for (planned_mounts) |planned| {
             for (planned.guarded_entries) |entry| {
                 allocator.free(entry.relative_path);
-                allocator.free(entry.backing_file_path);
+                allocator.free(entry.object_id);
+                allocator.free(entry.lock_anchor_path);
             }
             allocator.free(planned.guarded_entries);
         }
         allocator.free(planned_mounts);
     }
+
+    var guarded_store = try store.Backend.initPass(allocator);
+    errdefer guarded_store.deinit(allocator);
 
     for (mount_plan.paths, 0..) |mount_path, mount_index| {
         var entry_count: usize = 0;
@@ -438,7 +459,8 @@ fn runWithPolicy(command: RunCommand) !void {
             if (!coversEnrollmentPath(mount_path, enrollment.path)) continue;
             guarded_entries[entry_index] = .{
                 .relative_path = try relativeEnrollmentPath(allocator, mount_path, enrollment.path),
-                .backing_file_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id),
+                .object_id = try allocator.dupe(u8, enrollment.object_id),
+                .lock_anchor_path = try defaultLockAnchorPathAlloc(allocator, enrollment.object_id),
             };
             entry_index += 1;
         }
@@ -453,6 +475,7 @@ fn runWithPolicy(command: RunCommand) !void {
         try daemon.mountEnrolledParent(allocator, .{
             .mount_path = planned_mounts[0].mount_path,
             .guarded_entries = planned_mounts[0].guarded_entries,
+            .guarded_store = guarded_store,
             .run_in_foreground = command.run_in_foreground,
             .default_mutation_outcome = command.default_mutation_outcome,
             .policy_rules = compiled_rules.items,
@@ -470,21 +493,19 @@ fn runWithPolicy(command: RunCommand) !void {
 fn enrollPath(command: PathCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
+    var guarded_store = try store.Backend.initPass(allocator);
+    defer guarded_store.deinit(allocator);
 
     if (loaded_policy.findEnrollmentIndex(command.target_path) != null) {
         std.debug.print("error: already enrolled: {s}\n", .{command.target_path});
         return error.InvalidUsage;
     }
 
-    const object_id = try allocateObjectId();
+    const object_id = try allocateObjectId(&guarded_store);
     defer allocator.free(object_id);
 
-    const object_path = try config.defaultGuardedObjectPathAlloc(allocator, object_id);
-    defer allocator.free(object_path);
-
-    try ensureParentDirectory(object_path);
-    try moveFileIntoGuardedStore(command.target_path, object_path);
-    errdefer moveGuardedFileBack(object_path, command.target_path) catch {};
+    try moveFileIntoGuardedStore(&guarded_store, command.target_path, object_id);
+    errdefer moveGuardedFileBack(&guarded_store, object_id, command.target_path) catch {};
 
     try loaded_policy.appendEnrollment(command.target_path, object_id);
     errdefer {
@@ -504,6 +525,8 @@ fn enrollPath(command: PathCommand) !void {
 fn unenrollPath(command: PathCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
+    var guarded_store = try store.Backend.initPass(allocator);
+    defer guarded_store.deinit(allocator);
 
     const enrollment_index = findEnrollmentIndexByArgument(&loaded_policy, command.target_path) orelse {
         std.debug.print("error: not enrolled: {s}\n", .{command.target_path});
@@ -519,14 +542,9 @@ fn unenrollPath(command: PathCommand) !void {
         return error.InvalidUsage;
     }
 
-    const object_path = try config.defaultGuardedObjectPathAlloc(
-        allocator,
-        loaded_policy.enrollments[enrollment_index].object_id,
-    );
-    defer allocator.free(object_path);
-
-    try moveGuardedFileBack(object_path, enrolled_path);
-    errdefer moveFileIntoGuardedStore(enrolled_path, object_path) catch {};
+    const object_id = loaded_policy.enrollments[enrollment_index].object_id;
+    try moveGuardedFileBack(&guarded_store, object_id, enrolled_path);
+    errdefer moveFileIntoGuardedStore(&guarded_store, enrolled_path, object_id) catch {};
 
     loaded_policy.removeDecisionsForPath(enrolled_path);
     var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
@@ -543,6 +561,11 @@ fn unenrollPath(command: PathCommand) !void {
 fn showStatus(command: PolicyCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
+    var guarded_store: ?store.Backend = if (loaded_policy.enrollments.len != 0)
+        try store.Backend.initPass(allocator)
+    else
+        null;
+    defer if (guarded_store) |*backend| backend.deinit(allocator);
 
     var mount_plan = try loaded_policy.deriveMountPlan(allocator);
     defer mount_plan.deinit();
@@ -557,11 +580,11 @@ fn showStatus(command: PolicyCommand) !void {
     }
 
     for (loaded_policy.enrollments) |enrollment| {
-        const object_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id);
-        defer allocator.free(object_path);
+        const store_ref = try guarded_store.?.describeRefAlloc(allocator, enrollment.object_id);
+        defer allocator.free(store_ref);
         std.debug.print(
-            "enrollment: path={s} object_id={s} guarded_object={s}\n",
-            .{ enrollment.path, enrollment.object_id, object_path },
+            "enrollment: path={s} object_id={s} store_ref={s}\n",
+            .{ enrollment.path, enrollment.object_id, store_ref },
         );
     }
 
@@ -583,6 +606,11 @@ fn showStatus(command: PolicyCommand) !void {
 fn runDoctor(command: PolicyCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
+    var guarded_store: ?store.Backend = if (loaded_policy.enrollments.len != 0)
+        try store.Backend.initPass(allocator)
+    else
+        null;
+    defer if (guarded_store) |*backend| backend.deinit(allocator);
 
     var mount_plan = try loaded_policy.deriveMountPlan(allocator);
     defer mount_plan.deinit();
@@ -606,19 +634,14 @@ fn runDoctor(command: PolicyCommand) !void {
             std.debug.print("ok: parent directory exists: {s}\n", .{parent_dir});
         }
 
-        const object_path = try config.defaultGuardedObjectPathAlloc(allocator, enrollment.object_id);
-        defer allocator.free(object_path);
+        const store_ref = try guarded_store.?.describeRefAlloc(allocator, enrollment.object_id);
+        defer allocator.free(store_ref);
 
-        switch (pathKind(object_path)) {
-            .file => std.debug.print("ok: guarded object exists: {s}\n", .{object_path}),
-            .missing => {
+        if (try guarded_store.?.exists(allocator, enrollment.object_id)) {
+            std.debug.print("ok: guarded object exists in store: {s}\n", .{store_ref});
+        } else {
                 has_errors = true;
-                std.debug.print("error: guarded object missing: {s}\n", .{object_path});
-            },
-            else => {
-                has_errors = true;
-                std.debug.print("error: guarded object is not a regular file: {s}\n", .{object_path});
-            },
+                std.debug.print("error: guarded object missing from store: {s}\n", .{store_ref});
         }
 
         switch (pathKind(enrollment.path)) {
@@ -973,7 +996,7 @@ fn handleSupervisorSignal(signal_number: i32) callconv(.c) void {
     supervisor_shutdown_signal.store(signal_number, .release);
 }
 
-fn allocateObjectId() ![]u8 {
+fn allocateObjectId(guarded_store: *store.Backend) ![]u8 {
     var bytes: [16]u8 = undefined;
     var object_id_buffer: [32]u8 = undefined;
 
@@ -983,9 +1006,7 @@ fn allocateObjectId() ![]u8 {
         const object_id = try allocator.dupe(u8, &object_id_buffer);
         errdefer allocator.free(object_id);
 
-        const object_path = try config.defaultGuardedObjectPathAlloc(allocator, object_id);
-        defer allocator.free(object_path);
-        if (!pathExists(object_path)) {
+        if (!try guarded_store.exists(allocator, object_id)) {
             return object_id;
         }
     }
@@ -996,18 +1017,92 @@ fn ensureParentDirectory(path: []const u8) !void {
     try std.fs.cwd().makePath(parent_dir);
 }
 
-fn moveFileIntoGuardedStore(source_path: []const u8, object_path: []const u8) !void {
-    try ensureParentDirectory(object_path);
-    try std.fs.copyFileAbsolute(source_path, object_path, .{});
-    errdefer std.fs.deleteFileAbsolute(object_path) catch {};
+fn moveFileIntoGuardedStore(guarded_store: *store.Backend, source_path: []const u8, object_id: []const u8) !void {
+    var object = try readStoredObjectFromFile(source_path);
+    defer object.deinit(allocator);
+
+    try guarded_store.putObject(allocator, object_id, .{
+        .metadata = object.metadata,
+        .content = object.content,
+    });
+    errdefer guarded_store.removeObject(allocator, object_id) catch {};
     try std.fs.deleteFileAbsolute(source_path);
 }
 
-fn moveGuardedFileBack(object_path: []const u8, target_path: []const u8) !void {
-    try ensureParentDirectory(target_path);
-    try std.fs.copyFileAbsolute(object_path, target_path, .{});
+fn moveGuardedFileBack(guarded_store: *store.Backend, object_id: []const u8, target_path: []const u8) !void {
+    var object = try guarded_store.loadObject(allocator, object_id);
+    defer object.deinit(allocator);
+
+    try writeStoredObjectToFile(target_path, .{
+        .metadata = object.metadata,
+        .content = object.content,
+    });
     errdefer std.fs.deleteFileAbsolute(target_path) catch {};
-    try std.fs.deleteFileAbsolute(object_path);
+    try guarded_store.removeObject(allocator, object_id);
+}
+
+fn readStoredObjectFromFile(path: []const u8) !store.Object {
+    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    defer file.close();
+
+    const stat = try file.stat();
+    const posix_stat = try std.posix.fstat(file.handle);
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+
+    return .{
+        .metadata = .{
+            .mode = @intCast(stat.mode & 0o777),
+            .uid = @intCast(posix_stat.uid),
+            .gid = @intCast(posix_stat.gid),
+            .atime_nsec = timestampToNanos(stat.atime),
+            .mtime_nsec = timestampToNanos(stat.mtime),
+        },
+        .content = content,
+    };
+}
+
+fn writeStoredObjectToFile(path: []const u8, object: store.ObjectView) !void {
+    try ensureParentDirectory(path);
+
+    var file = try std.fs.createFileAbsolute(path, .{
+        .truncate = true,
+        .read = true,
+    });
+    defer file.close();
+
+    if (object.content.len != 0) {
+        try file.writeAll(object.content);
+    }
+    try file.chmod(@intCast(object.metadata.mode & 0o777));
+    try file.chown(object.metadata.uid, object.metadata.gid);
+    try file.updateTimes(object.metadata.atime_nsec, object.metadata.mtime_nsec);
+    try file.sync();
+}
+
+fn timestampToNanos(timestamp_ns: i128) i128 {
+    return timestamp_ns;
+}
+
+fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u8) ![]u8 {
+    if (std.process.getEnvVarOwned(alloc, "XDG_RUNTIME_DIR")) |xdg_runtime_dir| {
+        defer alloc.free(xdg_runtime_dir);
+        return std.fmt.allocPrint(
+            alloc,
+            "{s}/file-snitch/lock-anchors/{s}.lock",
+            .{ xdg_runtime_dir, object_id },
+        );
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
+    const home = try std.process.getEnvVarOwned(alloc, "HOME");
+    defer alloc.free(home);
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}/.local/state/file-snitch/lock-anchors/{s}.lock",
+        .{ home, object_id },
+    );
 }
 
 const PathKind = enum {

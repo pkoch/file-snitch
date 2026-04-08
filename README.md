@@ -15,7 +15,8 @@ Current state:
   - `unenroll`
   - `status`
   - `doctor`
-- `enroll` currently migrates plaintext into `~/.var/file-snitch/guarded-secrets/<object_id>`, records the exact enrolled path in `policy.yml`, and `unenroll` restores it.
+- `enroll` now migrates plaintext into a store-backed guarded object, records the exact enrolled path in `policy.yml`, and `unenroll` restores it.
+- the current store backend is `pass`, using entries under a `file-snitch/` subtree.
 - The live projection model now works for real parent directories:
   - an enrolled file is projected back into its original parent directory from the guarded object
   - unguarded siblings passthrough from the preserved underlying directory
@@ -32,7 +33,7 @@ Current state:
 - The remaining runtime limits are:
   - multi-mount `run --daemon`
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
-  - guarded contents are still plaintext in the guarded object store, so custody-at-rest is not solved yet
+  - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
 - The old guarded-root spike still exists behind `file-snitch mount <mount-path> <backing-store-path> ...`, but it is now legacy scaffolding rather than the product direction.
 
 ## Layout
@@ -117,17 +118,18 @@ Prompt notes:
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
 - multi-mount `run --daemon` is still unsupported
-- `file-snitch enroll <path>` migrates the plaintext file into the guarded store and appends an enrollment to `policy.yml`
+- `file-snitch enroll <path>` migrates the plaintext file into the configured guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
-- the enrolled file's guarded object is currently resolved as `~/.var/file-snitch/guarded-secrets/<object_id>`
+- the current guarded-store ref is `pass:file-snitch/<object_id>`
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
 - `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
 - mount mode always writes audit JSON lines to stdout
 - `run prompt --daemon` is intentionally rejected for now because the current broker is interactive
 - the long-term goal is an agent-style broker, more like `ssh-agent` or `gpg-agent`, not richer local TTY prompting per daemon
+- smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

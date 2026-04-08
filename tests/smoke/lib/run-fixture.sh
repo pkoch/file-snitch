@@ -1,7 +1,8 @@
 home_dir=""
 config_home_dir=""
 policy_file=""
-guarded_store_dir=""
+password_store_dir=""
+fake_bin_dir=""
 log_file=""
 daemon_pid=""
 run_input_fd=""
@@ -13,7 +14,8 @@ prepare_run_fixture() {
   home_dir="$(mktemp -d "$TMP_ROOT/${fixture_name}-home.XXXXXX")"
   config_home_dir="$home_dir/.config"
   policy_file="$config_home_dir/file-snitch/policy.yml"
-  guarded_store_dir="$home_dir/.var/file-snitch/guarded-secrets"
+  password_store_dir="$home_dir/.password-store"
+  fake_bin_dir="$home_dir/.local/file-snitch-test-bin"
   log_file="$(mktemp "$TMP_ROOT/${fixture_name}-log.XXXXXX")"
   daemon_pid=""
   run_input_fd=""
@@ -21,7 +23,10 @@ prepare_run_fixture() {
 
   mkdir -p \
     "$config_home_dir/file-snitch" \
-    "$guarded_store_dir"
+    "$password_store_dir" \
+    "$fake_bin_dir"
+
+  write_fake_pass_script
 
   if declare -F fixture_prepare_extra >/dev/null 2>&1; then
     fixture_prepare_extra
@@ -29,20 +34,36 @@ prepare_run_fixture() {
 }
 
 run_file_snitch() {
-  HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" "$@"
+  PATH="$fake_bin_dir:$PATH" \
+    HOME="$home_dir" \
+    XDG_CONFIG_HOME="$config_home_dir" \
+    PASSWORD_STORE_DIR="$password_store_dir" \
+    "$repo_root/zig-out/bin/file-snitch" "$@"
 }
 
 capture_file_snitch() {
-  HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" "$@" 2>&1
+  PATH="$fake_bin_dir:$PATH" \
+    HOME="$home_dir" \
+    XDG_CONFIG_HOME="$config_home_dir" \
+    PASSWORD_STORE_DIR="$password_store_dir" \
+    "$repo_root/zig-out/bin/file-snitch" "$@" 2>&1
 }
 
 start_file_snitch_run() {
   local mode="$1"
 
   if [[ -n "$run_input_fd" ]]; then
-    HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground <&$run_input_fd >"$log_file" 2>&1 &
+    PATH="$fake_bin_dir:$PATH" \
+      HOME="$home_dir" \
+      XDG_CONFIG_HOME="$config_home_dir" \
+      PASSWORD_STORE_DIR="$password_store_dir" \
+      "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground <&$run_input_fd >"$log_file" 2>&1 &
   else
-    HOME="$home_dir" XDG_CONFIG_HOME="$config_home_dir" "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground >"$log_file" 2>&1 &
+    PATH="$fake_bin_dir:$PATH" \
+      HOME="$home_dir" \
+      XDG_CONFIG_HOME="$config_home_dir" \
+      PASSWORD_STORE_DIR="$password_store_dir" \
+      "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground >"$log_file" 2>&1 &
   fi
   daemon_pid="$!"
   wait_for_mounts_ready
@@ -115,13 +136,14 @@ cleanup_run_fixture() {
   home_dir=""
   config_home_dir=""
   policy_file=""
-  guarded_store_dir=""
+  password_store_dir=""
+  fake_bin_dir=""
   log_file=""
 
   return "$status"
 }
 
-guarded_object_path_for() {
+guarded_object_id_for() {
   local target_path="$1"
   local status_output=""
 
@@ -133,14 +155,132 @@ import os
 
 target = sys.argv[1]
 output = os.environ["STATUS_OUTPUT"].splitlines()
-pattern = re.compile(r"^enrollment: path=(?P<path>.+) object_id=(?P<object_id>[^ ]+) guarded_object=(?P<guarded_object>.+)$")
+pattern = re.compile(r"^enrollment: path=(?P<path>.+) object_id=(?P<object_id>[^ ]+) store_ref=(?P<store_ref>.+)$")
 
 for line in output:
     match = pattern.match(line)
     if match and match.group("path") == target:
-        print(match.group("guarded_object"))
+        print(match.group("object_id"))
         raise SystemExit(0)
 
 raise SystemExit(1)
 PY
+}
+
+guarded_store_show_for() {
+  local target_path="$1"
+  local object_id=""
+  local payload=""
+
+  object_id="$(guarded_object_id_for "$target_path")"
+  payload="$(PATH="$fake_bin_dir:$PATH" PASSWORD_STORE_DIR="$password_store_dir" pass show "file-snitch/$object_id")"
+  PAYLOAD="$payload" python3 - <<'PY'
+import base64
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["PAYLOAD"])
+sys.stdout.write(base64.b64decode(payload["content_base64"]).decode())
+PY
+}
+
+guarded_store_write_for() {
+  local target_path="$1"
+  local content="$2"
+  local object_id=""
+  local current_payload=""
+  local updated_payload=""
+
+  object_id="$(guarded_object_id_for "$target_path")"
+  current_payload="$(PATH="$fake_bin_dir:$PATH" PASSWORD_STORE_DIR="$password_store_dir" pass show "file-snitch/$object_id")"
+  updated_payload="$(CURRENT_PAYLOAD="$current_payload" python3 - "$content" <<'PY'
+import base64
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["CURRENT_PAYLOAD"])
+payload["content_base64"] = base64.b64encode(sys.argv[1].encode()).decode()
+print(json.dumps(payload, separators=(",", ":")))
+PY
+)"
+  printf '%s' "$updated_payload" | PATH="$fake_bin_dir:$PATH" PASSWORD_STORE_DIR="$password_store_dir" pass insert --multiline --force "file-snitch/$object_id" >/dev/null
+}
+
+write_fake_pass_script() {
+  cat >"$fake_bin_dir/pass" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+store_dir="${PASSWORD_STORE_DIR:?PASSWORD_STORE_DIR is required}"
+command="${1:-}"
+shift || true
+
+entry_path() {
+  local entry="$1"
+  printf '%s/%s' "$store_dir" "$entry"
+}
+
+case "$command" in
+  show)
+    entry="${1:?missing entry}"
+    path="$(entry_path "$entry")"
+    [[ -f "$path" ]] || exit 1
+    cat "$path"
+    ;;
+  insert)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -m|--multiline|--force|-f)
+          shift
+          ;;
+        --)
+          shift
+          break
+          ;;
+        -*)
+          echo "unsupported fake pass insert flag: $1" >&2
+          exit 2
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+    entry="${1:?missing entry}"
+    path="$(entry_path "$entry")"
+    mkdir -p "$(dirname "$path")"
+    cat >"$path"
+    ;;
+  rm)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --force|-f)
+          shift
+          ;;
+        --)
+          shift
+          break
+          ;;
+        -*)
+          echo "unsupported fake pass rm flag: $1" >&2
+          exit 2
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+    entry="${1:?missing entry}"
+    path="$(entry_path "$entry")"
+    rm -f "$path"
+    ;;
+  *)
+    echo "unsupported fake pass command: $command" >&2
+    exit 2
+    ;;
+esac
+EOF
+  chmod +x "$fake_bin_dir/pass"
 }

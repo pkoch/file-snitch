@@ -15,3 +15,7 @@ platform_mode() {
 platform_owner() {
   stat -f '%u:%g' "$1"
 }
+
+platform_prime_guarded_path() {
+  stat "$1" >/dev/null 2>&1 || true
+}

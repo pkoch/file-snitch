@@ -19,8 +19,8 @@ cleanup() {
   cleanup_run_fixture
 }
 
-extract_guarded_object_path() {
-  guarded_object_path_for "$1"
+extract_guarded_object_id() {
+  guarded_object_id_for "$1"
 }
 
 main() {
@@ -39,12 +39,9 @@ main() {
     "$home_dir/.kube/config" \
     "expected enroll to evacuate the plaintext file from its original path"
 
-  object_path="$(extract_guarded_object_path "$home_dir/.kube/config")"
-  assert_file_exists \
-    "$object_path" \
-    "expected enroll to create a guarded backing object"
+  object_id="$(extract_guarded_object_id "$home_dir/.kube/config")"
   assert_eq \
-    "$(cat "$object_path")" \
+    "$(guarded_store_show_for "$home_dir/.kube/config")" \
     "plain kube config" \
     "expected guarded object to preserve the enrolled plaintext"
 
@@ -58,7 +55,7 @@ main() {
   doctor_output="$(capture_file_snitch doctor)"
   grep -F "policy: ok ($policy_file)" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the policy file"
   grep -F "mount_plan: 1 mounts for 1 enrollments" <<<"$doctor_output" >/dev/null || fail "expected doctor to report one mount"
-  grep -F "ok: guarded object exists: $object_path" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
+  grep -F "ok: guarded object exists in store: pass:file-snitch/$object_id" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
   grep -F "ok: target path currently absent: $home_dir/.kube/config" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the evacuated target path"
 
   unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
@@ -71,9 +68,9 @@ main() {
     "$(cat "$home_dir/.kube/config")" \
     "plain kube config" \
     "expected unenroll to restore the original plaintext contents"
-  assert_file_missing \
-    "$object_path" \
-    "expected unenroll to remove the guarded object"
+  if guarded_store_show_for "$home_dir/.kube/config" >/dev/null 2>&1; then
+    fail "expected unenroll to remove the guarded object"
+  fi
 
   status_output="$(capture_file_snitch status)"
   grep -F "enrollments: 0" <<<"$status_output" >/dev/null || fail "expected no enrollments after unenroll"

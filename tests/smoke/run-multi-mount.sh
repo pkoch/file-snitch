@@ -31,13 +31,15 @@ main() {
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
   capture_file_snitch enroll "$home_dir/.ssh/id_ed25519" >/dev/null
 
-  kube_object_path="$(guarded_object_path_for "$home_dir/.kube/config")"
-  ssh_object_path="$(guarded_object_path_for "$home_dir/.ssh/id_ed25519")"
-  printf 'guarded kube\n' >"$kube_object_path"
-  printf 'guarded ssh\n' >"$ssh_object_path"
+  guarded_store_write_for "$home_dir/.kube/config" 'guarded kube
+'
+  guarded_store_write_for "$home_dir/.ssh/id_ed25519" 'guarded ssh
+'
 
   mount_paths=("$home_dir/.kube" "$home_dir/.ssh")
   start_file_snitch_run allow
+  platform_prime_guarded_path "$home_dir/.kube/config"
+  platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
 
   assert_eq \
     "$(cat "$home_dir/.kube/config")" \
@@ -52,14 +54,16 @@ main() {
     "ssh config" \
     "expected unguarded siblings to passthrough under a second mount"
 
+  platform_prime_guarded_path "$home_dir/.kube/config"
+  platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
   printf 'updated guarded kube\n' >"$home_dir/.kube/config"
   printf 'updated guarded ssh\n' >"$home_dir/.ssh/id_ed25519"
   assert_eq \
-    "$(cat "$kube_object_path")" \
+    "$(guarded_store_show_for "$home_dir/.kube/config")" \
     "updated guarded kube" \
     "expected the kube guarded object to receive mounted writes"
   assert_eq \
-    "$(cat "$ssh_object_path")" \
+    "$(guarded_store_show_for "$home_dir/.ssh/id_ed25519")" \
     "updated guarded ssh" \
     "expected the ssh guarded object to receive mounted writes"
 

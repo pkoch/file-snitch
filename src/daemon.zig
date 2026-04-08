@@ -3,6 +3,7 @@ const filesystem = @import("filesystem.zig");
 const fuse = @import("fuse/shim.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const store = @import("store.zig");
 const builtin = @import("builtin");
 
 const c = if (builtin.os.tag == .macos)
@@ -26,6 +27,7 @@ pub const Config = struct {
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const filesystem.GuardedEntryConfig,
+    guarded_store: store.Backend,
     run_in_foreground: bool = true,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_rules: []const policy.Rule = &.{},
@@ -188,6 +190,7 @@ pub const Session = struct {
             .filesystem = try filesystem.Model.initEnrolledParent(allocator, .{
                 .mount_path = config.mount_path,
                 .guarded_entries = config.guarded_entries,
+                .guarded_store = config.guarded_store,
                 .default_mutation_outcome = config.default_mutation_outcome,
                 .policy_rules = config.policy_rules,
                 .prompt_broker = config.prompt_broker,

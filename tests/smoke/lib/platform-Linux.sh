@@ -11,3 +11,7 @@ platform_stop_mount_path() {
 platform_mode() {
   stat -c '%a' "$1"
 }
+
+platform_prime_guarded_path() {
+  :
+}

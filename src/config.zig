@@ -360,22 +360,6 @@ pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}/.config/file-snitch/policy.yml", .{home});
 }
 
-pub fn defaultGuardedStoreDirAlloc(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.var/file-snitch/guarded-secrets", .{home});
-}
-
-pub fn defaultGuardedObjectPathAlloc(allocator: std.mem.Allocator, object_id: []const u8) ![]u8 {
-    const store_dir = try defaultGuardedStoreDirAlloc(allocator);
-    defer allocator.free(store_dir);
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}/{s}",
-        .{ store_dir, object_id },
-    );
-}
-
 fn loadPolicySource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
     defer file.close();

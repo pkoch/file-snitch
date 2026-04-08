@@ -5,6 +5,7 @@ const daemon = app_src.daemon;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
 const prompt = app_src.prompt;
+const store = app_src.store;
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -547,8 +548,8 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     const run_id = std.time.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-{d}", .{run_id});
     defer allocator.free(source_parent);
-    const backing_file_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-{d}", .{run_id});
-    defer allocator.free(backing_file_path);
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-{d}", .{run_id});
+    defer allocator.free(lock_anchor_path);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
     defer allocator.free(source_guarded_path);
     const sibling_path = try std.fmt.allocPrint(allocator, "{s}/sibling.txt", .{source_parent});
@@ -556,7 +557,6 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
 
     try std.fs.makeDirAbsolute(source_parent);
     defer std.fs.deleteTreeAbsolute(source_parent) catch {};
-    defer std.fs.deleteFileAbsolute(backing_file_path) catch {};
 
     var source_guarded_file = try std.fs.createFileAbsolute(source_guarded_path, .{ .truncate = true });
     defer source_guarded_file.close();
@@ -566,16 +566,28 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     defer sibling_file.close();
     try sibling_file.writeAll("plain sibling\n");
 
-    var backing_file = try std.fs.createFileAbsolute(backing_file_path, .{ .truncate = true });
-    defer backing_file.close();
-    try backing_file.writeAll("guarded kubeconfig\n");
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "kube-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded kubeconfig\n",
+    });
 
     var session = try daemon.Session.initEnrolledParent(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "config",
-            .backing_file_path = backing_file_path,
+            .object_id = "kube-config",
+            .lock_anchor_path = lock_anchor_path,
         }},
+        .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -597,9 +609,11 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     try session.debugWriteFile("/config", "updated guarded kubeconfig\n");
     try session.debugWriteFile("/sibling.txt", "updated sibling\n");
 
-    const backing_contents = try readFileAbsoluteAlloc(allocator, backing_file_path);
-    defer allocator.free(backing_contents);
-    try std.testing.expectEqualStrings("updated guarded kubeconfig\n", backing_contents);
+    {
+        var object = try mock_state.loadObject(allocator, "kube-config");
+        defer object.deinit(allocator);
+        try std.testing.expectEqualStrings("updated guarded kubeconfig\n", object.content);
+    }
 
     const source_guarded_contents = try readFileAbsoluteAlloc(allocator, source_guarded_path);
     defer allocator.free(source_guarded_contents);
@@ -615,10 +629,10 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     const run_id = std.time.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-multi-{d}", .{run_id});
     defer allocator.free(source_parent);
-    const first_backing_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-a-{d}", .{run_id});
-    defer allocator.free(first_backing_path);
-    const second_backing_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-b-{d}", .{run_id});
-    defer allocator.free(second_backing_path);
+    const first_lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-a-{d}", .{run_id});
+    defer allocator.free(first_lock_anchor_path);
+    const second_lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-b-{d}", .{run_id});
+    defer allocator.free(second_lock_anchor_path);
     const first_source_path = try std.fmt.allocPrint(allocator, "{s}/a.key", .{source_parent});
     defer allocator.free(first_source_path);
     const second_source_path = try std.fmt.allocPrint(allocator, "{s}/b.key", .{source_parent});
@@ -628,8 +642,6 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
 
     try std.fs.makeDirAbsolute(source_parent);
     defer std.fs.deleteTreeAbsolute(source_parent) catch {};
-    defer std.fs.deleteFileAbsolute(first_backing_path) catch {};
-    defer std.fs.deleteFileAbsolute(second_backing_path) catch {};
 
     {
         var file = try std.fs.createFileAbsolute(first_source_path, .{ .truncate = true });
@@ -646,29 +658,46 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         defer file.close();
         try file.writeAll("host sibling\n");
     }
-    {
-        var file = try std.fs.createFileAbsolute(first_backing_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll("guarded first\n");
-    }
-    {
-        var file = try std.fs.createFileAbsolute(second_backing_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll("guarded second\n");
-    }
+
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "first-key", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded first\n",
+    });
+    try guarded_store.putObject(allocator, "second-key", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded second\n",
+    });
 
     var session = try daemon.Session.initEnrolledParent(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{
             .{
                 .relative_path = "a.key",
-                .backing_file_path = first_backing_path,
+                .object_id = "first-key",
+                .lock_anchor_path = first_lock_anchor_path,
             },
             .{
                 .relative_path = "b.key",
-                .backing_file_path = second_backing_path,
+                .object_id = "second-key",
+                .lock_anchor_path = second_lock_anchor_path,
             },
         },
+        .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -691,14 +720,14 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     try session.debugWriteFile("/pubring.kbx", "updated sibling\n");
 
     {
-        const contents = try readFileAbsoluteAlloc(allocator, first_backing_path);
-        defer allocator.free(contents);
-        try std.testing.expectEqualStrings("updated guarded first\n", contents);
+        var object = try mock_state.loadObject(allocator, "first-key");
+        defer object.deinit(allocator);
+        try std.testing.expectEqualStrings("updated guarded first\n", object.content);
     }
     {
-        const contents = try readFileAbsoluteAlloc(allocator, second_backing_path);
-        defer allocator.free(contents);
-        try std.testing.expectEqualStrings("updated guarded second\n", contents);
+        var object = try mock_state.loadObject(allocator, "second-key");
+        defer object.deinit(allocator);
+        try std.testing.expectEqualStrings("updated guarded second\n", object.content);
     }
     {
         const contents = try readFileAbsoluteAlloc(allocator, first_source_path);
@@ -722,8 +751,8 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
     const run_id = std.time.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-nested-{d}", .{run_id});
     defer allocator.free(source_parent);
-    const backing_file_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guarded-object-nested-{d}", .{run_id});
-    defer allocator.free(backing_file_path);
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-nested-{d}", .{run_id});
+    defer allocator.free(lock_anchor_path);
     const real_dir_path = try std.fmt.allocPrint(allocator, "{s}/extensions/foo", .{source_parent});
     defer allocator.free(real_dir_path);
     const real_sibling_path = try std.fmt.allocPrint(allocator, "{s}/hosts.yml", .{source_parent});
@@ -732,25 +761,35 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
     try std.fs.makeDirAbsolute(source_parent);
     try std.fs.cwd().makePath(real_dir_path);
     defer std.fs.deleteTreeAbsolute(source_parent) catch {};
-    defer std.fs.deleteFileAbsolute(backing_file_path) catch {};
 
     {
         var file = try std.fs.createFileAbsolute(real_sibling_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("plain hosts\n");
     }
-    {
-        var file = try std.fs.createFileAbsolute(backing_file_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll("guarded nested token\n");
-    }
+
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "nested-token", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded nested token\n",
+    });
 
     var session = try daemon.Session.initEnrolledParent(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "extensions/foo/token.json",
-            .backing_file_path = backing_file_path,
+            .object_id = "nested-token",
+            .lock_anchor_path = lock_anchor_path,
         }},
+        .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -773,9 +812,9 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
     try session.debugWriteFile("/hosts.yml", "updated hosts\n");
 
     {
-        const contents = try readFileAbsoluteAlloc(allocator, backing_file_path);
-        defer allocator.free(contents);
-        try std.testing.expectEqualStrings("updated nested token\n", contents);
+        var object = try mock_state.loadObject(allocator, "nested-token");
+        defer object.deinit(allocator);
+        try std.testing.expectEqualStrings("updated nested token\n", object.content);
     }
     {
         const contents = try readFileAbsoluteAlloc(allocator, real_sibling_path);

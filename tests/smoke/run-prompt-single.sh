@@ -51,12 +51,13 @@ verify_allow_read() {
   mkdir -p "$home_dir/.kube"
   printf 'seeded kube\n' >"$home_dir/.kube/config"
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
-  object_path="$(guarded_object_path_for "$home_dir/.kube/config")"
-  printf 'guarded seeded kube\n' >"$object_path"
+  guarded_store_write_for "$home_dir/.kube/config" 'guarded seeded kube
+'
 
   trap cleanup EXIT
   start_prompt_run
   queue_prompt_answers yes 8
+  platform_prime_guarded_path "$home_dir/.kube/config"
 
   assert_eq \
     "$(cat "$home_dir/.kube/config")" \
@@ -77,6 +78,7 @@ verify_deny_write() {
   trap cleanup EXIT
   start_prompt_run
   queue_prompt_answers no 8
+  platform_prime_guarded_path "$home_dir/.kube/config"
 
   if bash -c 'printf "denied write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected prompt deny to block a write"
@@ -95,6 +97,7 @@ verify_timeout_write() {
 
   trap cleanup EXIT
   start_prompt_run
+  platform_prime_guarded_path "$home_dir/.kube/config"
 
   if bash -c 'printf "timed out write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected prompt timeout to block a write"
