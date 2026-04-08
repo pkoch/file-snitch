@@ -32,7 +32,7 @@ Current state:
 - Audit output is structured JSON on stdout and can include status snapshots via FIFO. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
 - The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
 - The remaining runtime limits are:
-  - multi-mount `run --daemon`
+  - multi-mount `run prompt`
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
 - The old guarded-root spike still exists behind `file-snitch mount <mount-path> <backing-store-path> ...`, but it is now legacy scaffolding rather than the product direction.
@@ -93,6 +93,7 @@ zig build compile-commands
 ./tests/smoke/run-empty-policy.sh
 ./tests/smoke/policy-lifecycle.sh
 ./tests/smoke/run-policy-reload.sh
+./tests/smoke/run-daemon-policy-reload.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
 ./tests/smoke/run-prompt-single.sh
@@ -108,6 +109,7 @@ What each command covers:
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that foreground `run` stays alive and watches for future changes even when policy is currently empty
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
 - `./tests/smoke/run-policy-reload.sh`: black-box verification that foreground `run` watches `policy.yml`, activates a new projection after `enroll`, and tears it down again after the enrollment is removed from policy
+- `./tests/smoke/run-daemon-policy-reload.sh`: black-box verification that daemonized `run` uses the same reconciler model and reacts to `policy.yml` changes without restart
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
 - `./tests/smoke/run-prompt-single.sh`: live verification of single-mount `run prompt` allow, deny, and timeout behavior
@@ -119,11 +121,11 @@ When debugging a specific area, the build-managed test step above is still the d
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, polls `policy.yml`, and adds or removes mount workers as the derived mount plan changes
+- `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
-- multi-mount `run --daemon` is still unsupported
-- `run --daemon` is still the older one-shot path; live policy reconciliation is currently a foreground capability
+- foreground and daemon mode now share the same policy-reconciliation behavior
 - `file-snitch enroll <path>` migrates the plaintext file into the configured guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan

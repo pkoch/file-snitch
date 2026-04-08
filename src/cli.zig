@@ -20,6 +20,10 @@ pub fn main() !void {
 
     run(args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
+        error.DaemonizeFailed => {
+            std.debug.print("error: failed to daemonize `run`\n", .{});
+            std.process.exit(1);
+        },
         error.StoreUnavailable => {
             std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
             std.process.exit(1);
@@ -361,12 +365,29 @@ fn parseOutcome(arg: []const u8) ?policy.Outcome {
 }
 
 fn runWithPolicy(command: RunCommand) !void {
+    if (command.mount_path_filter == null and !command.run_in_foreground) {
+        var foreground_command = command;
+        foreground_command.run_in_foreground = true;
+        try daemonizeSupervisor();
+        try reconcilePolicyInForeground(foreground_command);
+        return;
+    }
+
     if (command.mount_path_filter == null and command.run_in_foreground) {
         try reconcilePolicyInForeground(command);
         return;
     }
 
     try runStaticPolicy(command);
+}
+
+fn daemonizeSupervisor() !void {
+    const child_pid = std.posix.fork() catch return error.DaemonizeFailed;
+    if (child_pid != 0) {
+        std.process.exit(0);
+    }
+
+    _ = std.posix.setsid() catch return error.DaemonizeFailed;
 }
 
 fn runStaticPolicy(command: RunCommand) !void {
@@ -1448,9 +1469,10 @@ fn printUsage() void {
         \\
         \\notes:
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
-        \\  - `run --foreground` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes
-        \\  - `run --foreground` supports multiple planned mounts by supervising one child mount process per path
-        \\  - `run prompt` and multi-mount `run --daemon` are still unsupported
+        \\  - foreground and daemon mode now share the same policy-reconciliation model
+        \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes
+        \\  - multiple planned mounts are supported except in `prompt` mode
+        \\  - `run prompt --daemon` is still unsupported because the current broker is interactive
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems

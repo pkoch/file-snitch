@@ -20,18 +20,16 @@ Status:
   - the current backend is `pass` under a `file-snitch/` subtree
   - the current `pass` path has been verified end to end against a real local `pass` installation
   - keep the boundary generic enough to add `1password` and `bitwarden` backends later
-- `[~]` Make the daemon reconcile policy changes without restart
+- `[x]` Make the daemon reconcile policy changes without restart
   - foreground `run` now polls `policy.yml` and adds or removes mount workers as the derived mount plan changes
   - foreground `run` now stays alive even when policy is empty
-  - reload durable decisions currently happens by restarting affected foreground mount workers on policy change
-  - `run --daemon` still needs to move onto the same long-lived reconciler model
+  - daemonized `run` now uses the same reconciler model
+  - reload durable decisions currently happens by restarting affected mount workers on policy change
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
   - the current CLI prompt is acceptable as a bootstrap and debugging broker only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
   - stop treating multi-mount local `run prompt` as the product goal
-- `[ ]` Close the remaining daemon/runtime gap
-  - multi-mount `run --daemon`
 - `[x]` Replace the old guarded-root smoke coverage with policy-driven black-box smoke tests
   - empty policy
   - policy lifecycle

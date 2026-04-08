@@ -7,6 +7,8 @@ log_file=""
 daemon_pid=""
 run_input_fd=""
 mount_paths=()
+run_mode=""
+run_execution_mode=""
 
 prepare_run_fixture() {
   local fixture_name="$1"
@@ -20,6 +22,8 @@ prepare_run_fixture() {
   daemon_pid=""
   run_input_fd=""
   mount_paths=()
+  run_mode=""
+  run_execution_mode=""
 
   mkdir -p \
     "$config_home_dir/file-snitch" \
@@ -51,22 +55,50 @@ capture_file_snitch() {
 
 start_file_snitch_run() {
   local mode="$1"
+  local execution_mode="${2:---foreground}"
+
+  run_mode="$mode"
+  run_execution_mode="$execution_mode"
 
   if [[ -n "$run_input_fd" ]]; then
     PATH="$fake_bin_dir:$PATH" \
       HOME="$home_dir" \
       XDG_CONFIG_HOME="$config_home_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
-      "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground <&$run_input_fd >"$log_file" 2>&1 &
+      "$repo_root/zig-out/bin/file-snitch" run "$mode" "$execution_mode" <&$run_input_fd >"$log_file" 2>&1 &
   else
     PATH="$fake_bin_dir:$PATH" \
       HOME="$home_dir" \
       XDG_CONFIG_HOME="$config_home_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
-      "$repo_root/zig-out/bin/file-snitch" run "$mode" --foreground >"$log_file" 2>&1 &
+      "$repo_root/zig-out/bin/file-snitch" run "$mode" "$execution_mode" >"$log_file" 2>&1 &
   fi
   daemon_pid="$!"
+
+  if [[ "$execution_mode" == "--daemon" ]]; then
+    wait "$daemon_pid" || true
+    daemon_pid="$(find_run_daemon_pid "$mode")"
+  fi
+
   wait_for_mounts_ready
+}
+
+find_run_daemon_pid() {
+  local mode="$1"
+  local attempts="${2:-100}"
+  local pattern="$repo_root/zig-out/bin/file-snitch run $mode --daemon"
+  local pid=""
+
+  for _ in $(seq 1 "$attempts"); do
+    pid="$(pgrep -f "$pattern" | head -n 1 || true)"
+    if [[ -n "$pid" ]]; then
+      printf '%s\n' "$pid"
+      return
+    fi
+    sleep 0.1
+  done
+
+  fail "run daemon did not stay alive"
 }
 
 wait_for_mounts_ready() {
@@ -140,7 +172,11 @@ stop_run_fixture() {
   done
 
   if [[ -n "${daemon_pid:-}" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
-    wait "$daemon_pid" || status=$?
+    if [[ "${run_execution_mode:-}" == "--daemon" ]]; then
+      wait_for_daemon_exit "$daemon_pid" || status=$?
+    else
+      wait "$daemon_pid" || status=$?
+    fi
   fi
 
   if declare -F fixture_cleanup_extra >/dev/null 2>&1; then
@@ -150,7 +186,23 @@ stop_run_fixture() {
   daemon_pid=""
   run_input_fd=""
   mount_paths=()
+  run_mode=""
+  run_execution_mode=""
   return "$status"
+}
+
+wait_for_daemon_exit() {
+  local pid="$1"
+  local attempts="${2:-100}"
+
+  for _ in $(seq 1 "$attempts"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  return 1
 }
 
 cleanup_run_fixture() {
