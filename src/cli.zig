@@ -5,6 +5,7 @@ const filesystem = @import("filesystem.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const store = @import("store.zig");
+const builtin = @import("builtin");
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -360,6 +361,15 @@ fn parseOutcome(arg: []const u8) ?policy.Outcome {
 }
 
 fn runWithPolicy(command: RunCommand) !void {
+    if (command.mount_path_filter == null and command.run_in_foreground) {
+        try reconcilePolicyInForeground(command);
+        return;
+    }
+
+    try runStaticPolicy(command);
+}
+
+fn runStaticPolicy(command: RunCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
 
@@ -937,6 +947,288 @@ fn superviseMountChildren(command: RunCommand, mount_paths: []const []const u8) 
     }
 }
 
+const PolicyMarker = struct {
+    exists: bool,
+    size: u64 = 0,
+    mtime: i128 = 0,
+
+    fn eql(a: PolicyMarker, b: PolicyMarker) bool {
+        return a.exists == b.exists and
+            a.size == b.size and
+            a.mtime == b.mtime;
+    }
+};
+
+const ManagedMountChild = struct {
+    child: std.process.Child,
+    argv: []const []const u8,
+    mount_path: []u8,
+    alive: bool,
+    term: ?std.process.Child.Term = null,
+
+    fn deinit(self: *ManagedMountChild) void {
+        allocator.free(self.mount_path);
+        allocator.free(self.argv);
+        self.* = undefined;
+    }
+};
+
+fn reconcilePolicyInForeground(command: RunCommand) !void {
+    const signal_handlers = installSupervisorSignalHandlers();
+    defer signal_handlers.restore();
+
+    var children: std.ArrayListUnmanaged(ManagedMountChild) = .{};
+    defer stopManagedMountChildren(&children);
+
+    var last_marker: ?PolicyMarker = null;
+    var needs_reconcile = true;
+
+    while (true) {
+        const shutdown_signal = supervisor_shutdown_signal.load(.acquire);
+        if (shutdown_signal != 0) {
+            break;
+        }
+
+        const marker = currentPolicyMarker(command.policy_path);
+        if (needs_reconcile or last_marker == null or !last_marker.?.eql(marker)) {
+            try reconcileManagedMountChildren(command, marker, &children);
+            last_marker = marker;
+            needs_reconcile = false;
+        }
+
+        if (reapExitedMountChildren(&children)) {
+            needs_reconcile = true;
+        }
+
+        std.Thread.sleep(250 * std.time.ns_per_ms);
+    }
+}
+
+fn currentPolicyMarker(policy_path: []const u8) PolicyMarker {
+    const stat = std.fs.cwd().statFile(policy_path) catch |err| switch (err) {
+        error.FileNotFound => return .{ .exists = false },
+        else => return .{ .exists = false },
+    };
+
+    return .{
+        .exists = true,
+        .size = stat.size,
+        .mtime = stat.mtime,
+    };
+}
+
+fn reconcileManagedMountChildren(
+    command: RunCommand,
+    marker: PolicyMarker,
+    children: *std.ArrayListUnmanaged(ManagedMountChild),
+) !void {
+    _ = marker;
+
+    var loaded_policy = config.loadFromFile(allocator, command.policy_path) catch |err| {
+        std.log.err("failed to reload policy from {s}: {}", .{ command.policy_path, err });
+        return;
+    };
+    defer loaded_policy.deinit();
+
+    var compiled_rules = loaded_policy.compilePolicyRules(allocator) catch |err| {
+        std.log.err("failed to compile policy rules from {s}: {}", .{ loaded_policy.source_path, err });
+        return;
+    };
+    defer compiled_rules.deinit();
+
+    var mount_plan = loaded_policy.deriveMountPlan(allocator) catch |err| {
+        std.log.err("failed to derive mount plan from {s}: {}", .{ loaded_policy.source_path, err });
+        return;
+    };
+    defer mount_plan.deinit();
+
+    if (command.default_mutation_outcome == .prompt and mount_plan.paths.len > 1) {
+        std.log.err("refusing to project {d} mounts in prompt mode; keeping the daemon alive without active mounts", .{mount_plan.paths.len});
+        stopManagedMountChildren(children);
+        return;
+    }
+
+    stopManagedMountChildren(children);
+
+    if (mount_plan.paths.len == 0) {
+        return;
+    }
+
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+
+    for (mount_plan.paths) |mount_path| {
+        var child = try spawnManagedMountChild(exe_path, command, mount_path);
+        errdefer child.deinit();
+        try child.child.spawn();
+        child.alive = true;
+        try children.append(allocator, child);
+    }
+}
+
+fn spawnManagedMountChild(
+    exe_path: []const u8,
+    command: RunCommand,
+    mount_path: []const u8,
+) !ManagedMountChild {
+    const mount_path_owned = try allocator.dupe(u8, mount_path);
+    errdefer allocator.free(mount_path_owned);
+
+    const extra_args: usize = if (command.status_fifo_path != null) 2 else 0;
+    const argv = try allocator.alloc([]const u8, 8 + extra_args);
+    errdefer allocator.free(argv);
+
+    argv[0] = exe_path;
+    argv[1] = "run";
+    argv[2] = outcomeArg(command.default_mutation_outcome);
+    argv[3] = "--foreground";
+    argv[4] = "--policy";
+    argv[5] = command.policy_path;
+    argv[6] = "--mount-path";
+    argv[7] = mount_path_owned;
+    if (command.status_fifo_path) |status_fifo_path| {
+        argv[8] = "--status-fifo";
+        argv[9] = status_fifo_path;
+    }
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+
+    return .{
+        .child = child,
+        .argv = argv,
+        .mount_path = mount_path_owned,
+        .alive = false,
+    };
+}
+
+fn reapExitedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) bool {
+    var reaped_any = false;
+
+    for (children.items) |*runner| {
+        if (!runner.alive) continue;
+
+        if (pollMountChild(runner)) |term| {
+            runner.alive = false;
+            runner.term = term;
+            reaped_any = true;
+
+            switch (term) {
+                .Exited => |code| std.log.warn("mount child for {s} exited with code {d}", .{ runner.mount_path, code }),
+                .Signal => |sig| std.log.warn("mount child for {s} exited on signal {d}", .{ runner.mount_path, sig }),
+                else => std.log.warn("mount child for {s} terminated unexpectedly", .{runner.mount_path}),
+            }
+        }
+    }
+
+    return reaped_any;
+}
+
+fn pollMountChild(runner: *ManagedMountChild) ?std.process.Child.Term {
+    const waited = std.posix.waitpid(runner.child.id, std.posix.W.NOHANG);
+    if (waited.pid == 0) return null;
+    return termFromWaitStatus(waited.status);
+}
+
+fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) void {
+    defer {
+        for (children.items) |*runner| {
+            runner.deinit();
+        }
+        children.clearAndFree(allocator);
+    }
+
+    if (children.items.len == 0) return;
+
+    for (children.items) |*runner| {
+        if (!runner.alive) continue;
+        std.posix.kill(runner.child.id, std.posix.SIG.INT) catch {};
+    }
+
+    if (waitForManagedChildren(children, 20)) {
+        return;
+    }
+
+    for (children.items) |*runner| {
+        if (!runner.alive) continue;
+        bestEffortUnmount(runner.mount_path);
+    }
+
+    if (waitForManagedChildren(children, 20)) {
+        return;
+    }
+
+    for (children.items) |*runner| {
+        if (!runner.alive) continue;
+        std.posix.kill(runner.child.id, std.posix.SIG.TERM) catch {};
+    }
+
+    _ = waitForManagedChildren(children, 20);
+}
+
+fn waitForManagedChildren(children: *std.ArrayListUnmanaged(ManagedMountChild), attempts: usize) bool {
+    var remaining = true;
+    var attempt: usize = 0;
+
+    while (attempt < attempts) : (attempt += 1) {
+        remaining = false;
+
+        for (children.items) |*runner| {
+            if (!runner.alive) continue;
+            if (pollMountChild(runner)) |term| {
+                runner.alive = false;
+                runner.term = term;
+            } else {
+                remaining = true;
+            }
+        }
+
+        if (!remaining) {
+            return true;
+        }
+
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+    }
+
+    return false;
+}
+
+fn bestEffortUnmount(mount_path: []const u8) void {
+    switch (builtin.os.tag) {
+        .macos => {
+            _ = runUnmountCommand(&.{ "umount", mount_path });
+        },
+        .linux => {
+            if (!runUnmountCommand(&.{ "fusermount3", "-u", mount_path })) {
+                if (!runUnmountCommand(&.{ "fusermount", "-u", mount_path })) {
+                    _ = runUnmountCommand(&.{ "umount", mount_path });
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn runUnmountCommand(argv: []const []const u8) bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 4096,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return false,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
 fn signalChildrenForShutdown(children: anytype, signal: u8) void {
     for (children) |runner| {
         if (!runner.alive) continue;
@@ -1156,7 +1448,7 @@ fn printUsage() void {
         \\
         \\notes:
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
-        \\  - `run` exits cleanly when no enrollments are configured
+        \\  - `run --foreground` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes
         \\  - `run --foreground` supports multiple planned mounts by supervising one child mount process per path
         \\  - `run prompt` and multi-mount `run --daemon` are still unsupported
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`

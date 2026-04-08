@@ -97,6 +97,34 @@ wait_for_mounts_ready() {
   fail "run did not become ready"
 }
 
+wait_for_mounts_gone() {
+  local attempts="${1:-100}"
+
+  for _ in $(seq 1 "$attempts"); do
+    local all_gone="yes"
+    local mount_path=""
+
+    for mount_path in "${mount_paths[@]}"; do
+      if platform_mount_is_active "$mount_path"; then
+        all_gone="no"
+        break
+      fi
+    done
+
+    if [[ "$all_gone" == "yes" ]]; then
+      return
+    fi
+
+    if [[ -n "${daemon_pid:-}" ]] && ! kill -0 "$daemon_pid" 2>/dev/null; then
+      fail "run exited before mounts were torn down"
+    fi
+
+    sleep 0.1
+  done
+
+  fail "run did not tear mounts down"
+}
+
 stop_run_fixture() {
   local status=0
   local mount_path=""

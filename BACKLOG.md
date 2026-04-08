@@ -20,10 +20,11 @@ Status:
   - the current backend is `pass` under a `file-snitch/` subtree
   - the current `pass` path has been verified end to end against a real local `pass` installation
   - keep the boundary generic enough to add `1password` and `bitwarden` backends later
-- `[ ]` Make the daemon reconcile policy changes without restart
-  - watch `policy.yml` for external edits
-  - add and remove mounts as enrollments change
-  - reload durable decisions without daemon restart
+- `[~]` Make the daemon reconcile policy changes without restart
+  - foreground `run` now polls `policy.yml` and adds or removes mount workers as the derived mount plan changes
+  - foreground `run` now stays alive even when policy is empty
+  - reload durable decisions currently happens by restarting affected foreground mount workers on policy change
+  - `run --daemon` still needs to move onto the same long-lived reconciler model
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
   - the current CLI prompt is acceptable as a bootstrap and debugging broker only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
