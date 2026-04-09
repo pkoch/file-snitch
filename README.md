@@ -43,6 +43,8 @@ Current state:
 - `src/`: Zig application code
 - `src/root.zig`: shared application module surface for tests and other non-CLI consumers
 - `src/cli.zig`: command-line parsing, env loading, and runtime command dispatch
+- `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
+- `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
 - `src/filesystem.zig`: Zig-owned guarded-root and enrolled-parent filesystem behavior
 - `tests/`: Zig integration tests and scenario coverage
