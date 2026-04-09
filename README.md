@@ -35,7 +35,7 @@ Current state:
   - multi-mount `run prompt`
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
-- The old guarded-root spike is still implemented internally for now, but it is no longer part of the public product surface.
+- The old guarded-root spike still survives in low-level core code and historical notes, but it is no longer a supported CLI path.
 
 ## Layout
 
@@ -46,7 +46,7 @@ Current state:
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
-- `src/filesystem.zig`: Zig-owned guarded-root and enrolled-parent filesystem behavior
+- `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime plus older guarded-root core paths
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
