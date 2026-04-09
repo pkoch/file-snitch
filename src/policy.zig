@@ -23,6 +23,7 @@ pub const Rule = struct {
     uid: ?u32 = null,
     executable_path: ?[]const u8 = null,
     exact_path: bool = false,
+    expires_at_unix_seconds: ?i64 = null,
 };
 
 pub const Request = struct {
@@ -41,6 +42,7 @@ const StoredRule = struct {
     uid: ?u32,
     executable_path: ?[]u8,
     exact_path: bool,
+    expires_at_unix_seconds: ?i64,
 };
 
 pub const Engine = struct {
@@ -75,6 +77,7 @@ pub const Engine = struct {
                 .uid = rule.uid,
                 .executable_path = executable_path,
                 .exact_path = rule.exact_path,
+                .expires_at_unix_seconds = rule.expires_at_unix_seconds,
             });
         }
 
@@ -93,12 +96,22 @@ pub const Engine = struct {
     }
 
     pub fn evaluate(self: *const Engine, request: Request) Outcome {
+        return self.evaluateAt(request, std.time.timestamp());
+    }
+
+    pub fn evaluateAt(self: *const Engine, request: Request, now_unix_seconds: i64) Outcome {
         var best_match: ?Outcome = null;
         var best_length: usize = 0;
 
         for (self.rules.items) |rule| {
             if (rule.access_class != request.access_class) {
                 continue;
+            }
+
+            if (rule.expires_at_unix_seconds) |expires_at_unix_seconds| {
+                if (now_unix_seconds >= expires_at_unix_seconds) {
+                    continue;
+                }
             }
 
             if (!matchesPath(rule.path_prefix, request.path, rule.exact_path)) {

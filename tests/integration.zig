@@ -543,6 +543,134 @@ test "compiled durable decisions respect executable path and uid" {
     }));
 }
 
+test "compiled durable decisions ignore expired entries" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "compiled-rules-expiration");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: /tmp/guarded/config
+        \\    object_id: kube-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: read_like
+        \\    outcome: deny
+        \\    expires_at: '1970-01-01T00:00:01Z'
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: write_capable
+        \\    outcome: deny
+        \\    expires_at: '2100-01-01T00:00:00Z'
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    var compiled = try loaded.compilePolicyRules(allocator);
+    defer compiled.deinit();
+
+    var engine = try policy.Engine.init(allocator, .allow, compiled.items);
+    defer engine.deinit();
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluateAt(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .read,
+        .pid = 42,
+        .uid = 1000,
+        .gid = 20,
+        .executable_path = "/usr/bin/kubectl",
+    }, 1_900_000_000));
+
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluateAt(.{
+        .path = "/tmp/guarded/config",
+        .access_class = .write,
+        .pid = 42,
+        .uid = 1000,
+        .gid = 20,
+        .executable_path = "/usr/bin/kubectl",
+    }, 1_900_000_000));
+}
+
+test "policy loader rejects invalid decision expiration" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "invalid-decision-expiration");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: /tmp/guarded/config
+        \\    object_id: kube-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: later-ish
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    try std.testing.expectError(error.InvalidDecisionExpiration, config.loadFromFile(allocator, path));
+}
+
+test "policy file prunes expired decisions in place" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "prune-expired-decisions");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments: []
+        \\decisions:
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: '1970-01-01T00:00:01Z'
+        \\  - executable_path: /usr/bin/kubectl
+        \\    uid: 1000
+        \\    path: /tmp/guarded/config
+        \\    approval_class: write_capable
+        \\    outcome: deny
+        \\    expires_at: null
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    try std.testing.expect(try loaded.pruneExpiredDecisions(10));
+    try std.testing.expectEqual(@as(usize, 1), loaded.decisions.len);
+    try std.testing.expectEqualStrings("write_capable", loaded.decisions[0].approval_class);
+    try std.testing.expect(!try loaded.pruneExpiredDecisions(10));
+}
+
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
     const run_id = std.time.nanoTimestamp();

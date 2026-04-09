@@ -8,7 +8,7 @@ The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 
 Current state:
 - The repo has a real Zig `libfuse` core with a thin C shim. The shim preserves raw callback detail; policy timing, filesystem behavior, prompting, and audit semantics live in Zig.
-- The product path is now policy-driven exact-file enrollment, not the old synthetic guarded-root demo. `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default, derives the mount plan, and in foreground mode stays alive to reconcile policy changes over time.
+- The product path is now policy-driven exact-file enrollment, not the old synthetic guarded-root demo. `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default, derives the mount plan, and in both foreground and daemon mode stays alive to reconcile policy changes over time.
 - The product-facing CLI surface is in place:
   - `run`
   - `enroll`
@@ -22,13 +22,13 @@ Current state:
   - an enrolled file is projected back into its original parent directory from the guarded object
   - unguarded siblings passthrough from the preserved underlying directory
   - nested guarded paths under one mounted tree are supported
-  - multiple planned mounts are supported in `run --foreground` by supervising one child mount process per mount path
+  - multiple planned mounts are supported in `run allow` and `run deny` by supervising one child mount process per mount path
 - This has been verified live on macOS for:
   - a real kubeconfig-style target
   - multiple guarded files under one mounted parent
   - simultaneous `.kube` and `.ssh` projections in one foreground run
   - clean `SIGINT` teardown back to the original host view
-- Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key.
+- Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key, and expired decisions age out at evaluation time.
 - Audit output is structured JSON on stdout and can include status snapshots via FIFO. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
 - The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
 - The remaining runtime limits are:
@@ -94,6 +94,7 @@ zig build compile-commands
 ./tests/smoke/policy-lifecycle.sh
 ./tests/smoke/run-policy-reload.sh
 ./tests/smoke/run-daemon-policy-reload.sh
+./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
 ./tests/smoke/run-prompt-single.sh
@@ -110,6 +111,7 @@ What each command covers:
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
 - `./tests/smoke/run-policy-reload.sh`: black-box verification that foreground `run` watches `policy.yml`, activates a new projection after `enroll`, and tears it down again after the enrollment is removed from policy
 - `./tests/smoke/run-daemon-policy-reload.sh`: black-box verification that daemonized `run` uses the same reconciler model and reacts to `policy.yml` changes without restart
+- `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
 - `./tests/smoke/run-prompt-single.sh`: live verification of single-mount `run prompt` allow, deny, and timeout behavior
@@ -131,6 +133,10 @@ Prompt notes:
 - `file-snitch status` prints the current enrollments plus the derived mount plan
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
+- `expires_at` is optional on durable decisions and is enforced without requiring a daemon restart
+- the reconciler also rewrites `policy.yml` after pruning expired durable decisions so the file does not accumulate dead entries
+- accepted `expires_at` formats are:
+  - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
 - `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker

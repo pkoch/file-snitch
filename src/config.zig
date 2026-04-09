@@ -140,6 +140,46 @@ pub const PolicyFile = struct {
         self.decisions = self.allocator.realloc(self.decisions, write_index) catch self.decisions[0..write_index];
     }
 
+    pub fn pruneExpiredDecisions(self: *PolicyFile, now_unix_seconds: i64) !bool {
+        var changed = false;
+        var write_index: usize = 0;
+        var read_index: usize = 0;
+        while (read_index < self.decisions.len) : (read_index += 1) {
+            const expires_at_unix_seconds = try parseOptionalDecisionExpiration(self.decisions[read_index].expires_at);
+            if (expires_at_unix_seconds) |expires_at| {
+                if (now_unix_seconds >= expires_at) {
+                    var removed = self.decisions[read_index];
+                    removed.deinit(self.allocator);
+                    changed = true;
+                    continue;
+                }
+            }
+
+            if (write_index != read_index) {
+                self.decisions[write_index] = self.decisions[read_index];
+            }
+            write_index += 1;
+        }
+
+        if (changed) {
+            self.decisions = self.allocator.realloc(self.decisions, write_index) catch self.decisions[0..write_index];
+        }
+        return changed;
+    }
+
+    pub fn nextDecisionExpirationUnixSeconds(self: *const PolicyFile) !?i64 {
+        var next_expiration: ?i64 = null;
+
+        for (self.decisions) |decision| {
+            const expires_at_unix_seconds = try parseOptionalDecisionExpiration(decision.expires_at) orelse continue;
+            if (next_expiration == null or expires_at_unix_seconds < next_expiration.?) {
+                next_expiration = expires_at_unix_seconds;
+            }
+        }
+
+        return next_expiration;
+    }
+
     pub fn deriveMountPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !MountPlan {
         var parents: std.ArrayListUnmanaged([]u8) = .{};
         defer {
@@ -184,6 +224,7 @@ pub const PolicyFile = struct {
         for (self.decisions) |decision| {
             const outcome = try parseDecisionOutcome(decision.outcome);
             const access_classes = try accessClassesForApprovalClass(decision.approval_class);
+            const expires_at_unix_seconds = try parseOptionalDecisionExpiration(decision.expires_at);
             for (access_classes) |access_class| {
                 try compiled.append(allocator, .{
                     .path_prefix = decision.path,
@@ -192,6 +233,7 @@ pub const PolicyFile = struct {
                     .uid = decision.uid,
                     .executable_path = decision.executable_path,
                     .exact_path = true,
+                    .expires_at_unix_seconds = expires_at_unix_seconds,
                 });
             }
         }
@@ -283,7 +325,7 @@ const RawDecision = struct {
     path: []const u8,
     approval_class: []const u8,
     outcome: []const u8,
-    expires_at: ?[]const u8 = null,
+    expires_at: []const u8 = "null",
 };
 
 const RawPolicyFile = struct {
@@ -324,7 +366,7 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const raw = document.parse(arena.allocator(), RawPolicyFile) catch {
+    const raw = parseRawPolicyDocument(arena.allocator(), document.docs.items[0]) catch {
         return error.InvalidPolicyFile;
     };
 
@@ -333,9 +375,9 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
     }
 
     const enrollments = try copyEnrollments(allocator, raw.enrollments orelse &.{});
-    errdefer freeEnrollments(allocator, enrollments);
+    errdefer freeEnrollmentsAndSlice(allocator, enrollments);
     const decisions = try copyDecisions(allocator, raw.decisions orelse &.{});
-    errdefer freeDecisions(allocator, decisions);
+    errdefer freeDecisionsAndSlice(allocator, decisions);
 
     return .{
         .allocator = allocator,
@@ -376,6 +418,97 @@ fn emptyPolicy(allocator: std.mem.Allocator, source_path: []u8) !PolicyFile {
     };
 }
 
+fn parseRawPolicyDocument(arena: std.mem.Allocator, root: yaml.Yaml.Value) !RawPolicyFile {
+    const map = try root.asMap();
+
+    var raw = RawPolicyFile{};
+    if (mapGet(map, "version")) |value| {
+        raw.version = @intCast(try value.asInt());
+    }
+    if (mapGet(map, "enrollments")) |value| {
+        raw.enrollments = try parseRawEnrollments(arena, value);
+    }
+    if (mapGet(map, "decisions")) |value| {
+        raw.decisions = try parseRawDecisions(arena, value);
+    }
+    return raw;
+}
+
+fn parseRawEnrollments(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawEnrollment {
+    const list = try value.asList();
+    var enrollments = try arena.alloc(RawEnrollment, list.len);
+    for (list, 0..) |entry, index| {
+        const map = try entry.asMap();
+        enrollments[index] = .{
+            .path = try requiredStringField(arena, map, "path"),
+            .object_id = try requiredStringField(arena, map, "object_id"),
+        };
+    }
+    return enrollments;
+}
+
+fn parseRawDecisions(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawDecision {
+    const list = try value.asList();
+    var decisions = try arena.alloc(RawDecision, list.len);
+    for (list, 0..) |entry, index| {
+        const map = try entry.asMap();
+        decisions[index] = .{
+            .executable_path = try requiredStringField(arena, map, "executable_path"),
+            .uid = @intCast(try requiredIntField(map, "uid")),
+            .path = try requiredStringField(arena, map, "path"),
+            .approval_class = try requiredStringField(arena, map, "approval_class"),
+            .outcome = try requiredStringField(arena, map, "outcome"),
+            .expires_at = try optionalExpirationField(map, "expires_at", "null"),
+        };
+    }
+    return decisions;
+}
+
+fn requiredStringField(arena: std.mem.Allocator, map: yaml.Yaml.Map, field_name: []const u8) ![]const u8 {
+    const value = mapGet(map, field_name) orelse return error.StructFieldMissing;
+    return try scalarFieldToString(arena, value);
+}
+
+fn requiredIntField(map: yaml.Yaml.Map, field_name: []const u8) !i64 {
+    const value = mapGet(map, field_name) orelse return error.StructFieldMissing;
+    return try value.asInt();
+}
+
+fn optionalScalarField(
+    arena: std.mem.Allocator,
+    map: yaml.Yaml.Map,
+    field_name: []const u8,
+    default_value: []const u8,
+) ![]const u8 {
+    const value = mapGet(map, field_name) orelse return default_value;
+    return try scalarFieldToString(arena, value);
+}
+
+fn optionalExpirationField(map: yaml.Yaml.Map, field_name: []const u8, default_value: []const u8) ![]const u8 {
+    const value = mapGet(map, field_name) orelse return default_value;
+    return switch (value) {
+        .string => |string| string,
+        .empty => default_value,
+        else => error.TypeMismatch,
+    };
+}
+
+fn scalarFieldToString(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const u8 {
+    return switch (value) {
+        .string => |string| string,
+        .int => |int| try std.fmt.allocPrint(arena, "{d}", .{int}),
+        .empty => "null",
+        else => error.TypeMismatch,
+    };
+}
+
+fn mapGet(map: yaml.Yaml.Map, field_name: []const u8) ?yaml.Yaml.Value {
+    if (map.get(field_name)) |value| {
+        return value;
+    }
+    return null;
+}
+
 fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnrollment) ![]Enrollment {
     const enrollments = try allocator.alloc(Enrollment, raw_enrollments.len);
     var initialized: usize = 0;
@@ -402,6 +535,11 @@ fn freeEnrollments(allocator: std.mem.Allocator, enrollments: []Enrollment) void
     }
 }
 
+fn freeEnrollmentsAndSlice(allocator: std.mem.Allocator, enrollments: []Enrollment) void {
+    freeEnrollments(allocator, enrollments);
+    allocator.free(enrollments);
+}
+
 fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecision) ![]Decision {
     const decisions = try allocator.alloc(Decision, raw_decisions.len);
     var initialized: usize = 0;
@@ -418,7 +556,7 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
             .path = try allocator.dupe(u8, raw.path),
             .approval_class = try allocator.dupe(u8, raw.approval_class),
             .outcome = try allocator.dupe(u8, raw.outcome),
-            .expires_at = if (normalizeOptionalScalar(raw.expires_at)) |expires_at|
+            .expires_at = if (normalizeScalar(raw.expires_at)) |expires_at|
                 try allocator.dupe(u8, expires_at)
             else
                 null,
@@ -433,6 +571,11 @@ fn freeDecisions(allocator: std.mem.Allocator, decisions: []Decision) void {
     for (decisions) |*decision| {
         decision.deinit(allocator);
     }
+}
+
+fn freeDecisionsAndSlice(allocator: std.mem.Allocator, decisions: []Decision) void {
+    freeDecisions(allocator, decisions);
+    allocator.free(decisions);
 }
 
 fn validateEnrollment(raw: RawEnrollment) !void {
@@ -457,10 +600,11 @@ fn validateDecision(raw: RawDecision) !void {
 
     _ = try parseDecisionOutcome(raw.outcome);
     _ = try accessClassesForApprovalClass(raw.approval_class);
+    _ = try parseRawDecisionExpiration(raw.expires_at);
 }
 
-fn normalizeOptionalScalar(value: ?[]const u8) ?[]const u8 {
-    const raw = value orelse return null;
+fn normalizeScalar(value: []const u8) ?[]const u8 {
+    const raw = value;
     if (std.ascii.eqlIgnoreCase(raw, "null")) {
         return null;
     }
@@ -468,6 +612,82 @@ fn normalizeOptionalScalar(value: ?[]const u8) ?[]const u8 {
         return null;
     }
     return raw;
+}
+
+fn normalizeOptionalScalar(value: ?[]const u8) ?[]const u8 {
+    const raw = value orelse return null;
+    return normalizeScalar(raw);
+}
+
+fn parseRawDecisionExpiration(value: []const u8) !?i64 {
+    const normalized = normalizeScalar(value) orelse return null;
+    return try parseExpirationTimestamp(normalized);
+}
+
+fn parseOptionalDecisionExpiration(value: ?[]const u8) !?i64 {
+    const normalized = normalizeOptionalScalar(value) orelse return null;
+    return try parseExpirationTimestamp(normalized);
+}
+
+fn parseExpirationTimestamp(value: []const u8) !i64 {
+    return parseRfc3339UtcSeconds(value);
+}
+
+fn parseRfc3339UtcSeconds(value: []const u8) !i64 {
+    if (value.len != 20 or
+        value[4] != '-' or
+        value[7] != '-' or
+        value[10] != 'T' or
+        value[13] != ':' or
+        value[16] != ':' or
+        value[19] != 'Z')
+    {
+        return error.InvalidDecisionExpiration;
+    }
+
+    const year = try std.fmt.parseInt(i64, value[0..4], 10);
+    const month = try std.fmt.parseInt(u8, value[5..7], 10);
+    const day = try std.fmt.parseInt(u8, value[8..10], 10);
+    const hour = try std.fmt.parseInt(u8, value[11..13], 10);
+    const minute = try std.fmt.parseInt(u8, value[14..16], 10);
+    const second = try std.fmt.parseInt(u8, value[17..19], 10);
+
+    if (month < 1 or month > 12) return error.InvalidDecisionExpiration;
+    if (day < 1 or day > daysInMonth(year, month)) return error.InvalidDecisionExpiration;
+    if (hour > 23 or minute > 59 or second > 59) return error.InvalidDecisionExpiration;
+
+    const days_since_epoch = try daysSinceUnixEpoch(year, month, day);
+    const seconds_per_day = std.time.s_per_day;
+    const day_seconds = try std.math.mul(i64, days_since_epoch, seconds_per_day);
+    const time_seconds = @as(i64, hour) * std.time.s_per_hour +
+        @as(i64, minute) * std.time.s_per_min +
+        second;
+    return try std.math.add(i64, day_seconds, time_seconds);
+}
+
+fn daysInMonth(year: i64, month: u8) u8 {
+    return switch (month) {
+        1, 3, 5, 7, 8, 10, 12 => 31,
+        4, 6, 9, 11 => 30,
+        2 => if (isLeapYear(year)) 29 else 28,
+        else => 0,
+    };
+}
+
+fn isLeapYear(year: i64) bool {
+    return (@mod(year, 4) == 0 and @mod(year, 100) != 0) or @mod(year, 400) == 0;
+}
+
+fn daysSinceUnixEpoch(year: i64, month: u8, day: u8) !i64 {
+    var adjusted_year = year;
+    if (month <= 2) adjusted_year -= 1;
+
+    const era = @divFloor(if (adjusted_year >= 0) adjusted_year else adjusted_year - 399, 400);
+    const year_of_era = adjusted_year - era * 400;
+    const adjusted_month: i64 = if (month > 2) month - 3 else month + 9;
+    const day_of_year = @divFloor(153 * adjusted_month + 2, 5) + day - 1;
+    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100) + day_of_year;
+    return try std.math.sub(i64, era * 146097 + day_of_era, 719468);
 }
 
 fn writeYamlString(writer: anytype, value: []const u8) !void {
@@ -536,4 +756,16 @@ fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
         return true;
     }
     return candidate[base.len] == '/';
+}
+
+test "parse decision expiration accepts RFC3339 UTC" {
+    try std.testing.expectEqual(@as(?i64, null), try parseOptionalDecisionExpiration(null));
+    try std.testing.expectEqual(@as(?i64, null), try parseRawDecisionExpiration("null"));
+    try std.testing.expectEqual(@as(?i64, 4_102_444_800), try parseRawDecisionExpiration("2100-01-01T00:00:00Z"));
+}
+
+test "parse decision expiration rejects invalid values" {
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("later-ish"));
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("4102444800"));
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("2026-13-01T00:00:00Z"));
 }

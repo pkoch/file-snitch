@@ -1003,6 +1003,7 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
 
     var last_marker: ?PolicyMarker = null;
     var needs_reconcile = true;
+    var next_expiration_unix_seconds: ?i64 = null;
 
     while (true) {
         const shutdown_signal = supervisor_shutdown_signal.load(.acquire);
@@ -1010,9 +1011,15 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             break;
         }
 
+        if (next_expiration_unix_seconds) |expires_at| {
+            if (std.time.timestamp() >= expires_at) {
+                needs_reconcile = true;
+            }
+        }
+
         const marker = currentPolicyMarker(command.policy_path);
         if (needs_reconcile or last_marker == null or !last_marker.?.eql(marker)) {
-            try reconcileManagedMountChildren(command, marker, &children);
+            next_expiration_unix_seconds = try reconcileManagedMountChildren(command, marker, &children);
             last_marker = marker;
             needs_reconcile = false;
         }
@@ -1021,7 +1028,7 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             needs_reconcile = true;
         }
 
-        std.Thread.sleep(250 * std.time.ns_per_ms);
+        std.Thread.sleep(reconcileSleepNanos(next_expiration_unix_seconds));
     }
 }
 
@@ -1042,37 +1049,53 @@ fn reconcileManagedMountChildren(
     command: RunCommand,
     marker: PolicyMarker,
     children: *std.ArrayListUnmanaged(ManagedMountChild),
-) !void {
+) !?i64 {
     _ = marker;
 
     var loaded_policy = config.loadFromFile(allocator, command.policy_path) catch |err| {
         std.log.err("failed to reload policy from {s}: {}", .{ command.policy_path, err });
-        return;
+        return null;
     };
     defer loaded_policy.deinit();
 
+    const trimmed_expired_decisions = loaded_policy.pruneExpiredDecisions(std.time.timestamp()) catch |err| {
+        std.log.err("failed to prune expired decisions from {s}: {}", .{ loaded_policy.source_path, err });
+        return null;
+    };
+    if (trimmed_expired_decisions) {
+        loaded_policy.saveToFile() catch |err| {
+            std.log.err("failed to save pruned policy to {s}: {}", .{ loaded_policy.source_path, err });
+            return null;
+        };
+    }
+
+    const next_expiration_unix_seconds = loaded_policy.nextDecisionExpirationUnixSeconds() catch |err| {
+        std.log.err("failed to inspect decision expirations from {s}: {}", .{ loaded_policy.source_path, err });
+        return null;
+    };
+
     var compiled_rules = loaded_policy.compilePolicyRules(allocator) catch |err| {
         std.log.err("failed to compile policy rules from {s}: {}", .{ loaded_policy.source_path, err });
-        return;
+        return next_expiration_unix_seconds;
     };
     defer compiled_rules.deinit();
 
     var mount_plan = loaded_policy.deriveMountPlan(allocator) catch |err| {
         std.log.err("failed to derive mount plan from {s}: {}", .{ loaded_policy.source_path, err });
-        return;
+        return next_expiration_unix_seconds;
     };
     defer mount_plan.deinit();
 
     if (command.default_mutation_outcome == .prompt and mount_plan.paths.len > 1) {
         std.log.err("refusing to project {d} mounts in prompt mode; keeping the daemon alive without active mounts", .{mount_plan.paths.len});
         stopManagedMountChildren(children);
-        return;
+        return next_expiration_unix_seconds;
     }
 
     stopManagedMountChildren(children);
 
     if (mount_plan.paths.len == 0) {
-        return;
+        return next_expiration_unix_seconds;
     }
 
     const exe_path = try std.fs.selfExePathAlloc(allocator);
@@ -1085,6 +1108,19 @@ fn reconcileManagedMountChildren(
         child.alive = true;
         try children.append(allocator, child);
     }
+
+    return next_expiration_unix_seconds;
+}
+
+fn reconcileSleepNanos(next_expiration_unix_seconds: ?i64) u64 {
+    const default_sleep_ns = 250 * std.time.ns_per_ms;
+    const expires_at = next_expiration_unix_seconds orelse return default_sleep_ns;
+    const now = std.time.timestamp();
+    if (expires_at <= now) return 0;
+
+    const remaining_seconds: u64 = @intCast(expires_at - now);
+    const remaining_ns = remaining_seconds * std.time.ns_per_s;
+    return @min(default_sleep_ns, remaining_ns);
 }
 
 fn spawnManagedMountChild(

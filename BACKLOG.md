@@ -25,6 +25,8 @@ Status:
   - foreground `run` now stays alive even when policy is empty
   - daemonized `run` now uses the same reconciler model
   - reload durable decisions currently happens by restarting affected mount workers on policy change
+  - expiring durable decisions now age out at evaluation time without waiting for a policy reload
+  - the reconciler rewrites `policy.yml` after pruning expired durable decisions
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
   - the current CLI prompt is acceptable as a bootstrap and debugging broker only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
@@ -214,10 +216,10 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[ ]` Verify daemon behavior when the UI is unavailable or restarted
 - `[ ]` Add a specific warning for [LOLBins](https://gtfobins.org)
 
-## Phase 4: macOS port
+## Phase 4: macOS hardening
 
-- `[ ]` Port the guarded-directory demo to macOS with macFUSE
-- `[ ]` Reuse the shared rule model where possible
+- `[x]` Port the guarded-directory demo to macOS with macFUSE
+- `[x]` Reuse the shared rule model where possible
 - `[ ]` Add signer lookup for caller attribution
 - `[ ]` Validate install and permission friction around TCC and Full Disk Access
 - `[ ]` Test at least 3 real target apps on macOS

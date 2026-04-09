@@ -67,10 +67,22 @@ pub fn build(b: *std.Build) void {
     });
     const run_store_tests = b.addRunArtifact(store_tests);
 
+    const config_test_module = b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    config_test_module.addImport("yaml", yaml_module);
+    const config_tests = b.addTest(.{
+        .root_module = config_test_module,
+    });
+    const run_config_tests = b.addRunArtifact(config_tests);
+
     const test_step = b.step("test", "Run integration tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
     test_step.dependOn(&run_store_tests.step);
+    test_step.dependOn(&run_config_tests.step);
 }
 
 fn configureFuseInterop(
