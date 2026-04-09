@@ -78,7 +78,8 @@ file-enrollment pivot, and the major Phase 0 research references.
 
 ## Phase 3: agent-style prompt broker
 
-- `[ ]` Define daemon-to-broker protocol
+- `[~]` Define daemon-to-broker protocol
+  - initial protocol note: [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)
 - `[ ]` Implement a local agent-style broker with default-deny timeout behavior
 - `[ ]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
 - `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
