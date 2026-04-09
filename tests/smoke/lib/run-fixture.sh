@@ -172,10 +172,16 @@ stop_run_fixture() {
   done
 
   if [[ -n "${daemon_pid:-}" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
-    if [[ "${run_execution_mode:-}" == "--daemon" ]]; then
-      wait_for_daemon_exit "$daemon_pid" || status=$?
-    else
-      wait "$daemon_pid" || status=$?
+    if ! wait_for_daemon_exit "$daemon_pid" 20; then
+      kill -TERM "$daemon_pid" 2>/dev/null || true
+      if ! wait_for_daemon_exit "$daemon_pid" 20; then
+        kill -KILL "$daemon_pid" 2>/dev/null || true
+        wait_for_daemon_exit "$daemon_pid" 20 || status=$?
+      fi
+    fi
+
+    if [[ "${run_execution_mode:-}" != "--daemon" ]]; then
+      wait_for_run_process "$daemon_pid" || status=$?
     fi
   fi
 
@@ -203,6 +209,21 @@ wait_for_daemon_exit() {
   done
 
   return 1
+}
+
+wait_for_run_process() {
+  local pid="$1"
+  local wait_status=0
+
+  wait "$pid" || wait_status=$?
+  case "$wait_status" in
+    0|130|143)
+      return 0
+      ;;
+    *)
+      return "$wait_status"
+      ;;
+  esac
 }
 
 cleanup_run_fixture() {
