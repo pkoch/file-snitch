@@ -57,6 +57,12 @@ The README embed is not hand-made. Regenerate it with:
 ./scripts/regenerate-demo-artifacts.sh
 ```
 
+And then sanity-check it for obvious leakage:
+
+```bash
+./scripts/check-demo-artifacts.sh
+```
+
 That expects:
 - `zig`
 - `asciinema`

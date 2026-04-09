@@ -158,7 +158,7 @@ setup_tmux_session() {
 
   pane_send "$daemon_pane" "source '$env_file'; export PS1='[daemon]$ '; clear; printf 'file-snitch run prompt --foreground\\n\\n'; fs run prompt --foreground"
 
-  pane_send "$user_pane" "source '$env_file'; export PS1='[user]$ '; clear; printf 'File Snitch tmux demo\\nrepo: $repo_root\\npolicy: $policy_file\\n\\n'"
+  pane_send "$user_pane" "source '$env_file'; export PS1='[user]$ '; clear; printf 'File Snitch tmux demo\\npolicy: $policy_file\\n\\n'"
   tmux select-pane -t "$user_pane"
 }
 
@@ -168,7 +168,7 @@ run_demo_controller() {
     set +e
 
     sleep 1.0
-    pane_send "$user_pane" "ls -l ~/.kube"
+    pane_send "$user_pane" "ls ~/.kube"
     sleep 1.0
     pane_send "$user_pane" "cat ~/.kube/config"
     sleep 1.2
@@ -177,7 +177,7 @@ run_demo_controller() {
     mount_paths=("$home_dir/.kube")
     wait_for_mount_active_without_pid "$home_dir/.kube"
     sleep 0.8
-    pane_send "$user_pane" "ls -l ~/.kube"
+    pane_send "$user_pane" "ls ~/.kube"
     sleep 1.0
     pane_send "$user_pane" "fs doctor --export-debug-dossier ~/demo-dossier.md"
     sleep 1.2
@@ -204,7 +204,7 @@ run_demo_controller() {
     sleep 1.0
     pane_send "$user_pane" "cat ~/.kube/config"
     sleep 1.0
-    pane_send "$user_pane" "printf '\\nDemo artifacts:\\n- dossier: %s\\n- policy: %s\\n' \"$HOME/demo-dossier.md\" \"$XDG_CONFIG_HOME/file-snitch/policy.yml\""
+    pane_send "$user_pane" "printf '\\nDemo artifacts:\\n- dossier: %s\\n- policy: %s\\n' \"\$HOME/demo-dossier.md\" \"\$XDG_CONFIG_HOME/file-snitch/policy.yml\""
     sleep 2.0
   ) &
 }
