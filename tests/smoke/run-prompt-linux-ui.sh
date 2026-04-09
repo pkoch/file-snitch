@@ -49,6 +49,23 @@ fi
 
 case "\$response" in
   allow|"")
+    printf 'Allow once\n'
+    exit 0
+    ;;
+  allow-5m)
+    printf 'Allow 5 min\n'
+    exit 0
+    ;;
+  always-allow)
+    printf 'Always allow\n'
+    exit 0
+    ;;
+  always-deny)
+    printf 'Always deny\n'
+    exit 0
+    ;;
+  "Allow once"|"Allow 5 min"|"Always allow"|"Always deny")
+    printf '%s\n' "\$response"
     exit 0
     ;;
   deny)

@@ -140,6 +140,60 @@ pub const PolicyFile = struct {
         self.decisions = self.allocator.realloc(self.decisions, write_index) catch self.decisions[0..write_index];
     }
 
+    pub fn upsertDecision(
+        self: *PolicyFile,
+        executable_path: []const u8,
+        uid: u32,
+        enrolled_path: []const u8,
+        approval_class: []const u8,
+        outcome: []const u8,
+        expires_at: ?[]const u8,
+    ) !void {
+        try validateDecision(.{
+            .executable_path = executable_path,
+            .uid = uid,
+            .path = enrolled_path,
+            .approval_class = approval_class,
+            .outcome = outcome,
+            .expires_at = expires_at orelse "null",
+        });
+
+        for (self.decisions) |*decision| {
+            if (!std.mem.eql(u8, decision.executable_path, executable_path)) continue;
+            if (decision.uid != uid) continue;
+            if (!std.mem.eql(u8, decision.path, enrolled_path)) continue;
+            if (!std.mem.eql(u8, decision.approval_class, approval_class)) continue;
+
+            self.allocator.free(decision.outcome);
+            decision.outcome = try self.allocator.dupe(u8, outcome);
+
+            if (decision.expires_at) |existing| {
+                self.allocator.free(existing);
+            }
+            decision.expires_at = if (expires_at) |value|
+                try self.allocator.dupe(u8, value)
+            else
+                null;
+            return;
+        }
+
+        const previous_len = self.decisions.len;
+        self.decisions = try self.allocator.realloc(self.decisions, previous_len + 1);
+        errdefer self.decisions = self.decisions[0..previous_len];
+
+        self.decisions[previous_len] = .{
+            .executable_path = try self.allocator.dupe(u8, executable_path),
+            .uid = uid,
+            .path = try self.allocator.dupe(u8, enrolled_path),
+            .approval_class = try self.allocator.dupe(u8, approval_class),
+            .outcome = try self.allocator.dupe(u8, outcome),
+            .expires_at = if (expires_at) |value|
+                try self.allocator.dupe(u8, value)
+            else
+                null,
+        };
+    }
+
     pub fn pruneExpiredDecisions(self: *PolicyFile, now_unix_seconds: i64) !bool {
         var changed = false;
         var write_index: usize = 0;

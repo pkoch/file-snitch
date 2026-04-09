@@ -651,6 +651,49 @@ test "policy file prunes expired decisions in place" {
     try std.testing.expect(!try loaded.pruneExpiredDecisions(10));
 }
 
+test "upsertDecision replaces matching durable decision" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "upsert-decision");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        allocator.free(path);
+    }
+
+    const source =
+        \\version: 1
+        \\enrollments: []
+        \\decisions: []
+    ;
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var loaded = try config.loadFromFile(allocator, path);
+    defer loaded.deinit();
+
+    try loaded.upsertDecision(
+        "/usr/bin/kubectl",
+        1000,
+        "/tmp/guarded/config",
+        "read_like",
+        "allow",
+        null,
+    );
+    try loaded.upsertDecision(
+        "/usr/bin/kubectl",
+        1000,
+        "/tmp/guarded/config",
+        "read_like",
+        "deny",
+        "2100-01-01T00:00:00Z",
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.decisions.len);
+    try std.testing.expectEqualStrings("deny", loaded.decisions[0].outcome);
+    try std.testing.expectEqualStrings("2100-01-01T00:00:00Z", loaded.decisions[0].expires_at.?);
+}
+
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
     const run_id = std.time.nanoTimestamp();

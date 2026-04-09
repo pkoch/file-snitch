@@ -173,5 +173,11 @@ Linux requires `zenity` for that unattended prompt path.
 - set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a daemonized
   `terminal-pinentry` agent to use a specific terminal
 - `macos-ui` uses `osascript` on macOS and does not accept `--tty`
+- prompt-capable frontends offer:
+  - allow once
+  - deny once
+  - allow 5 min
+  - always allow
+  - always deny
 - `run prompt` defaults timeout to deny
 - the current store backend is `pass:file-snitch/<object_id>`

@@ -5,6 +5,7 @@ pub const Request = struct {
     path: []const u8,
     access_class: policy.AccessClass,
     label: ?[]const u8 = null,
+    can_remember: bool = false,
     pid: u32,
     uid: u32,
     gid: u32,
@@ -18,11 +19,24 @@ pub const Decision = enum(i32) {
     unavailable = 4,
 };
 
+pub const RememberKind = enum {
+    none,
+    once,
+    temporary,
+    durable,
+};
+
+pub const Response = struct {
+    decision: Decision,
+    remember_kind: RememberKind = .none,
+    expires_at_unix_seconds: ?i64 = null,
+};
+
 pub const Broker = struct {
     context: ?*anyopaque,
-    resolve_fn: *const fn (?*anyopaque, Request) Decision,
+    resolve_fn: *const fn (?*anyopaque, Request) Response,
 
-    pub fn resolve(self: Broker, request: Request) Decision {
+    pub fn resolve(self: Broker, request: Request) Response {
         return self.resolve_fn(self.context, request);
     }
 };
@@ -59,41 +73,41 @@ pub fn scriptedBroker(context: *ScriptedContext) Broker {
     };
 }
 
-fn resolveCli(raw_context: ?*anyopaque, request: Request) Decision {
-    const context = raw_context orelse return .unavailable;
+fn resolveCli(raw_context: ?*anyopaque, request: Request) Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
     const cli_context: *CliContext = @ptrCast(@alignCast(context));
     return resolveCliWithContext(cli_context, request);
 }
 
-pub fn resolveCliWithContext(context: *CliContext, request: Request) Decision {
+pub fn resolveCliWithContext(context: *CliContext, request: Request) Response {
     context.mutex.lock();
     defer context.mutex.unlock();
 
-    const label = promptLabel(request) catch return .unavailable;
+    const label = promptLabel(request) catch return .{ .decision = .unavailable };
     defer if (request.label == null) std.heap.page_allocator.free(label);
 
-    writePrompt(context, request, label) catch return .unavailable;
+    writePrompt(context, request, label) catch return .{ .decision = .unavailable };
 
-    const decision = readDecisionWithTimeout(context) catch |err| switch (err) {
-        error.TimedOut => .timeout,
-        error.EndOfStream => .allow,
-        else => .unavailable,
+    const response = readResponseWithTimeout(context, request.can_remember) catch |err| switch (err) {
+        error.TimedOut => Response{ .decision = .timeout },
+        error.EndOfStream => Response{ .decision = .allow, .remember_kind = .once },
+        else => Response{ .decision = .unavailable },
     };
-    finishPrompt(context, request, label, decision) catch {};
-    return decision;
+    finishPrompt(context, request, label, response) catch {};
+    return response;
 }
 
-fn resolveScripted(raw_context: ?*anyopaque, request: Request) Decision {
+fn resolveScripted(raw_context: ?*anyopaque, request: Request) Response {
     _ = request;
-    const context = raw_context orelse return .deny;
+    const context = raw_context orelse return .{ .decision = .deny, .remember_kind = .once };
     const scripted_context: *ScriptedContext = @ptrCast(@alignCast(context));
     if (scripted_context.next_index >= scripted_context.decisions.len) {
-        return .deny;
+        return .{ .decision = .deny, .remember_kind = .once };
     }
 
     const decision = scripted_context.decisions[scripted_context.next_index];
     scripted_context.next_index += 1;
-    return decision;
+    return .{ .decision = decision, .remember_kind = .once };
 }
 
 fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void {
@@ -109,28 +123,36 @@ fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void 
         try context.stderr_file.writeAll(human);
     }
 
-    const message = try std.fmt.allocPrint(
-        std.heap.page_allocator,
-        "allow? {s}[Y/n]{s} ",
-        .{ ansi_bold, ansi_reset },
-    );
+    const message = if (request.can_remember)
+        try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "allow? {s}[Y] once / [5] 5m / [a] always / [n] deny once / [d] always deny{s} ",
+            .{ ansi_bold, ansi_reset },
+        )
+    else
+        try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "allow? {s}[Y/n]{s} ",
+            .{ ansi_bold, ansi_reset },
+        );
     defer std.heap.page_allocator.free(message);
 
     try context.stderr_file.writeAll(message);
 }
 
-fn finishPrompt(context: *CliContext, request: Request, label: []const u8, decision: Decision) !void {
+fn finishPrompt(context: *CliContext, request: Request, label: []const u8, response: Response) !void {
     try context.stderr_file.writeAll("\n");
     if (context.stderr_file.isTty()) {
         const human = try std.fmt.allocPrint(
             std.heap.page_allocator,
-            "{s}Decision:{s} {s}{s}{s} for {s}{s}{s}\n",
+            "{s}Decision:{s} {s}{s}{s}{s} for {s}{s}{s}\n",
             .{
                 ansi_bold,
                 ansi_reset,
                 ansi_bold,
-                decisionLabel(decision),
+                decisionLabel(response.decision),
                 ansi_reset,
+                rememberSuffix(response),
                 ansi_bold,
                 label,
                 ansi_reset,
@@ -139,14 +161,14 @@ fn finishPrompt(context: *CliContext, request: Request, label: []const u8, decis
         defer std.heap.page_allocator.free(human);
         try context.stderr_file.writeAll(human);
     }
-    try writePromptJson(context, request, label, decision);
+    try writePromptJson(context, request, label, response);
 }
 
 fn writePromptJson(
     context: *CliContext,
     request: Request,
     label: []const u8,
-    decision: ?Decision,
+    response: ?Response,
 ) !void {
     var output: std.io.Writer.Allocating = .init(std.heap.page_allocator);
     defer output.deinit();
@@ -156,11 +178,14 @@ fn writePromptJson(
         .path = label,
         .request_path = request.path,
         .access_class = accessClassLabel(request.access_class),
+        .can_remember = request.can_remember,
         .pid = request.pid,
         .uid = request.uid,
         .gid = request.gid,
         .executable_path = request.executable_path,
-        .result = if (decision) |value| @intFromEnum(value) else null,
+        .result = if (response) |value| @intFromEnum(value.decision) else null,
+        .remember_kind = if (response) |value| @tagName(value.remember_kind) else null,
+        .expires_at_unix_seconds = if (response) |value| value.expires_at_unix_seconds else null,
     }, .{}, &output.writer);
     try output.writer.writeByte('\n');
     try context.stderr_file.writeAll(output.written());
@@ -181,16 +206,20 @@ const ReadLineError = error{
     SystemResources,
 };
 
-fn readDecisionWithTimeout(context: *CliContext) ReadLineError!Decision {
+const ParsedInput = union(enum) {
+    response: Response,
+};
+
+fn readResponseWithTimeout(context: *CliContext, can_remember: bool) ReadLineError!Response {
     while (true) {
-        if (consumePendingDecision(context)) |decision| {
-            return decision;
+        if (consumePendingResponse(context, can_remember)) |response| {
+            return response;
         }
 
         if (context.pending_len == context.pending_input.len) {
-            const decision = parseDecision(context.pending_input[0..context.pending_len]);
+            const response = parseResponse(context.pending_input[0..context.pending_len], can_remember);
             context.pending_len = 0;
-            return decision;
+            return response;
         }
 
         var poll_fds = [_]std.posix.pollfd{.{
@@ -213,26 +242,26 @@ fn readDecisionWithTimeout(context: *CliContext) ReadLineError!Decision {
         }
 
         if ((poll_fds[0].revents & std.posix.POLL.HUP) != 0 and (poll_fds[0].revents & std.posix.POLL.IN) == 0) {
-            return if (context.pending_len == 0) error.EndOfStream else parseDecision(context.pending_input[0..context.pending_len]);
+            return if (context.pending_len == 0) error.EndOfStream else parseResponse(context.pending_input[0..context.pending_len], can_remember);
         }
 
         const read_count = context.stdin_file.read(context.pending_input[context.pending_len..]) catch return error.InputOutput;
         if (read_count == 0) {
-            return if (context.pending_len == 0) error.EndOfStream else parseDecision(context.pending_input[0..context.pending_len]);
+            return if (context.pending_len == 0) error.EndOfStream else parseResponse(context.pending_input[0..context.pending_len], can_remember);
         }
 
         context.pending_len += read_count;
     }
 }
 
-fn consumePendingDecision(context: *CliContext) ?Decision {
+fn consumePendingResponse(context: *CliContext, can_remember: bool) ?Response {
     const newline_index = std.mem.indexOfAny(u8, context.pending_input[0..context.pending_len], "\r\n") orelse return null;
-    const decision = parseDecision(context.pending_input[0..newline_index]);
+    const response = parseResponse(context.pending_input[0..newline_index], can_remember);
     const remaining_start = skipNewlines(context.pending_input[0..context.pending_len], newline_index);
     const remaining_len = context.pending_len - remaining_start;
     std.mem.copyForwards(u8, context.pending_input[0..remaining_len], context.pending_input[remaining_start..context.pending_len]);
     context.pending_len = remaining_len;
-    return decision;
+    return response;
 }
 
 fn skipNewlines(buffer: []const u8, start: usize) usize {
@@ -241,21 +270,37 @@ fn skipNewlines(buffer: []const u8, start: usize) usize {
     return index;
 }
 
-fn parseDecision(line: []const u8) Decision {
+fn parseResponse(line: []const u8, can_remember: bool) Response {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
     if (trimmed.len == 0) {
-        return .allow;
+        return .{ .decision = .allow, .remember_kind = .once };
     }
 
     if (std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes")) {
-        return .allow;
+        return .{ .decision = .allow, .remember_kind = .once };
     }
 
     if (std.ascii.eqlIgnoreCase(trimmed, "n") or std.ascii.eqlIgnoreCase(trimmed, "no")) {
-        return .deny;
+        return .{ .decision = .deny, .remember_kind = .once };
     }
 
-    return .deny;
+    if (can_remember) {
+        if (std.mem.eql(u8, trimmed, "5")) {
+            return .{
+                .decision = .allow,
+                .remember_kind = .temporary,
+                .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+            };
+        }
+        if (std.ascii.eqlIgnoreCase(trimmed, "a") or std.ascii.eqlIgnoreCase(trimmed, "always")) {
+            return .{ .decision = .allow, .remember_kind = .durable };
+        }
+        if (std.ascii.eqlIgnoreCase(trimmed, "d") or std.ascii.eqlIgnoreCase(trimmed, "never")) {
+            return .{ .decision = .deny, .remember_kind = .durable };
+        }
+    }
+
+    return .{ .decision = .deny, .remember_kind = .once };
 }
 
 fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
@@ -279,6 +324,18 @@ fn decisionLabel(decision: Decision) []const u8 {
     };
 }
 
+fn rememberSuffix(response: Response) []const u8 {
+    return switch (response.remember_kind) {
+        .none, .once => "",
+        .temporary => " (5 min)",
+        .durable => switch (response.decision) {
+            .allow => " (always)",
+            .deny => " (always)",
+            else => "",
+        },
+    };
+}
+
 const ansi_bold = "\x1b[1m";
 const ansi_reset = "\x1b[0m";
 
@@ -293,9 +350,9 @@ test "scripted broker returns configured decisions in order" {
         .gid = 3,
     };
 
-    try std.testing.expectEqual(Decision.allow, broker.resolve(request));
-    try std.testing.expectEqual(Decision.deny, broker.resolve(request));
-    try std.testing.expectEqual(Decision.deny, broker.resolve(request));
+    try std.testing.expectEqual(Decision.allow, broker.resolve(request).decision);
+    try std.testing.expectEqual(Decision.deny, broker.resolve(request).decision);
+    try std.testing.expectEqual(Decision.deny, broker.resolve(request).decision);
 }
 
 test "cli broker allows yes" {
@@ -325,7 +382,8 @@ test "cli broker allows yes" {
         .gid = 30,
     });
 
-    try std.testing.expectEqual(Decision.allow, decision);
+    try std.testing.expectEqual(Decision.allow, decision.decision);
+    try std.testing.expectEqual(RememberKind.once, decision.remember_kind);
 }
 
 test "cli broker allows empty response by default" {
@@ -355,7 +413,8 @@ test "cli broker allows empty response by default" {
         .gid = 30,
     });
 
-    try std.testing.expectEqual(Decision.allow, decision);
+    try std.testing.expectEqual(Decision.allow, decision.decision);
+    try std.testing.expectEqual(RememberKind.once, decision.remember_kind);
 }
 
 test "cli broker times out to deny path" {
@@ -382,5 +441,38 @@ test "cli broker times out to deny path" {
         .gid = 30,
     });
 
-    try std.testing.expectEqual(Decision.timeout, decision);
+    try std.testing.expectEqual(Decision.timeout, decision.decision);
+}
+
+test "cli broker can request remembered allow" {
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const stderr_fds = try std.posix.pipe();
+    defer std.posix.close(stderr_fds[0]);
+    defer std.posix.close(stderr_fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    try writer.writeAll("a\n");
+
+    var context = CliContext{
+        .timeout_ms = 50,
+        .stdin_file = .{ .handle = fds[0] },
+        .stderr_file = .{ .handle = stderr_fds[1] },
+    };
+    const broker = cliBroker(&context);
+
+    const decision = broker.resolve(.{
+        .path = "/prompted.txt",
+        .access_class = .read,
+        .can_remember = true,
+        .pid = 10,
+        .uid = 20,
+        .gid = 30,
+        .executable_path = "/usr/bin/cat",
+    });
+
+    try std.testing.expectEqual(Decision.allow, decision.decision);
+    try std.testing.expectEqual(RememberKind.durable, decision.remember_kind);
 }

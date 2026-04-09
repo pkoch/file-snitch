@@ -64,6 +64,10 @@ file-snitch status
 
 3. The agent must be reachable on its Unix socket.
 
+4. A remembered decision may already cover the access.
+   Check `file-snitch status` or inspect `policy.yml` before assuming the
+   prompt path is broken.
+
 If the current agent frontend is terminal-based, also confirm that the agent
 has a usable TTY:
 - `agent --foreground` uses inherited stdio

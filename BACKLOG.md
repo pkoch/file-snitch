@@ -70,7 +70,6 @@ file-enrollment pivot, and the major Phase 0 research references.
 
 - `[ ]` Add directory support beyond the root itself
 - `[ ]` Revisit xattr mediation beyond the current passthrough-only path
-- `[ ]` Add prompt decisions beyond allow once, deny once, and timeout
 - `[ ]` Align editor probe and save flows, including Vim writability probes and temp-file save semantics
 
 ## Phase 2: encryption layer
@@ -96,12 +95,12 @@ file-enrollment pivot, and the major Phase 0 research references.
   - the current smoke suite now covers:
     - the daemonized agent path through `terminal-pinentry`
     - the `macos-ui` frontend through a fake `osascript` path in CI
+    - remembered durable decisions written through the requester path and reconciled by `run`
 - `[~]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
   - the old direct daemon-stdin prompt path is gone
   - the remaining work is better agent frontends, not richer terminal prompting
 - `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
   - forwarding is still user-to-user, not a shared multi-user authority model
-- `[ ]` Add decisions: allow once, deny once, allow 5 min, always allow, always deny
 - `[ ]` Persist rules independently from the daemon process
 - `[ ]` Add a recent-events view
 - `[ ]` Add a basic rule editor

@@ -1,5 +1,6 @@
 const std = @import("std");
 const net = std.net;
+const config = @import("config.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
@@ -15,6 +16,7 @@ const max_length_digits: usize = 6;
 pub const RequesterContext = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
+    policy_path: []const u8,
     timeout_ms: u32 = 5_000,
 };
 
@@ -26,9 +28,9 @@ pub const FrontendKind = enum {
 
 pub const Frontend = struct {
     context: ?*anyopaque,
-    resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Decision,
+    resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Response,
 
-    pub fn resolve(self: Frontend, request: prompt.Request) prompt.Decision {
+    pub fn resolve(self: Frontend, request: prompt.Request) prompt.Response {
         return self.resolve_fn(self.context, request);
     }
 };
@@ -171,16 +173,16 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
     }
 }
 
-fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
-    const context = raw_context orelse return .unavailable;
+fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
     const requester_context: *RequesterContext = @ptrCast(@alignCast(context));
     return resolveViaAgent(requester_context, request) catch |err| switch (err) {
-        error.TimedOut => .timeout,
-        else => .unavailable,
+        error.TimedOut => .{ .decision = .timeout },
+        else => .{ .decision = .unavailable },
     };
 }
 
-fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.Decision {
+fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.Response {
     var stream = try net.connectUnixSocket(context.socket_path);
     defer stream.close();
 
@@ -222,12 +224,14 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
 
         if (std.mem.eql(u8, message_type, "event")) continue;
         if (std.mem.eql(u8, message_type, "decision")) {
-            return try decisionFromFrame(context.allocator, frame);
+            const response = try responseFromFrame(context.allocator, frame);
+            try persistRememberedDecision(context, request, response);
+            return response;
         }
         if (std.mem.eql(u8, message_type, "error")) {
-            return .unavailable;
+            return .{ .decision = .unavailable };
         }
-        return .unavailable;
+        return .{ .decision = .unavailable };
     }
 }
 
@@ -259,7 +263,7 @@ fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
 
         if (std.mem.eql(u8, message_type, "decide")) {
             const decision = try decideFromFrame(context.allocator, frame, context.frontend);
-            try sendDecision(stream, decision.request_id, decision.decision);
+            try sendDecision(stream, decision.request_id, decision.response);
             continue;
         }
 
@@ -324,11 +328,15 @@ const DecisionMessage = struct {
     request_id: []const u8,
     outcome: []const u8,
     reason: []const u8,
+    remember: ?struct {
+        kind: []const u8,
+        expires_at: ?[]const u8 = null,
+    } = null,
 };
 
 const ResolvedDecision = struct {
     request_id: []const u8,
-    decision: prompt.Decision,
+    response: prompt.Response,
 };
 
 fn sendHello(stream: net.Stream, request_id: []const u8) !void {
@@ -392,7 +400,7 @@ fn sendDecide(
         },
         .policy_context = .{
             .default_timeout = timeout_at_rfc3339,
-            .can_remember = false,
+            .can_remember = request.executable_path != null,
         },
         .forwarding = .{
             .origin_host = "local",
@@ -405,14 +413,24 @@ fn sendDecide(
     });
 }
 
-fn sendDecision(stream: net.Stream, request_id: []const u8, decision: prompt.Decision) !void {
+fn sendDecision(stream: net.Stream, request_id: []const u8, response: prompt.Response) !void {
+    const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
+        try formatRfc3339UtcAlloc(std.heap.page_allocator, unix_seconds)
+    else
+        null;
+    defer if (expires_at) |value| std.heap.page_allocator.free(value);
+
     try sendJsonFrame(stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "decision",
         .request_id = request_id,
-        .outcome = outcomeLabel(decision),
-        .reason = decisionReason(decision),
+        .outcome = outcomeLabel(response.decision),
+        .reason = decisionReason(response.decision),
+        .remember = .{
+            .kind = rememberKindLabel(response.remember_kind),
+            .expires_at = expires_at,
+        },
     });
 }
 
@@ -435,6 +453,7 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Fr
         .path = parsed.value.request.enrolled_path,
         .access_class = try accessClassFromLabel(parsed.value.request.approval_class),
         .label = if (parsed.value.details) |details| details.display_path else null,
+        .can_remember = parsed.value.policy_context.can_remember,
         .pid = parsed.value.subject.pid,
         .uid = parsed.value.subject.uid,
         .gid = 0,
@@ -443,12 +462,12 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Fr
 
     return .{
         .request_id = parsed.value.request_id,
-        .decision = frontend.resolve(request),
+        .response = frontend.resolve(request),
     };
 }
 
-fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
-    const context = raw_context orelse return .unavailable;
+fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
     const pinentry_context: *TerminalPinentryContext = @ptrCast(@alignCast(context));
     pinentry_context.mutex.lock();
     defer pinentry_context.mutex.unlock();
@@ -457,8 +476,8 @@ fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) pr
         return prompt.resolveCliWithContext(cli_context, request);
     }
 
-    const tty_path = pinentry_context.tty_path orelse return .unavailable;
-    var tty_file = std.fs.openFileAbsolute(tty_path, .{ .mode = .read_write }) catch return .unavailable;
+    const tty_path = pinentry_context.tty_path orelse return .{ .decision = .unavailable };
+    var tty_file = std.fs.openFileAbsolute(tty_path, .{ .mode = .read_write }) catch return .{ .decision = .unavailable };
     defer tty_file.close();
 
     var cli_context = prompt.CliContext{
@@ -469,11 +488,11 @@ fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) pr
     return prompt.resolveCliWithContext(&cli_context, request);
 }
 
-fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
-    const context = raw_context orelse return .unavailable;
+fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
     const ui_context: *MacosUiContext = @ptrCast(@alignCast(context));
 
-    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch return .unavailable;
+    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(script);
 
     const argv = [_][]const u8{
@@ -484,45 +503,65 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Deci
     const result = std.process.Child.run(.{
         .allocator = ui_context.allocator,
         .argv = &argv,
-    }) catch return .unavailable;
+    }) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) return .unavailable;
-    return parseMacosUiDecision(result.stdout) catch .unavailable;
+    if (result.term.Exited != 0) return .{ .decision = .unavailable };
+    return parseMacosUiResponse(result.stdout) catch .{ .decision = .unavailable };
 }
 
-fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
-    const context = raw_context orelse return .unavailable;
+fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
     const ui_context: *LinuxUiContext = @ptrCast(@alignCast(context));
 
-    const prompt_text = buildDialogPromptAlloc(ui_context.allocator, request) catch return .unavailable;
+    const prompt_text = buildDialogPromptAlloc(ui_context.allocator, request) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(prompt_text);
 
     const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(ui_context.timeout_ms)) + 999, 1000), 1);
-    const timeout_text = std.fmt.allocPrint(ui_context.allocator, "{d}", .{timeout_seconds}) catch return .unavailable;
+    const timeout_text = std.fmt.allocPrint(ui_context.allocator, "{d}", .{timeout_seconds}) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(timeout_text);
 
-    const argv = [_][]const u8{
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(ui_context.allocator);
+    argv.appendSlice(ui_context.allocator, &.{
         ui_context.zenity_path,
-        "--question",
+        "--list",
+        "--radiolist",
         "--title=File Snitch",
-        "--ok-label=Allow",
-        "--cancel-label=Deny",
-        "--width=480",
-        "--timeout",
-        timeout_text,
         "--text",
         prompt_text,
-    };
+        "--column=Pick",
+        "--column=Decision",
+        "TRUE",
+        "Allow once",
+        "FALSE",
+        "Deny once",
+    }) catch return .{ .decision = .unavailable };
+    if (request.can_remember) {
+        argv.appendSlice(ui_context.allocator, &.{
+            "FALSE",
+            "Allow 5 min",
+            "FALSE",
+            "Always allow",
+            "FALSE",
+            "Always deny",
+        }) catch return .{ .decision = .unavailable };
+    }
+    argv.appendSlice(ui_context.allocator, &.{
+        "--timeout",
+        timeout_text,
+        "--width=520",
+    }) catch return .{ .decision = .unavailable };
+
     const result = std.process.Child.run(.{
         .allocator = ui_context.allocator,
-        .argv = &argv,
-    }) catch return .unavailable;
+        .argv = argv.items,
+    }) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
 
-    return parseLinuxUiDecision(result.term) catch .unavailable;
+    return parseLinuxUiResponse(result.term, result.stdout) catch .{ .decision = .unavailable };
 }
 
 fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Request, timeout_ms: u32) ![]u8 {
@@ -536,17 +575,42 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
     defer allocator.free(escaped_prompt);
 
     const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000), 1);
+    if (!request.can_remember) {
+        return std.fmt.allocPrint(
+            allocator,
+            \\try
+            \\  set prompt_text to "{s}"
+            \\  set decision to display dialog prompt_text with title "{s}" buttons {{"Deny", "Allow"}} default button "Allow" giving up after {d} with icon caution
+            \\  if gave up of decision then
+            \\    return "timeout"
+            \\  end if
+            \\  if button returned of decision is "Allow" then
+            \\    return "allow"
+            \\  end if
+            \\  return "deny"
+            \\on error number -128
+            \\  return "deny"
+            \\end try
+            ,
+            .{ escaped_prompt, escaped_title, timeout_seconds },
+        );
+    }
+
     return std.fmt.allocPrint(
         allocator,
         \\try
         \\  set prompt_text to "{s}"
-        \\  set decision to display dialog prompt_text with title "{s}" buttons {{"Deny", "Allow"}} default button "Allow" giving up after {d} with icon caution
-        \\  if gave up of decision then
-        \\    return "timeout"
+        \\  set choices to {{"Allow once", "Deny once", "Allow 5 min", "Always allow", "Always deny"}}
+        \\  set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once" giving up after {d}
+        \\  if selected is false then
+        \\    return "deny"
         \\  end if
-        \\  if button returned of decision is "Allow" then
-        \\    return "allow"
-        \\  end if
+        \\  set answer to item 1 of selected
+        \\  if answer is "Allow once" then return "allow"
+        \\  if answer is "Deny once" then return "deny"
+        \\  if answer is "Allow 5 min" then return "allow-5m"
+        \\  if answer is "Always allow" then return "always-allow"
+        \\  if answer is "Always deny" then return "always-deny"
         \\  return "deny"
         \\on error number -128
         \\  return "deny"
@@ -594,24 +658,53 @@ fn appleScriptStringLiteralContentsAlloc(allocator: std.mem.Allocator, raw: []co
     return output.toOwnedSlice(allocator);
 }
 
-fn parseMacosUiDecision(raw_output: []const u8) !prompt.Decision {
+fn parseMacosUiResponse(raw_output: []const u8) !prompt.Response {
     const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
-    if (std.mem.eql(u8, trimmed, "allow")) return .allow;
-    if (std.mem.eql(u8, trimmed, "deny")) return .deny;
-    if (std.mem.eql(u8, trimmed, "timeout")) return .timeout;
+    if (std.mem.eql(u8, trimmed, "allow")) return .{ .decision = .allow, .remember_kind = .once };
+    if (std.mem.eql(u8, trimmed, "deny")) return .{ .decision = .deny, .remember_kind = .once };
+    if (std.mem.eql(u8, trimmed, "timeout")) return .{ .decision = .timeout };
+    if (std.mem.eql(u8, trimmed, "allow-5m")) return .{
+        .decision = .allow,
+        .remember_kind = .temporary,
+        .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+    };
+    if (std.mem.eql(u8, trimmed, "always-allow")) return .{ .decision = .allow, .remember_kind = .durable };
+    if (std.mem.eql(u8, trimmed, "always-deny")) return .{ .decision = .deny, .remember_kind = .durable };
     return error.InvalidProtocolMessage;
 }
 
-fn parseLinuxUiDecision(term: std.process.Child.Term) !prompt.Decision {
+fn parseLinuxUiResponse(term: std.process.Child.Term, raw_output: []const u8) !prompt.Response {
     return switch (term) {
         .Exited => |code| switch (code) {
-            0 => .allow,
-            1 => .deny,
-            5 => .timeout,
+            0 => parseLinuxUiSelection(raw_output),
+            1 => .{ .decision = .deny, .remember_kind = .once },
+            5 => .{ .decision = .timeout },
             else => error.InvalidProtocolMessage,
         },
         else => error.InvalidProtocolMessage,
     };
+}
+
+fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
+    const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
+    if (std.mem.eql(u8, trimmed, "Allow once") or std.mem.eql(u8, trimmed, "allow")) {
+        return .{ .decision = .allow, .remember_kind = .once };
+    }
+    if (std.mem.eql(u8, trimmed, "Deny once") or std.mem.eql(u8, trimmed, "deny")) {
+        return .{ .decision = .deny, .remember_kind = .once };
+    }
+    if (std.mem.eql(u8, trimmed, "Allow 5 min") or std.mem.eql(u8, trimmed, "allow-5m")) return .{
+        .decision = .allow,
+        .remember_kind = .temporary,
+        .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+    };
+    if (std.mem.eql(u8, trimmed, "Always allow") or std.mem.eql(u8, trimmed, "always-allow")) {
+        return .{ .decision = .allow, .remember_kind = .durable };
+    }
+    if (std.mem.eql(u8, trimmed, "Always deny") or std.mem.eql(u8, trimmed, "always-deny")) {
+        return .{ .decision = .deny, .remember_kind = .durable };
+    }
+    return error.InvalidProtocolMessage;
 }
 
 fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -634,18 +727,63 @@ fn terminalPathForFileAlloc(allocator: std.mem.Allocator, file: std.fs.File) ![]
     return allocator.dupe(u8, std.mem.sliceTo(&buffer, 0));
 }
 
-fn decisionFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Decision {
+fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Response {
     const parsed = try std.json.parseFromSlice(DecisionMessage, allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     _ = parsed.value.request_id;
-    return switch (parsed.value.outcome[0]) {
-        'a' => .allow,
-        'd' => .deny,
-        't' => .timeout,
-        'u' => .unavailable,
-        'c' => .deny,
-        else => .unavailable,
+    return .{
+        .decision = switch (parsed.value.outcome[0]) {
+            'a' => .allow,
+            'd' => .deny,
+            't' => .timeout,
+            'u' => .unavailable,
+            'c' => .deny,
+            else => .unavailable,
+        },
+        .remember_kind = if (parsed.value.remember) |remember|
+            rememberKindFromLabel(remember.kind) catch .none
+        else
+            .none,
+        .expires_at_unix_seconds = if (parsed.value.remember) |remember|
+            try parseRememberExpiration(remember.expires_at)
+        else
+            null,
     };
+}
+
+fn persistRememberedDecision(
+    context: *RequesterContext,
+    request: prompt.Request,
+    response: prompt.Response,
+) !void {
+    switch (response.remember_kind) {
+        .none, .once => return,
+        .temporary, .durable => {},
+    }
+
+    const executable_path = request.executable_path orelse return;
+    const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
+        try formatRfc3339UtcAlloc(context.allocator, unix_seconds)
+    else
+        null;
+    defer if (expires_at) |value| context.allocator.free(value);
+
+    var loaded_policy = try config.loadFromFile(context.allocator, context.policy_path);
+    defer loaded_policy.deinit();
+
+    try loaded_policy.upsertDecision(
+        executable_path,
+        request.uid,
+        request.path,
+        accessClassLabel(request.access_class),
+        switch (response.decision) {
+            .allow => "allow",
+            .deny => "deny",
+            else => return,
+        },
+        expires_at,
+    );
+    try loaded_policy.saveToFile();
 }
 
 fn validateHelloFrame(allocator: std.mem.Allocator, frame: []const u8) !void {
@@ -804,6 +942,23 @@ fn outcomeLabel(decision: prompt.Decision) []const u8 {
     };
 }
 
+fn rememberKindLabel(kind: prompt.RememberKind) []const u8 {
+    return switch (kind) {
+        .none => "none",
+        .once => "once",
+        .temporary => "temporary",
+        .durable => "durable",
+    };
+}
+
+fn rememberKindFromLabel(label: []const u8) !prompt.RememberKind {
+    if (std.mem.eql(u8, label, "none")) return .none;
+    if (std.mem.eql(u8, label, "once")) return .once;
+    if (std.mem.eql(u8, label, "temporary")) return .temporary;
+    if (std.mem.eql(u8, label, "durable")) return .durable;
+    return error.InvalidProtocolMessage;
+}
+
 fn decisionReason(decision: prompt.Decision) []const u8 {
     return switch (decision) {
         .allow => "user-approved",
@@ -811,6 +966,11 @@ fn decisionReason(decision: prompt.Decision) []const u8 {
         .timeout => "agent-timeout",
         .unavailable => "agent-unavailable",
     };
+}
+
+fn parseRememberExpiration(value: ?[]const u8) !?i64 {
+    const raw = value orelse return null;
+    return try parseRfc3339Utc(raw);
 }
 
 fn formatRfc3339UtcAlloc(allocator: std.mem.Allocator, unix_seconds: i64) ![]u8 {
@@ -833,6 +993,53 @@ fn formatRfc3339UtcAlloc(allocator: std.mem.Allocator, unix_seconds: i64) ![]u8 
             day_seconds.getSecondsIntoMinute(),
         },
     );
+}
+
+fn parseRfc3339Utc(raw: []const u8) !i64 {
+    if (raw.len != "2006-01-02T15:04:05Z".len) return error.InvalidProtocolMessage;
+    if (raw[4] != '-' or raw[7] != '-' or raw[10] != 'T' or raw[13] != ':' or raw[16] != ':' or raw[19] != 'Z') {
+        return error.InvalidProtocolMessage;
+    }
+
+    const year = try std.fmt.parseInt(i64, raw[0..4], 10);
+    const month = try std.fmt.parseInt(u8, raw[5..7], 10);
+    const day = try std.fmt.parseInt(u8, raw[8..10], 10);
+    const hour = try std.fmt.parseInt(i64, raw[11..13], 10);
+    const minute = try std.fmt.parseInt(i64, raw[14..16], 10);
+    const second = try std.fmt.parseInt(i64, raw[17..19], 10);
+
+    if (month < 1 or month > 12) return error.InvalidProtocolMessage;
+    if (day < 1 or day > daysInMonth(year, month)) return error.InvalidProtocolMessage;
+    if (hour > 23 or minute > 59 or second > 59) return error.InvalidProtocolMessage;
+
+    const days = try daysSinceUnixEpoch(year, month, day);
+    const day_seconds = hour * 3600 + minute * 60 + second;
+    return try std.math.add(i64, days * 86400, day_seconds);
+}
+
+fn daysSinceUnixEpoch(year: i64, month: u8, day: u8) !i64 {
+    var adjusted_year = year;
+    if (month <= 2) adjusted_year -= 1;
+
+    const era = @divFloor(if (adjusted_year >= 0) adjusted_year else adjusted_year - 399, 400);
+    const year_of_era = adjusted_year - era * 400;
+    const adjusted_month: i64 = if (month > 2) month - 3 else month + 9;
+    const day_of_year = @divFloor(153 * adjusted_month + 2, 5) + day - 1;
+    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100) + day_of_year;
+    return try std.math.sub(i64, era * 146097 + day_of_era, 719468);
+}
+
+fn daysInMonth(year: i64, month: u8) u8 {
+    return switch (month) {
+        1, 3, 5, 7, 8, 10, 12 => 31,
+        4, 6, 9, 11 => 30,
+        2 => if (isLeapYear(year)) 29 else 28,
+        else => 0,
+    };
+}
+
+fn isLeapYear(year: i64) bool {
+    return (@mod(year, 4) == 0 and @mod(year, 100) != 0) or @mod(year, 400) == 0;
 }
 
 fn generateUlidAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -960,16 +1167,23 @@ test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
     try std.testing.expectEqualStrings(value, resolved);
 }
 
-test "parse macos ui decision accepts known values" {
-    try std.testing.expectEqual(prompt.Decision.allow, try parseMacosUiDecision("allow\n"));
-    try std.testing.expectEqual(prompt.Decision.deny, try parseMacosUiDecision("deny\r\n"));
-    try std.testing.expectEqual(prompt.Decision.timeout, try parseMacosUiDecision("timeout"));
+test "parse macos ui response accepts known values" {
+    try std.testing.expectEqual(prompt.Decision.allow, (try parseMacosUiResponse("allow\n")).decision);
+    try std.testing.expectEqual(prompt.RememberKind.once, (try parseMacosUiResponse("allow\n")).remember_kind);
+    try std.testing.expectEqual(prompt.Decision.deny, (try parseMacosUiResponse("deny\r\n")).decision);
+    try std.testing.expectEqual(prompt.Decision.timeout, (try parseMacosUiResponse("timeout")).decision);
+    const remembered = try parseMacosUiResponse("always-allow");
+    try std.testing.expectEqual(prompt.Decision.allow, remembered.decision);
+    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
 }
 
-test "parse linux ui decision accepts known exit codes" {
-    try std.testing.expectEqual(prompt.Decision.allow, try parseLinuxUiDecision(.{ .Exited = 0 }));
-    try std.testing.expectEqual(prompt.Decision.deny, try parseLinuxUiDecision(.{ .Exited = 1 }));
-    try std.testing.expectEqual(prompt.Decision.timeout, try parseLinuxUiDecision(.{ .Exited = 5 }));
+test "parse linux ui response accepts known exit codes" {
+    try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .Exited = 0 }, "Allow once")).decision);
+    try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .Exited = 1 }, "")).decision);
+    try std.testing.expectEqual(prompt.Decision.timeout, (try parseLinuxUiResponse(.{ .Exited = 5 }, "")).decision);
+    const remembered = try parseLinuxUiResponse(.{ .Exited = 0 }, "Always deny");
+    try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
+    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
 }
 
 test "apple script escaping covers control characters" {

@@ -1856,23 +1856,24 @@ pub const Model = struct {
         };
         defer if (label == null) self.allocator.free(audit_event_path);
 
-        const decision = if (self.prompt_broker) |broker|
+        const response = if (self.prompt_broker) |broker|
             broker.resolve(.{
                 .path = request.path,
                 .access_class = request.access_class,
                 .label = label,
+                .can_remember = request.executable_path != null,
                 .pid = request.pid,
                 .uid = request.uid,
                 .gid = request.gid,
                 .executable_path = context.executable_path,
             })
         else
-            prompt.Decision.unavailable;
+            prompt.Response{ .decision = .unavailable };
 
-        self.recordAudit("prompt", audit_event_path, @intFromEnum(decision), .{
+        self.recordAudit("prompt", audit_event_path, @intFromEnum(response.decision), .{
             .context = context,
         }) catch {};
-        return switch (decision) {
+        return switch (response.decision) {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
         };

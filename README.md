@@ -238,6 +238,7 @@ What each command covers:
 - `./tests/smoke/run-prompt-linux-ui.sh`: black-box verification of the `linux-ui` frontend through a fake `zenity` path that can run in CI
 - `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path that can run in CI
 - `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
+- `./tests/smoke/run-prompt-remembered-decision.sh`: black-box verification that an `always allow` decision is written to `policy.yml`, reconciled by `run`, and suppresses later prompts
 - `./tests/smoke/user-service-rendering.sh`: black-box verification that the user-service helpers render the expected `launchd` and `systemd --user` files
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
@@ -252,6 +253,7 @@ Prompt notes:
 - the default frontend is `terminal-pinentry`
 - `--frontend terminal-pinentry` keeps the existing terminal behavior
 - `--frontend macos-ui` uses `osascript` to show a native macOS dialog
+- `--frontend linux-ui` uses `zenity` to show a native Linux dialog
 - `agent --foreground` uses inherited stdio when `--frontend terminal-pinentry` has no `--tty`
 - `agent --daemon` requires `--tty <path>` or a startup TTY it can capture when using `terminal-pinentry`
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
@@ -264,6 +266,13 @@ Prompt notes:
 - `file-snitch status` prints the current enrollments plus the derived mount plan
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
+- prompt-capable frontends now expose:
+  - allow once
+  - deny once
+  - allow 5 min
+  - always allow
+  - always deny
+- remembered decisions are written by the requester into `policy.yml`; the agent only returns the chosen response
 - `expires_at` is optional on durable decisions and is enforced without requiring a daemon restart
 - the reconciler also rewrites `policy.yml` after pruning expired durable decisions so the file does not accumulate dead entries
 - accepted `expires_at` formats are:
@@ -280,8 +289,8 @@ Prompt notes:
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations
-- the current `terminal-pinentry` frontend prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
-- the current `macos-ui` frontend shells out to `osascript` and returns `allow`, `deny`, or `timeout` back to the agent
+- the current `terminal-pinentry` frontend prints structured prompt JSON before each question and supports once, timed, and durable decisions
+- the current `macos-ui` and `linux-ui` frontends return once, timed, and durable decisions back to the agent
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

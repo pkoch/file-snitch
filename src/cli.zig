@@ -608,6 +608,7 @@ fn runStaticPolicy(command: RunCommand) !void {
         agent.RequesterContext{
             .allocator = allocator,
             .socket_path = try agent.defaultSocketPathAlloc(allocator),
+            .policy_path = command.policy_path,
             .timeout_ms = command.prompt_timeout_ms,
         }
     else
