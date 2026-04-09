@@ -101,6 +101,28 @@ pub fn directoryExists(path: []const u8) bool {
     return pathKind(path) == .directory;
 }
 
+pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {
+    const home = try std.process.getEnvVarOwned(alloc, "HOME");
+    errdefer alloc.free(home);
+    const canonical = try std.fs.realpathAlloc(alloc, home);
+    alloc.free(home);
+    return canonical;
+}
+
+pub fn pathIsWithinDirectory(path: []const u8, directory: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, directory)) return false;
+    if (path.len == directory.len) return true;
+    if (directory.len == 1 and directory[0] == std.fs.path.sep) return true;
+    return path[directory.len] == std.fs.path.sep;
+}
+
+pub fn pathOwnedByCurrentUser(path: []const u8) !bool {
+    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    defer file.close();
+    const stat = try std.posix.fstat(file.handle);
+    return stat.uid == std.posix.getuid();
+}
+
 fn readStoredObjectFromFile(allocator: std.mem.Allocator, path: []const u8) !store.Object {
     var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
     defer file.close();
@@ -142,4 +164,11 @@ fn writeStoredObjectToFile(path: []const u8, object: store.ObjectView) !void {
 fn ensureParentDirectory(path: []const u8) !void {
     const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
     try std.fs.cwd().makePath(parent_dir);
+}
+
+test "path is within directory respects segment boundaries" {
+    try std.testing.expect(pathIsWithinDirectory("/Users/pkoch/.kube/config", "/Users/pkoch"));
+    try std.testing.expect(pathIsWithinDirectory("/Users/pkoch", "/Users/pkoch"));
+    try std.testing.expect(!pathIsWithinDirectory("/Users/pkoch2/.kube/config", "/Users/pkoch"));
+    try std.testing.expect(!pathIsWithinDirectory("/Users/pkochish", "/Users/pkoch"));
 }

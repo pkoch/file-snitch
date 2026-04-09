@@ -7,6 +7,7 @@ Guarded FUSE mounts for secret files.
 The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 
 Current state:
+- File Snitch is intentionally a user-space, single-user tool. It is meant to mediate one user's own secret-bearing files from that same user's software, not to enforce system policy between users or protect against root.
 - The repo has a real Zig `libfuse` core with a thin C shim. The shim preserves raw callback detail; policy timing, filesystem behavior, prompting, and audit semantics live in Zig.
 - The product path is now policy-driven exact-file enrollment, not the old synthetic guarded-root demo. `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default, derives the mount plan, and in both foreground and daemon mode stays alive to reconcile policy changes over time.
 - The product-facing CLI surface is in place:
@@ -34,6 +35,7 @@ Current state:
 - The remaining runtime limits are:
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
+- New enrollments are currently limited to regular files under the current user's home directory and owned by that user.
 - The old guarded-root spike now survives only in historical notes. It is no longer a supported or implemented CLI/runtime path.
 
 ## Layout
@@ -55,10 +57,27 @@ Current state:
 
 These are project-wide invariants. Refactors should preserve them unless the product direction changes explicitly.
 
+- File Snitch is a user-first mediation tool, not a system-wide security framework. Optimize for one user's own home-directory secrets and user-owned services.
 - The C shim is a faithful FUSE harness, not a product-policy layer. It should preserve callback timing and raw callback data, and it should not drop or embellish information before handing it to Zig.
 - Fine-grained callback visibility must remain available even when Zig chooses not to emit a user-facing audit line for a given action. Audit filtering is a Zig/business decision, not a reason to weaken the shim.
 - Authorization must align with intent. If a handle was authorized for read-like access and later attempts write-like behavior, that later behavior must still be independently mediable.
 - Prompting must happen before the guarded operation takes effect. The system should prevent behavior, not merely report it after the fact.
+
+## Scope
+
+V1 scope is intentionally narrow:
+
+- exact file enrollment, not directory protection as a product concept
+- user-owned files under the current user's home directory
+- per-user policy, state, sockets, and lock anchors
+- user service deployment (`systemd --user` / LaunchAgent), not a system daemon
+
+Out of scope for the product stance:
+
+- protection from root
+- cross-user policy arbitration
+- system-wide mandatory access control
+- shared multi-user agents or TCP-facing brokers
 
 ## Build notes
 

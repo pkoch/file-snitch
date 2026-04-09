@@ -453,11 +453,14 @@ fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) !
     errdefer allocator.free(resolved);
 
     switch (enrollment_ops.pathKind(resolved)) {
-        .file => return resolved,
+        .file => {},
         .directory => return invalidUsageWithOwnedPath("error: target file is a directory: {s}\n", resolved),
         .other => return invalidUsageWithOwnedPath("error: target file is not a regular file: {s}\n", resolved),
         .missing => return invalidUsageWithOwnedPath("error: target file does not exist: {s}\n", resolved),
     }
+
+    try requireSupportedEnrollmentTargetPath(label, resolved);
+    return resolved;
 }
 
 fn resolvePathArgument(raw_path: []const u8) ![]const u8 {
@@ -498,6 +501,38 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     const canonical = try std.fs.path.join(allocator, &.{ canonical_parent, std.fs.path.basename(lexical_path) });
     allocator.free(lexical_path);
     return canonical;
+}
+
+fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const u8) !void {
+    const home_dir = try enrollment_ops.currentUserHomeAlloc(allocator);
+    defer allocator.free(home_dir);
+
+    if (!enrollment_ops.pathIsWithinDirectory(target_path, home_dir)) {
+        std.debug.print(
+            "error: {s} is outside the current user's home directory: {s}\n",
+            .{ label, target_path },
+        );
+        std.debug.print(
+            "file-snitch currently targets a single user's home-directory secrets\n",
+            .{},
+        );
+        return error.InvalidUsage;
+    }
+
+    const owned_by_current_user = enrollment_ops.pathOwnedByCurrentUser(target_path) catch |err| switch (err) {
+        else => return err,
+    };
+    if (!owned_by_current_user) {
+        std.debug.print(
+            "error: {s} is not owned by the current user: {s}\n",
+            .{ label, target_path },
+        );
+        std.debug.print(
+            "file-snitch currently targets one user's own secret-bearing files\n",
+            .{},
+        );
+        return error.InvalidUsage;
+    }
 }
 
 fn loadPromptTimeoutMs() !u32 {

@@ -10,10 +10,15 @@ Status:
 
 ## Current priorities
 
+- `[x]` Make the project stance explicitly single-user and user-first
+  - this is a user-space mediation tool for one user's own secret-bearing files
+  - optimize for per-user services, per-user state, and home-directory secrets
+  - do not design toward system-wide policy or protection from root
 - `[~]` Make policy-driven exact-file enrollment the default product path
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
   - the old guarded-root spike has been removed from the supported runtime and now survives only in historical notes
+  - new enrollments are currently limited to regular files under the current user's home directory and owned by that user
 - `[x]` Move from projection-only protection to real secret custody
   - `enroll` already evacuates plaintext from the original path
   - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`
@@ -43,6 +48,7 @@ Status:
 
 These are not backlog items to “finish.” They are constraints that future changes should preserve.
 
+- Keep the product unapologetically user-first. This is not a system policy engine or a multi-user security boundary.
 - Keep the C shim as a faithful FUSE harness. It should expose complete callback detail upward even if Zig later filters or suppresses user-facing audit output.
 - Keep authorization aligned with the requested behavior. A granted read-like handle must not silently authorize later write-like behavior.
 - Keep prompts ahead of side effects. Authorization decisions should happen before the guarded operation takes effect.
@@ -76,6 +82,7 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[ ]` Implement a local agent-style broker with default-deny timeout behavior
 - `[ ]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
 - `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
+  - forwarding is still user-to-user, not a shared multi-user authority model
 - `[ ]` Add decisions: allow once, deny once, allow 5 min, always allow, always deny
 - `[ ]` Persist rules independently from the daemon process
 - `[ ]` Add a recent-events view

@@ -129,11 +129,23 @@ pub fn doctor(allocator: std.mem.Allocator, policy_path: []const u8) !void {
     defer mount_plan.deinit();
 
     var has_errors = false;
+    const home_dir = enrollment.currentUserHomeAlloc(allocator) catch |err| switch (err) {
+        else => return err,
+    };
+    defer allocator.free(home_dir);
 
     std.debug.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     std.debug.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
 
     for (loaded_policy.enrollments) |entry| {
+        if (!enrollment.pathIsWithinDirectory(entry.path, home_dir)) {
+            has_errors = true;
+            std.debug.print(
+                "error: enrollment is outside the current user's home directory: {s}\n",
+                .{entry.path},
+            );
+        }
+
         const parent_dir = std.fs.path.dirname(entry.path) orelse {
             has_errors = true;
             std.debug.print("error: invalid enrollment path: {s}\n", .{entry.path});
