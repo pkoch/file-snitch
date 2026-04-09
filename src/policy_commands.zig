@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config.zig");
 const enrollment = @import("enrollment.zig");
+const fuse = @import("fuse/shim.zig");
 const store = @import("store.zig");
 
 pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
@@ -148,6 +149,9 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     try report_writer.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
+    appendFuseReport(report_writer, &has_errors) catch |err| switch (err) {
+        else => return err,
+    };
 
     if (loaded_policy.enrollments.len != 0) {
         const pass_command = try detectPassCommandAlloc(allocator);
@@ -157,6 +161,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         } else {
             has_errors = true;
             try report_writer.print("error: pass backend is not usable: {s}\n", .{pass_command});
+            try report_writer.writeAll("hint: run `pass ls` and fix the reported issue before trying File Snitch again\n");
+            try report_writer.writeAll("hint: check that GPG works for this shell and that GNUPGHOME points at a usable keyring\n");
         }
     }
 
@@ -164,6 +170,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         try report_writer.print("ok: agent socket path exists: {s}\n", .{agent_socket_path});
     } else {
         try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
+        try report_writer.writeAll("hint: start `file-snitch agent --foreground` or install the per-user agent service\n");
     }
 
     switch (builtin.os.tag) {
@@ -174,6 +181,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
                 try report_writer.print("ok: macos-ui helper is available: {s}\n", .{helper_command});
             } else {
                 try report_writer.print("warn: macos-ui helper is not available: {s}\n", .{helper_command});
+                try report_writer.writeAll("hint: install or expose `osascript`, or use `--frontend terminal-pinentry`\n");
             }
 
             const agent_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.agent.plist");
@@ -190,6 +198,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
                 try report_writer.print("ok: linux-ui helper is available: {s}\n", .{helper_command});
             } else {
                 try report_writer.print("warn: linux-ui helper is not available: {s}\n", .{helper_command});
+                try report_writer.writeAll("hint: install `zenity`, or use `--frontend terminal-pinentry`\n");
             }
 
             const agent_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-agent.service");
@@ -541,7 +550,26 @@ fn appendServicePathReport(
         try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
     } else {
         try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
+        try writer.writeAll("hint: run `./scripts/install-user-services.sh --bin \"$(command -v file-snitch)\"`\n");
     }
+}
+
+fn appendFuseReport(writer: anytype, has_errors: *bool) !void {
+    const environment = fuse.probe() catch {
+        has_errors.* = true;
+        try writer.writeAll("error: FUSE runtime is not available\n");
+        switch (builtin.os.tag) {
+            .macos => try writer.writeAll("hint: install macFUSE and allow its system extension before running File Snitch\n"),
+            .linux => try writer.writeAll("hint: install distro FUSE packages and confirm `/dev/fuse` is available to your user\n"),
+            else => try writer.writeAll("hint: install a supported FUSE runtime for this platform\n"),
+        }
+        return;
+    };
+
+    try writer.print(
+        "ok: FUSE runtime is available: backend={s} fuse={d}.{d}\n",
+        .{ environment.backend_name, environment.fuse_major_version, environment.fuse_minor_version },
+    );
 }
 
 fn defaultMacosLaunchAgentPathAlloc(

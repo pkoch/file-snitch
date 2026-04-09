@@ -17,6 +17,10 @@ file-snitch status
 file-snitch doctor
 ```
 
+`doctor` is meant to be prescriptive, not just descriptive. When it reports a
+missing helper, socket, service file, or unusable `pass` setup, follow the
+adjacent `hint:` lines first.
+
 If you plan to file a bug, also export a dossier:
 
 ```bash

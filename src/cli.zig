@@ -26,23 +26,27 @@ pub fn main() !void {
     run(args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
         error.DaemonizeFailed => {
-            std.debug.print("error: failed to daemonize `run`\n", .{});
+            std.debug.print("error: failed to daemonize the background process\n", .{});
             std.process.exit(1);
         },
         error.StoreUnavailable => {
             std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
+            std.debug.print("hint: `file-snitch doctor` will also report the detected pass command and runtime state\n", .{});
             std.process.exit(1);
         },
         error.StoreCommandFailed => {
             std.debug.print("error: the `pass` backend command failed\n", .{});
+            std.debug.print("hint: run `pass ls` directly and fix that first, then rerun `file-snitch doctor`\n", .{});
             std.process.exit(1);
         },
         error.ObjectNotFound => {
             std.debug.print("error: guarded object missing from the configured store\n", .{});
+            std.debug.print("hint: run `file-snitch doctor` to identify the missing store entry or broken enrollment\n", .{});
             std.process.exit(1);
         },
         error.InvalidStoredObject => {
             std.debug.print("error: guarded object is corrupt or has an unsupported format\n", .{});
+            std.debug.print("hint: run `file-snitch doctor` and inspect the affected `pass:file-snitch/...` entry before reenrolling\n", .{});
             std.process.exit(1);
         },
         else => return err,
