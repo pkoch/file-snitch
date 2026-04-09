@@ -9,7 +9,8 @@ until a user-owned daemon projects them back into place through FUSE. The
 daemon consults a local agent before guarded access, and unguarded siblings in
 the same directory still behave normally.
 
-The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
+The product brief lives in
+[docs/research/0 - initial-brief.md](./docs/research/0%20-%20initial-brief.md).
 
 ## What It Does Today
 

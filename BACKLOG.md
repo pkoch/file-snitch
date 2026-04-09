@@ -1,6 +1,8 @@
 # Backlog
 
-Long-term task tracking for turning the brief in [docs/initial-brief.md](./docs/initial-brief.md) into a working product.
+Long-term task tracking for turning the brief in
+[docs/research/0 - initial-brief.md](./docs/research/0%20-%20initial-brief.md)
+into a working product.
 
 Status:
 - `[ ]` not started
