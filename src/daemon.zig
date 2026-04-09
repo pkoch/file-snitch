@@ -13,17 +13,6 @@ const c = if (builtin.os.tag == .macos)
 else
     struct {};
 
-pub const Config = struct {
-    mount_path: []const u8,
-    backing_store_path: []const u8,
-    run_in_foreground: bool = true,
-    default_mutation_outcome: policy.Outcome = .deny,
-    policy_rules: []const policy.Rule = &.{},
-    prompt_broker: ?prompt.Broker = null,
-    status_output_file: ?std.fs.File = null,
-    audit_output_file: ?std.fs.File = null,
-};
-
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const filesystem.GuardedEntryConfig,
@@ -39,7 +28,6 @@ pub const EnrolledParentConfig = struct {
 pub const Description = struct {
     backend_name: []const u8,
     mount_path: []const u8,
-    content_root_path: []const u8,
     high_level_ops_size: usize,
     configured_operation_count: u32,
     planned_argument_count: u32,
@@ -74,7 +62,7 @@ pub const RawLookup = extern struct {
     ctime_sec: i64,
     ctime_nsec: u32,
     open_kind: u8,
-    persistent: u8,
+    guarded: u8,
     reserved: [2]u8,
 };
 
@@ -136,50 +124,6 @@ pub const Session = struct {
     state: *State,
     handle: *fuse.RawSession,
 
-    pub fn init(allocator: std.mem.Allocator, config: Config) !Session {
-        const mount_path_z = try allocator.dupeZ(u8, config.mount_path);
-        defer allocator.free(mount_path_z);
-
-        const backing_store_path_z = try allocator.dupeZ(u8, config.backing_store_path);
-        defer allocator.free(backing_store_path_z);
-
-        const state = try allocator.create(State);
-        errdefer allocator.destroy(state);
-        state.* = .{
-            .filesystem = try filesystem.Model.init(allocator, .{
-                .mount_path = config.mount_path,
-                .backing_store_path = config.backing_store_path,
-                .default_mutation_outcome = config.default_mutation_outcome,
-                .policy_rules = config.policy_rules,
-                .prompt_broker = config.prompt_broker,
-                .status_output_file = config.status_output_file,
-                .audit_output_file = config.audit_output_file,
-            }),
-        };
-        errdefer state.filesystem.deinit();
-        try state.filesystem.loadGuardedRootFiles();
-
-        const handle = try fuse.createSession(.{
-            .mount_path = mount_path_z,
-            .backing_store_path = backing_store_path_z,
-            .daemon_state = state,
-            .run_in_foreground = config.run_in_foreground,
-        });
-        errdefer fuse.destroySession(handle);
-
-        const runtime = try fuse.describeSession(handle);
-        state.filesystem.setRuntimeStats(.{
-            .configured_operation_count = runtime.configured_operation_count,
-            .planned_argument_count = runtime.planned_argument_count,
-        });
-
-        return .{
-            .allocator = allocator,
-            .state = state,
-            .handle = handle,
-        };
-    }
-
     pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Session {
         const mount_path_z = try allocator.dupeZ(u8, config.mount_path);
         defer allocator.free(mount_path_z);
@@ -202,9 +146,7 @@ pub const Session = struct {
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
-            .backing_store_path = null,
             .source_dir_fd = state.filesystem.source_dir.?.fd,
-            .layout_kind = 1,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
         });
@@ -234,7 +176,6 @@ pub const Session = struct {
         return .{
             .backend_name = runtime.backend_name,
             .mount_path = self.state.filesystem.mount_path,
-            .content_root_path = self.state.filesystem.content_root_path,
             .high_level_ops_size = runtime.high_level_ops_size,
             .configured_operation_count = runtime.configured_operation_count,
             .planned_argument_count = runtime.planned_argument_count,
@@ -269,27 +210,34 @@ pub const Session = struct {
     }
 
     pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
-        if (self.state.filesystem.layout == .guarded_root) {
-            const count = self.state.filesystem.files.items.len;
-            var entries = try allocator.alloc([]const u8, count);
-            errdefer allocator.free(entries);
-
-            for (self.state.filesystem.files.items, 0..) |file, index| {
-                entries[index] = file.name;
+        var real_entries: usize = 0;
+        var dir = self.state.filesystem.source_dir orelse return error.Unexpected;
+        var iterator = dir.iterate();
+        while (try iterator.next()) |entry| {
+            if (!std.mem.eql(u8, entry.name, ".") and !std.mem.eql(u8, entry.name, "..")) {
+                real_entries += 1;
             }
-            return entries;
         }
 
-        const count = self.state.filesystem.syntheticEntryCount("/");
-        var entries = try allocator.alloc([]const u8, count);
+        const synthetic_count = self.state.filesystem.syntheticEntryCount("/");
+        var entries = try allocator.alloc([]const u8, real_entries + synthetic_count);
         errdefer allocator.free(entries);
 
-        for (0..count) |index| {
+        var index: usize = 0;
+        iterator = dir.iterate();
+        while (try iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+            entries[index] = try allocator.dupe(u8, entry.name);
+            index += 1;
+        }
+
+        for (0..synthetic_count) |synthetic_index| {
             var buffer: [std.fs.max_path_bytes]u8 = undefined;
-            const len = self.state.filesystem.syntheticEntryNameAt("/", @intCast(index), &buffer) orelse {
+            const len = self.state.filesystem.syntheticEntryNameAt("/", @intCast(synthetic_index), &buffer) orelse {
                 return error.Unexpected;
             };
             entries[index] = try allocator.dupe(u8, buffer[0..len]);
+            index += 1;
         }
 
         return entries;
@@ -380,28 +328,6 @@ pub const Session = struct {
     }
 };
 
-pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
-    try requireEmptyDirectory(config.mount_path);
-    try ensureDirectory(config.backing_store_path);
-
-    var session = try Session.init(allocator, config);
-    defer session.deinit();
-
-    const description = try session.describe();
-    std.debug.print(
-        "mounting file-snitch: mount={s} content_root={s} configured_ops={d} default_mutation={s}\n",
-        .{
-            description.mount_path,
-            description.content_root_path,
-            description.configured_operation_count,
-            @tagName(description.default_mutation_outcome),
-        },
-    );
-    session.publishStatus();
-
-    try session.run();
-}
-
 pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !void {
     try ensureDirectory(config.mount_path);
 
@@ -410,10 +336,9 @@ pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentC
 
     const description = try session.describe();
     std.debug.print(
-        "mounting file-snitch: mount={s} content_root={s} configured_ops={d} default_mutation={s}\n",
+        "mounting file-snitch: mount={s} configured_ops={d} default_mutation={s}\n",
         .{
             description.mount_path,
-            description.content_root_path,
             description.configured_operation_count,
             @tagName(description.default_mutation_outcome),
         },
@@ -421,16 +346,6 @@ pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentC
     session.publishStatus();
 
     try session.run();
-}
-
-fn requireEmptyDirectory(path: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
-    defer dir.close();
-
-    var iterator = dir.iterate();
-    if (try iterator.next() != null) {
-        return error.MountPathNotEmpty;
-    }
 }
 
 fn ensureDirectory(path: []const u8) !void {
@@ -599,20 +514,20 @@ pub export fn fsn_daemon_lookup_path(
         .ctime_sec = lookup.node.ctime.sec,
         .ctime_nsec = lookup.node.ctime.nsec,
         .open_kind = @intFromEnum(lookup.open_kind),
-        .persistent = @intFromBool(lookup.persistent),
+        .guarded = @intFromBool(lookup.guarded),
         .reserved = std.mem.zeroes([2]u8),
     };
     return 0;
 }
 
-pub export fn fsn_daemon_open_persistent_backing_fd(
+pub export fn fsn_daemon_open_guarded_lock_fd(
     daemon_state: ?*anyopaque,
     raw_path: ?[*:0]const u8,
     requested_flags: c_int,
 ) c_int {
     const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
     const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
-    return @intCast(state.filesystem.openPersistentBackingFd(path, requested_flags));
+    return @intCast(state.filesystem.openGuardedLockFd(path, requested_flags));
 }
 
 pub export fn fsn_daemon_directory_entry_count(

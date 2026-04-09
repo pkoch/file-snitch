@@ -13,7 +13,7 @@ Status:
 - `[~]` Make policy-driven exact-file enrollment the default product path
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
-  - the old guarded-root spike survives only as low-level scaffolding and should keep shrinking until it disappears
+  - the old guarded-root spike has been removed from the supported runtime and now survives only in historical notes
 - `[x]` Move from projection-only protection to real secret custody
   - `enroll` already evacuates plaintext from the original path
   - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`

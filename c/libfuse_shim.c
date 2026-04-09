@@ -39,11 +39,6 @@ enum fsn_open_kind {
     FSN_OPEN_USER_FILE = 3,
 };
 
-enum fsn_layout_kind {
-    FSN_LAYOUT_GUARDED_ROOT = 0,
-    FSN_LAYOUT_ENROLLED_PARENT = 1,
-};
-
 struct fsn_bridge_request {
     const char *path;
     uint32_t pid;
@@ -95,12 +90,12 @@ struct fsn_bridge_lookup {
     int64_t ctime_sec;
     uint32_t ctime_nsec;
     uint8_t open_kind;
-    uint8_t persistent;
+    uint8_t guarded;
     uint8_t reserved[2];
 };
 
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
-extern int fsn_daemon_open_persistent_backing_fd(void *daemon_state, const char *path, int requested_flags);
+extern int fsn_daemon_open_guarded_lock_fd(void *daemon_state, const char *path, int requested_flags);
 extern uint32_t fsn_daemon_directory_entry_count(void *daemon_state, const char *path);
 extern int fsn_daemon_directory_entry_name(
     void *daemon_state,
@@ -213,9 +208,7 @@ struct fsn_file_handle {
 
 struct fsn_fuse_session {
     char *mount_path;
-    char *backing_store_path;
     int source_dir_fd;
-    uint8_t layout_kind;
     void *daemon_state;
     uint8_t run_in_foreground;
     uint32_t configured_operation_count;
@@ -227,7 +220,6 @@ struct fsn_fuse_session {
 static char *fsn_strdup(const char *value);
 static int fsn_is_root_path(const char *path);
 static int fsn_is_non_root_path(const char *path);
-static int fsn_is_top_level_user_file_path(const char *path);
 static int fsn_is_transient_sidecar_path(const char *path);
 static int fsn_build_request(
     struct fsn_bridge_request *out,
@@ -247,12 +239,6 @@ static int fsn_build_child_virtual_path(
     char *buf,
     size_t buf_size
 );
-static int fsn_build_backing_store_path(
-    const struct fsn_fuse_session *session,
-    const char *path,
-    char *buf,
-    size_t buf_size
-);
 static int fsn_build_relative_path(const char *path, char *buf, size_t buf_size);
 static int fsn_open_passthrough_fd(
     const struct fsn_fuse_session *session,
@@ -262,11 +248,11 @@ static int fsn_open_passthrough_fd(
 static struct fsn_file_handle *fsn_create_file_handle(void);
 static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
 static void fsn_clear_file_handle(struct fuse_file_info *fi);
-static int fsn_open_backing_store_fd(
+static int fsn_open_runtime_fd(
     const struct fsn_fuse_session *session,
     const char *path,
     int requested_flags,
-    int persistent
+    int guarded
 );
 static void fsn_fuse_configure_operations(struct fsn_fuse_session *session);
 static void fsn_free_planned_arguments(struct fsn_fuse_session *session);
@@ -398,7 +384,7 @@ static int fsn_fuse_readdir(
     }
 
     session = fuse_get_context()->private_data;
-    if (session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
+    {
         DIR *directory;
         struct dirent *entry;
         int directory_fd;
@@ -557,13 +543,7 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
     }
     if (
         lookup.open_kind == FSN_OPEN_USER_FILE &&
-        (
-            lookup.persistent != 0 ||
-            (
-                session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT &&
-                !fsn_is_transient_sidecar_path(path)
-            )
-        )
+        (lookup.guarded != 0 || !fsn_is_transient_sidecar_path(path))
     ) {
         struct fsn_file_handle *handle = fsn_create_file_handle();
         int backing_fd;
@@ -572,7 +552,7 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
             return -ENOMEM;
         }
 
-        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags, lookup.persistent != 0);
+        backing_fd = fsn_open_runtime_fd(session, path, fi->flags, lookup.guarded != 0);
         if (backing_fd < 0) {
             free(handle);
             return backing_fd;
@@ -613,13 +593,7 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         return -EIO;
     }
 
-    if (
-        lookup.persistent != 0 ||
-        (
-            session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT &&
-            !fsn_is_transient_sidecar_path(path)
-        )
-    ) {
+    if (lookup.guarded != 0 || !fsn_is_transient_sidecar_path(path)) {
         struct fsn_file_handle *handle = fsn_create_file_handle();
         int backing_fd;
 
@@ -627,7 +601,7 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
             return -ENOMEM;
         }
 
-        backing_fd = fsn_open_backing_store_fd(session, path, fi->flags, lookup.persistent != 0);
+        backing_fd = fsn_open_runtime_fd(session, path, fi->flags, lookup.guarded != 0);
         if (backing_fd < 0) {
             free(handle);
             return backing_fd;
@@ -1243,14 +1217,8 @@ int fsn_fuse_session_create(
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
-    if (config->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
-        if (config->source_dir_fd < 0) {
-            return FSN_FUSE_STATUS_INVALID_ARGUMENT;
-        }
-    } else {
-        if (config->backing_store_path == NULL || config->backing_store_path[0] == '\0') {
-            return FSN_FUSE_STATUS_INVALID_ARGUMENT;
-        }
+    if (config->source_dir_fd < 0) {
+        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
     session = calloc(1, sizeof(*session));
@@ -1259,15 +1227,8 @@ int fsn_fuse_session_create(
     }
 
     session->mount_path = fsn_strdup(config->mount_path);
-    session->layout_kind = config->layout_kind;
     session->source_dir_fd = config->source_dir_fd;
-    if (config->backing_store_path != NULL) {
-        session->backing_store_path = fsn_strdup(config->backing_store_path);
-    }
-    if (
-        session->mount_path == NULL ||
-        (config->backing_store_path != NULL && session->backing_store_path == NULL)
-    ) {
+    if (session->mount_path == NULL) {
         fsn_fuse_session_destroy(session);
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
     }
@@ -1290,7 +1251,6 @@ void fsn_fuse_session_destroy(struct fsn_fuse_session *session) {
     }
 
     free(session->mount_path);
-    free(session->backing_store_path);
     fsn_free_planned_arguments(session);
     free(session);
 }
@@ -1407,17 +1367,6 @@ static int fsn_is_non_root_path(const char *path) {
     return path != NULL && path[0] == '/' && path[1] != '\0';
 }
 
-static int fsn_is_top_level_user_file_path(const char *path) {
-    const char *tail;
-
-    if (path == NULL || path[0] != '/' || path[1] == '\0') {
-        return 0;
-    }
-
-    tail = strchr(path + 1, '/');
-    return tail == NULL;
-}
-
 static int fsn_is_transient_sidecar_path(const char *path) {
     return path != NULL && strncmp(path, "/._", 3) == 0;
 }
@@ -1528,26 +1477,6 @@ static int fsn_build_child_virtual_path(
     return 0;
 }
 
-static int fsn_build_backing_store_path(
-    const struct fsn_fuse_session *session,
-    const char *path,
-    char *buf,
-    size_t buf_size
-) {
-    int written;
-
-    if (session == NULL || path == NULL || buf == NULL || buf_size == 0 || !fsn_is_top_level_user_file_path(path)) {
-        return -EINVAL;
-    }
-
-    written = snprintf(buf, buf_size, "%s/%s", session->backing_store_path, path + 1);
-    if (written < 0 || (size_t)written >= buf_size) {
-        return -ENAMETOOLONG;
-    }
-
-    return 0;
-}
-
 static int fsn_build_relative_path(const char *path, char *buf, size_t buf_size) {
     size_t length;
 
@@ -1646,38 +1575,20 @@ static void fsn_clear_file_handle(struct fuse_file_info *fi) {
     fi->fh = 0;
 }
 
-static int fsn_open_backing_store_fd(
+static int fsn_open_runtime_fd(
     const struct fsn_fuse_session *session,
     const char *path,
     int requested_flags,
-    int persistent
+    int guarded
 ) {
-    if (session != NULL && session->layout_kind == FSN_LAYOUT_ENROLLED_PARENT) {
-        if (persistent) {
-            return fsn_daemon_open_persistent_backing_fd(session->daemon_state, path, requested_flags);
-        }
-        return fsn_open_passthrough_fd(session, path, requested_flags);
-    }
-
-    char host_path[PATH_MAX];
-    int path_result;
-    int descriptor;
-
     if (session == NULL || path == NULL) {
         return -EINVAL;
     }
 
-    path_result = fsn_build_backing_store_path(session, path, host_path, sizeof(host_path));
-    if (path_result != 0) {
-        return path_result;
+    if (guarded) {
+        return fsn_daemon_open_guarded_lock_fd(session->daemon_state, path, requested_flags);
     }
-
-    descriptor = open(host_path, requested_flags);
-    if (descriptor < 0) {
-        return -errno;
-    }
-
-    return descriptor;
+    return fsn_open_passthrough_fd(session, path, requested_flags);
 }
 
 static int fsn_open_passthrough_fd(

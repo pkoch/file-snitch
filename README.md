@@ -34,7 +34,7 @@ Current state:
 - The remaining runtime limits are:
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
-- The old guarded-root spike still survives in low-level core code and historical notes, but it is no longer a supported CLI path.
+- The old guarded-root spike now survives only in historical notes. It is no longer a supported or implemented CLI/runtime path.
 
 ## Layout
 
@@ -45,7 +45,7 @@ Current state:
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
-- `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime plus the remaining guarded-root core used by low-level tests
+- `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes

@@ -29,12 +29,10 @@ struct fsn_fuse_session;
 
 struct fsn_fuse_session_config {
     const char *mount_path;
-    const char *backing_store_path;
     int32_t source_dir_fd;
-    uint8_t layout_kind;
     void *daemon_state;
     uint8_t run_in_foreground;
-    uint8_t reserved[3];
+    uint8_t reserved[7];
 };
 
 struct fsn_fuse_session_info {

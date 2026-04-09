@@ -22,53 +22,79 @@ const allowed_prompt_note_path = "/allowed-prompt-note.txt";
 const Fixture = struct {
     allocator: std.mem.Allocator,
     mount_path: []u8,
-    content_root_path: []u8,
+    mock_state: store.MockState = .{},
 
     fn init(allocator: std.mem.Allocator) !Fixture {
         const run_id = std.time.nanoTimestamp();
         const mount_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-mount-{d}", .{run_id});
         errdefer allocator.free(mount_path);
-        const content_root_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-store-{d}", .{run_id});
-        errdefer allocator.free(content_root_path);
 
         try std.fs.makeDirAbsolute(mount_path);
         errdefer std.fs.deleteTreeAbsolute(mount_path) catch {};
-        try std.fs.makeDirAbsolute(content_root_path);
-        errdefer std.fs.deleteTreeAbsolute(content_root_path) catch {};
 
-        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ content_root_path, seed_name });
+        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_path, seed_name });
         defer allocator.free(seed_host_path);
 
         var seed_file = try std.fs.createFileAbsolute(seed_host_path, .{ .truncate = true });
         defer seed_file.close();
-        try seed_file.writeAll("seeded from content root\n");
+        try seed_file.writeAll("seeded from source dir\n");
 
         return .{
             .allocator = allocator,
             .mount_path = mount_path,
-            .content_root_path = content_root_path,
         };
     }
 
-    fn deinit(self: Fixture) void {
+    fn deinit(self: *Fixture) void {
+        self.mock_state.deinit(self.allocator);
         std.fs.deleteTreeAbsolute(self.mount_path) catch {};
-        std.fs.deleteTreeAbsolute(self.content_root_path) catch {};
         self.allocator.free(self.mount_path);
-        self.allocator.free(self.content_root_path);
+    }
+
+    fn guardedStore(self: *Fixture) store.Backend {
+        return store.Backend.initMock(&self.mock_state);
     }
 };
 
+fn initSession(
+    allocator: std.mem.Allocator,
+    fixture: *Fixture,
+    guarded_entries: []const filesystem.GuardedEntryConfig,
+    default_mutation_outcome: policy.Outcome,
+    policy_rules: []const policy.Rule,
+    prompt_broker: ?prompt.Broker,
+) !daemon.Session {
+    return daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = fixture.mount_path,
+        .guarded_entries = guarded_entries,
+        .guarded_store = fixture.guardedStore(),
+        .run_in_foreground = true,
+        .default_mutation_outcome = default_mutation_outcome,
+        .policy_rules = policy_rules,
+        .prompt_broker = prompt_broker,
+    });
+}
+
+fn expectEntriesContain(entries: []const []const u8, expected: []const []const u8) !void {
+    try std.testing.expectEqual(expected.len, entries.len);
+    for (expected) |expected_entry| {
+        var found = false;
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry, expected_entry)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+}
+
 test "session exercise is covered by core assertions" {
     const allocator = std.testing.allocator;
-    const fixture = try Fixture.init(allocator);
+    var fixture = try Fixture.init(allocator);
     defer fixture.deinit();
 
-    var session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-    });
+    var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
     defer session.deinit();
 
     try session.debugCreateFile(created_note_path, 0o600);
@@ -84,7 +110,6 @@ test "session exercise is covered by core assertions" {
     try std.testing.expect(description.run_in_foreground);
     try std.testing.expectEqual(policy.Outcome.allow, description.default_mutation_outcome);
     try std.testing.expectEqualStrings(fixture.mount_path, description.mount_path);
-    try std.testing.expectEqualStrings(fixture.content_root_path, description.content_root_path);
     try std.testing.expect(description.configured_operation_count >= 1);
 
     const plan = try session.executionPlan(allocator);
@@ -102,14 +127,15 @@ test "session exercise is covered by core assertions" {
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, note.kind);
 
     const entries = try session.rootEntries(allocator);
-    defer allocator.free(entries);
-    try std.testing.expectEqual(@as(usize, 2), entries.len);
-    try std.testing.expectEqualStrings(seed_name, entries[0]);
-    try std.testing.expectEqualStrings(note_path[1..], entries[1]);
+    defer {
+        for (entries) |entry| allocator.free(entry);
+        allocator.free(entries);
+    }
+    try expectEntriesContain(entries, &.{ seed_name, note_path[1..] });
 
     const seed_content = try session.readPath(allocator, seed_path);
     defer allocator.free(seed_content);
-    try std.testing.expectEqualStrings("seeded from content root\n", seed_content);
+    try std.testing.expectEqualStrings("seeded from source dir\n", seed_content);
 
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
@@ -123,12 +149,7 @@ test "session exercise is covered by core assertions" {
     try expectRenameAudit(audit_events, created_note_path, note_path, 0);
     try expectAuditEvent(audit_events, "fsync", note_path, 0);
 
-    var reloaded_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .deny,
-    });
+    var reloaded_session = try initSession(allocator, &fixture, &.{}, .deny, &.{}, null);
     defer reloaded_session.deinit();
 
     const reloaded_note = try reloaded_session.readPath(allocator, note_path);
@@ -139,133 +160,125 @@ test "session exercise is covered by core assertions" {
 
 test "policy and prompt paths are covered by core assertions" {
     const allocator = std.testing.allocator;
-    const fixture = try Fixture.init(allocator);
+    var fixture = try Fixture.init(allocator);
     defer fixture.deinit();
 
-    var base_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-    });
-    defer base_session.deinit();
-    try base_session.debugCreateFile(created_note_path, 0o600);
-    try base_session.debugWriteFile(created_note_path, "hello from file-snitch\n");
-    try base_session.debugRenameFile(created_note_path, note_path);
+    const guarded_note_path = "/guarded-note.txt";
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guard-policy-lock-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(lock_anchor_path);
+    defer std.fs.deleteFileAbsolute(lock_anchor_path) catch {};
 
-    var readonly_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .deny,
+    var preseed_store = fixture.guardedStore();
+    try preseed_store.putObject(allocator, "guarded-note", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded note\n",
     });
+
+    const guarded_entries = &.{filesystem.GuardedEntryConfig{
+        .relative_path = "guarded-note.txt",
+        .object_id = "guarded-note",
+        .lock_anchor_path = lock_anchor_path,
+    }};
+
+    var readonly_session = try initSession(allocator, &fixture, guarded_entries, .deny, &.{}, null);
     defer readonly_session.deinit();
 
     try std.testing.expectError(
-        error.DebugCreateFailed,
-        readonly_session.debugCreateFile(blocked_note_path, 0o600),
+        error.DebugWriteFailed,
+        readonly_session.debugWriteFile(guarded_note_path, "blocked\n"),
     );
 
-    var policy_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-        .policy_rules = &.{
-            .{
-                .path_prefix = note_path,
-                .access_class = .read,
-                .outcome = .prompt,
-            },
-            .{
-                .path_prefix = prompted_note_path,
-                .access_class = .create,
-                .outcome = .deny,
-            },
+    var policy_session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{
+        .{
+            .path_prefix = guarded_note_path,
+            .access_class = .read,
+            .outcome = .prompt,
         },
-    });
+        .{
+            .path_prefix = guarded_note_path,
+            .access_class = .write,
+            .outcome = .deny,
+        },
+    }, null);
     defer policy_session.deinit();
 
     try std.testing.expectError(
         error.DebugReadFailed,
-        policy_session.readPath(allocator, note_path),
+        policy_session.readPath(allocator, guarded_note_path),
     );
     try std.testing.expectError(
-        error.DebugCreateFailed,
-        policy_session.debugCreateFile(prompted_note_path, 0o600),
+        error.DebugWriteFailed,
+        policy_session.debugWriteFile(guarded_note_path, "denied\n"),
     );
 
     var allow_prompt_context = prompt.ScriptedContext.init(&.{.allow});
-    var allowed_prompt_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-        .policy_rules = &.{
-            .{
-                .path_prefix = allowed_prompt_note_path,
-                .access_class = .create,
-                .outcome = .prompt,
-            },
+    var allowed_prompt_session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{
+        .{
+            .path_prefix = guarded_note_path,
+            .access_class = .write,
+            .outcome = .prompt,
         },
-        .prompt_broker = prompt.scriptedBroker(&allow_prompt_context),
-    });
+    }, prompt.scriptedBroker(&allow_prompt_context));
     defer allowed_prompt_session.deinit();
 
-    try allowed_prompt_session.debugCreateFile(allowed_prompt_note_path, 0o600);
+    try allowed_prompt_session.debugWriteFile(guarded_note_path, "updated guarded note\n");
 
     const readonly_audit = try readonly_session.auditEvents(allocator);
     defer allocator.free(readonly_audit);
-    try expectAuditEvent(readonly_audit, "policy", "create /blocked-note.txt", 2);
-    try expectAuditEvent(readonly_audit, "create", blocked_note_path, -13);
+    try expectAuditEvent(readonly_audit, "policy", "write /guarded-note.txt", 2);
+    try expectAuditEvent(readonly_audit, "write", guarded_note_path, -13);
 
     const policy_audit = try policy_session.auditEvents(allocator);
     defer allocator.free(policy_audit);
-    try expectAuditEvent(policy_audit, "prompt", "read /renamed-note.txt", 4);
-    try expectAuditEvent(policy_audit, "read", note_path, -13);
-    try expectAuditEvent(policy_audit, "policy", "create /prompted-note.txt", 2);
-    try expectAuditEvent(policy_audit, "create", prompted_note_path, -13);
+    try expectAuditEvent(policy_audit, "prompt", "read /guarded-note.txt", 4);
+    try expectAuditEvent(policy_audit, "read", guarded_note_path, -13);
+    try expectAuditEvent(policy_audit, "policy", "write /guarded-note.txt", 2);
+    try expectAuditEvent(policy_audit, "write", guarded_note_path, -13);
 
     const allowed_prompt_audit = try allowed_prompt_session.auditEvents(allocator);
     defer allocator.free(allowed_prompt_audit);
-    try expectAuditEvent(allowed_prompt_audit, "prompt", "create /allowed-prompt-note.txt", 1);
-    try expectAuditEvent(allowed_prompt_audit, "create", allowed_prompt_note_path, 0);
+    try expectAuditEvent(allowed_prompt_audit, "prompt", "write /guarded-note.txt", 1);
+    try expectAuditEvent(allowed_prompt_audit, "write", guarded_note_path, 21);
 
-    const allowed_note = try allowed_prompt_session.readPath(allocator, allowed_prompt_note_path);
-    defer allocator.free(allowed_note);
-    try std.testing.expectEqualStrings("", allowed_note);
+    {
+        var stored = try fixture.mock_state.loadObject(allocator, "guarded-note");
+        defer stored.deinit(allocator);
+        try std.testing.expectEqualStrings("updated guarded note\n", stored.content);
+    }
 
     var default_prompt_context = prompt.ScriptedContext.init(&.{.allow});
-    var default_prompt_session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .prompt,
-        .prompt_broker = prompt.scriptedBroker(&default_prompt_context),
-    });
+    var default_prompt_session = try initSession(
+        allocator,
+        &fixture,
+        guarded_entries,
+        .prompt,
+        &.{},
+        prompt.scriptedBroker(&default_prompt_context),
+    );
     defer default_prompt_session.deinit();
 
-    const prompted_read = try default_prompt_session.readPath(allocator, note_path);
+    const prompted_read = try default_prompt_session.readPath(allocator, guarded_note_path);
     defer allocator.free(prompted_read);
-    try std.testing.expectEqualStrings("hello from file-snitch\n", prompted_read);
+    try std.testing.expectEqualStrings("updated guarded note\n", prompted_read);
 
     const default_prompt_audit = try default_prompt_session.auditEvents(allocator);
     defer allocator.free(default_prompt_audit);
-    try expectAuditEvent(default_prompt_audit, "prompt", "read /renamed-note.txt", 1);
-    try expectAuditEvent(default_prompt_audit, "read", note_path, 23);
+    try expectAuditEvent(default_prompt_audit, "prompt", "read /guarded-note.txt", 1);
+    try expectAuditEvent(default_prompt_audit, "read", guarded_note_path, 21);
 }
 
 test "directory operations fail explicitly in the file-only spike" {
     const allocator = std.testing.allocator;
-    const fixture = try Fixture.init(allocator);
+    var fixture = try Fixture.init(allocator);
     defer fixture.deinit();
 
-    var session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-    });
+    var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
     defer session.deinit();
 
     try std.testing.expectError(
@@ -281,7 +294,7 @@ test "directory operations fail explicitly in the file-only spike" {
         (try session.inspectPath("/empty-dir")).kind,
     );
 
-    const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.content_root_path});
+    const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.mount_path});
     defer allocator.free(host_path);
     try std.testing.expectError(error.FileNotFound, std.fs.openDirAbsolute(host_path, .{}));
 
@@ -290,39 +303,6 @@ test "directory operations fail explicitly in the file-only spike" {
     defer allocator.free(audit_events);
     try expectAuditEvent(audit_events, "mkdir", "/empty-dir", not_supported);
     try expectAuditEvent(audit_events, "rmdir", "/empty-dir", not_supported);
-}
-
-test "transient rename rollback keeps source entry when persist fails" {
-    const allocator = std.testing.allocator;
-    const fixture = try Fixture.init(allocator);
-    defer fixture.deinit();
-
-    var session = try daemon.Session.init(allocator, .{
-        .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.content_root_path,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-    });
-    defer session.deinit();
-
-    try session.debugCreateFile("/._rename-source.txt", 0o600);
-    try session.debugWriteFile("/._rename-source.txt", "transient contents");
-
-    try std.fs.deleteTreeAbsolute(fixture.content_root_path);
-
-    try std.testing.expectError(
-        error.DebugRenameFailed,
-        session.debugRenameFile("/._rename-source.txt", "/rename-target.txt"),
-    );
-
-    const source = try session.readPath(allocator, "/._rename-source.txt");
-    defer allocator.free(source);
-    try std.testing.expectEqualStrings("transient contents", source);
-
-    try std.testing.expectEqual(
-        filesystem.NodeKind.missing,
-        (try session.inspectPath("/rename-target.txt")).kind,
-    );
 }
 
 test "policy file loader treats empty file as a no-op" {

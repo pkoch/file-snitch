@@ -9,7 +9,6 @@ const c = @cImport({
     @cInclude("sys/xattr.h");
 });
 
-const root_inode: u64 = 1;
 const first_dynamic_inode: u64 = 4;
 
 pub const NodeKind = enum(u32) {
@@ -61,12 +60,7 @@ pub const NodeInfo = struct {
 pub const Lookup = struct {
     node: NodeInfo,
     open_kind: OpenKind,
-    persistent: bool,
-};
-
-pub const Layout = enum {
-    guarded_root,
-    enrolled_parent,
+    guarded: bool,
 };
 
 pub const FileRequestInfo = struct {
@@ -263,16 +257,6 @@ pub const GuardedEntryConfig = struct {
     lock_anchor_path: []const u8,
 };
 
-pub const Config = struct {
-    mount_path: []const u8,
-    backing_store_path: []const u8,
-    default_mutation_outcome: policy.Outcome = .deny,
-    policy_rules: []const policy.Rule = &.{},
-    prompt_broker: ?prompt.Broker = null,
-    status_output_file: ?std.fs.File = null,
-    audit_output_file: ?std.fs.File = null,
-};
-
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const GuardedEntryConfig,
@@ -286,9 +270,7 @@ pub const EnrolledParentConfig = struct {
 
 pub const Model = struct {
     allocator: std.mem.Allocator,
-    layout: Layout,
     mount_path: []u8,
-    content_root_path: []u8,
     source_dir: ?std.fs.Dir = null,
     guarded_store: ?store.Backend = null,
     policy_engine: policy.Engine,
@@ -303,37 +285,13 @@ pub const Model = struct {
     root_timestamp: Timestamp,
     output_mutex: std.Thread.Mutex = .{},
 
-    pub fn init(allocator: std.mem.Allocator, config: Config) !Model {
-        const now = currentTimestamp();
-        var model = Model{
-            .allocator = allocator,
-            .layout = .guarded_root,
-            .mount_path = try allocator.dupe(u8, config.mount_path),
-            .content_root_path = try allocator.dupe(u8, config.backing_store_path),
-            .policy_engine = try policy.Engine.init(
-                allocator,
-                config.default_mutation_outcome,
-                config.policy_rules,
-            ),
-            .prompt_broker = config.prompt_broker,
-            .status_output_file = config.status_output_file,
-            .audit_output_file = config.audit_output_file,
-            .root_timestamp = now,
-        };
-        errdefer model.deinit();
-
-        return model;
-    }
-
     pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Model {
         var source_dir = try std.fs.openDirAbsolute(config.mount_path, .{ .iterate = true });
         errdefer source_dir.close();
 
         var model = Model{
             .allocator = allocator,
-            .layout = .enrolled_parent,
             .mount_path = try allocator.dupe(u8, config.mount_path),
-            .content_root_path = try allocator.dupe(u8, config.mount_path),
             .source_dir = source_dir,
             .guarded_store = config.guarded_store,
             .policy_engine = try policy.Engine.init(
@@ -352,72 +310,12 @@ pub const Model = struct {
         return model;
     }
 
-    pub fn loadGuardedRootFiles(self: *Model) !void {
-        if (self.layout != .guarded_root) {
-            return error.InvalidLayout;
-        }
-
-        if (self.files.items.len != 0) {
-            return error.ContentRootAlreadyLoaded;
-        }
-
-        try ensureContentRootDirectory(self.content_root_path);
-
-        var directory = try std.fs.openDirAbsolute(self.content_root_path, .{ .iterate = true });
-        defer directory.close();
-
-        var iterator = directory.iterate();
-        while (try iterator.next()) |entry| {
-            if (isTransientSidecarName(entry.name)) {
-                continue;
-            }
-
-            const virtual_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.name});
-            defer self.allocator.free(virtual_path);
-
-            if (entry.kind != .file) {
-                continue;
-            }
-
-            var file = try directory.openFile(entry.name, .{ .mode = .read_only });
-            defer file.close();
-
-            const stat = try file.stat();
-            const posix_stat = try std.posix.fstat(file.handle);
-            const imported = try self.appendFile(
-                virtual_path,
-                @intCast(stat.mode & 0o777),
-                @intCast(posix_stat.uid),
-                @intCast(posix_stat.gid),
-                null,
-                null,
-            );
-            const imported_now = currentTimestamp();
-            imported.atime = imported_now;
-            imported.mtime = imported_now;
-            imported.ctime = imported_now;
-
-            if (stat.size > 0) {
-                try imported.content.ensureTotalCapacityPrecise(self.allocator, @intCast(stat.size));
-                imported.content.items.len = @intCast(stat.size);
-                const read_count = try file.readAll(imported.content.items);
-                if (read_count != imported.content.items.len) {
-                    return error.UnexpectedEof;
-                }
-            }
-        }
-    }
-
     fn loadGuardedBackingFiles(self: *Model, guarded_entries: []const GuardedEntryConfig) !void {
-        if (self.layout != .enrolled_parent) {
-            return error.InvalidLayout;
-        }
-
         if (self.files.items.len != 0) {
-            return error.ContentRootAlreadyLoaded;
+            return error.FilesAlreadyLoaded;
         }
 
-        const guarded_store = &(self.guarded_store orelse return error.InvalidLayout);
+        const guarded_store = &(self.guarded_store orelse return error.MissingGuardedStore);
         for (guarded_entries) |entry| {
             const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.relative_path});
             defer self.allocator.free(guarded_path);
@@ -466,7 +364,6 @@ pub const Model = struct {
             dir.close();
         }
         self.allocator.free(self.mount_path);
-        self.allocator.free(self.content_root_path);
         self.* = undefined;
     }
 
@@ -483,70 +380,7 @@ pub const Model = struct {
     }
 
     pub fn lookupPath(self: *const Model, path: []const u8) Lookup {
-        if (self.layout == .enrolled_parent) {
-            return self.lookupEnrolledParentPath(path);
-        }
-
-        if (isRootPath(path)) {
-            return .{
-                .node = .{
-                    .kind = .directory,
-                    .mode = 0o755,
-                    .nlink = 2,
-                    .size = 0,
-                    .block_size = 4096,
-                    .block_count = 0,
-                    .inode = root_inode,
-                    .uid = currentUid(),
-                    .gid = currentGid(),
-                    .atime = self.root_timestamp,
-                    .mtime = self.root_timestamp,
-                    .ctime = self.root_timestamp,
-                },
-                .open_kind = .directory,
-                .persistent = false,
-            };
-        }
-
-        if (self.findFile(path)) |file| {
-            return .{
-                .node = .{
-                    .kind = .regular_file,
-                    .mode = file.mode,
-                    .size = file.content.items.len,
-                    .nlink = 1,
-                    .block_size = 4096,
-                    .block_count = blockCountForSize(@intCast(file.content.items.len)),
-                    .inode = file.inode,
-                    .uid = file.uid,
-                    .gid = file.gid,
-                    .atime = file.atime,
-                    .mtime = file.mtime,
-                    .ctime = file.ctime,
-                },
-                .open_kind = .user_file,
-                .persistent = shouldPersistPath(path),
-            };
-        }
-
-        return .{
-            .node = .{
-                .kind = .missing,
-                .mode = 0,
-                .nlink = 0,
-                .size = 0,
-                .block_size = 0,
-                .block_count = 0,
-                .inode = 0,
-                .uid = 0,
-                .gid = 0,
-                .atime = .{ .sec = 0, .nsec = 0 },
-                .mtime = .{ .sec = 0, .nsec = 0 },
-                .ctime = .{ .sec = 0, .nsec = 0 },
-            },
-            .open_kind = .missing,
-            .persistent = false,
-        };
+        return self.lookupEnrolledParentPath(path);
     }
 
     pub fn syntheticEntryCount(self: *const Model, directory_path: []const u8) u32 {
@@ -600,7 +434,7 @@ pub const Model = struct {
                     .ctime = file.ctime,
                 },
                 .open_kind = .user_file,
-                .persistent = self.isGuardedPath(path),
+                .guarded = self.isGuardedPath(path),
             };
         }
 
@@ -632,7 +466,7 @@ pub const Model = struct {
                 .ctime = timestampFromStatNanos(stat.ctime),
             },
             .open_kind = .directory,
-            .persistent = false,
+            .guarded = false,
         };
     }
 
@@ -674,7 +508,7 @@ pub const Model = struct {
                 .regular_file => .user_file,
                 .missing => .missing,
             },
-            .persistent = false,
+            .guarded = false,
         };
     }
 
@@ -700,7 +534,7 @@ pub const Model = struct {
                 .ctime = self.root_timestamp,
             },
             .open_kind = .directory,
-            .persistent = false,
+            .guarded = false,
         };
     }
 
@@ -715,9 +549,6 @@ pub const Model = struct {
 
     fn syntheticChildNameForFile(self: *const Model, directory_path: []const u8, file: *const StoredFile) ?[]const u8 {
         const child_name = directChildName(directory_path, file.path) orelse return null;
-        if (self.layout == .guarded_root) {
-            return child_name;
-        }
         if (self.realChildExists(directory_path, child_name)) {
             return null;
         }
@@ -763,7 +594,7 @@ pub const Model = struct {
         file_request: FileRequestInfo,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             const lookup = self.lookupPath(path);
             return switch (lookup.open_kind) {
                 .directory => errnoCode(.ISDIR),
@@ -826,7 +657,7 @@ pub const Model = struct {
         context: AccessContext,
         file_request: ?FileRequestInfo,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             const result = self.readPassthroughInto(path, offset, buffer);
             self.recordAuditLiteral("read", path, result, context);
             return result;
@@ -1269,12 +1100,8 @@ pub const Model = struct {
         context: AccessContext,
         open_flags: ?i32,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.createPassthroughFile(path, mode, open_flags);
-        }
-
-        if (self.layout == .guarded_root and !isUserFilePath(path)) {
-            return errnoCode(.INVAL);
         }
 
         if (self.findFile(path) != null) {
@@ -1317,7 +1144,7 @@ pub const Model = struct {
         context: AccessContext,
         file_request: ?FileRequestInfo,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.writePassthroughFile(path, offset, bytes, file_request);
         }
 
@@ -1351,7 +1178,7 @@ pub const Model = struct {
         size: u64,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.truncatePassthroughFile(path, size);
         }
 
@@ -1402,7 +1229,7 @@ pub const Model = struct {
         mode: u32,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.chmodPassthroughFile(path, mode);
         }
 
@@ -1416,7 +1243,7 @@ pub const Model = struct {
         file.mode = mode & 0o777;
         touchFileChange(file);
 
-        return self.finishMetadataMutation(path, file, snapshot, applyModeToHost);
+        return self.finishMetadataMutation(path, file, snapshot);
     }
 
     fn chownFileInternal(
@@ -1426,7 +1253,7 @@ pub const Model = struct {
         gid: u32,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.chownPassthroughFile(path, uid, gid);
         }
 
@@ -1441,11 +1268,11 @@ pub const Model = struct {
         file.gid = gid;
         touchFileChange(file);
 
-        return self.finishMetadataMutation(path, file, snapshot, applyOwnershipToHost);
+        return self.finishMetadataMutation(path, file, snapshot);
     }
 
     fn syncPathInternal(self: *Model, path: []const u8) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.syncPassthroughPath(path);
         }
 
@@ -1462,7 +1289,7 @@ pub const Model = struct {
         path: []const u8,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
+        if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
             return self.removePassthroughFile(path);
         }
 
@@ -1479,10 +1306,6 @@ pub const Model = struct {
                 if (remove_result != 0) {
                     return remove_result;
                 }
-            } else {
-                const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-                defer self.allocator.free(host_path);
-                std.fs.deleteFileAbsolute(host_path) catch |err| return mapFsError(err);
             }
         }
 
@@ -1497,12 +1320,8 @@ pub const Model = struct {
         to: []const u8,
         context: AccessContext,
     ) i32 {
-        if (self.layout == .enrolled_parent and !isTransientVirtualPath(from) and !isTransientVirtualPath(to)) {
+        if (!isTransientVirtualPath(from) and !isTransientVirtualPath(to)) {
             return self.renameEnrolledParentPath(from, to, context);
-        }
-
-        if (!isUserFilePath(from) or !isUserFilePath(to)) {
-            return errnoCode(.INVAL);
         }
 
         if (std.mem.eql(u8, from, to)) {
@@ -1521,26 +1340,14 @@ pub const Model = struct {
 
         const source_index = self.findFileIndex(from) orelse return errnoCode(.NOENT);
         const target_index = self.findFileIndex(to);
-        const source_persistent = shouldPersistPath(from);
-        const target_persistent = shouldPersistPath(to);
-
-        const persist_result = self.applyRenameContentRootTransition(from, to, source_persistent, target_persistent);
-        if (persist_result != 0) {
-            return persist_result;
-        }
-
         const rename_mutation = self.renameStoredFile(source_index, target_index, to) catch |err| {
             return mapFsError(err);
         };
         var rename_committed = false;
         defer if (!rename_committed) self.rollbackRenameMutation(rename_mutation);
 
-        if (!source_persistent and target_persistent) {
-            const file = &self.files.items[rename_mutation.source_index];
-            const sync_result = self.syncFileToContentRoot(file);
-            if (sync_result != 0) {
-                return sync_result;
-            }
+        if (!isTransientVirtualPath(from) or !isTransientVirtualPath(to)) {
+            return errnoCode(.INVAL);
         }
 
         self.commitRenameMutation(rename_mutation);
@@ -1794,7 +1601,6 @@ pub const Model = struct {
         path: []const u8,
         file: *StoredFile,
         snapshot: MetadataSnapshot,
-        apply_to_host: *const fn (*std.fs.File, *const StoredFile) anyerror!void,
     ) i32 {
         if (!shouldPersistPath(path)) {
             return 0;
@@ -1807,24 +1613,6 @@ pub const Model = struct {
             }
             return persist_result;
         }
-
-        const host_path = self.hostPathAlloc(path) catch |err| {
-            restoreFileMetadata(file, snapshot);
-            return mapFsError(err);
-        };
-        defer self.allocator.free(host_path);
-
-        var host_file = std.fs.openFileAbsolute(host_path, .{ .mode = .read_write }) catch |err| {
-            restoreFileMetadata(file, snapshot);
-            return mapFsError(err);
-        };
-        defer host_file.close();
-
-        apply_to_host(&host_file, file) catch |err| {
-            restoreFileMetadata(file, snapshot);
-            return mapFsError(err);
-        };
-
         return 0;
     }
 
@@ -1832,33 +1620,6 @@ pub const Model = struct {
         file.mode = snapshot.mode;
         file.uid = snapshot.uid;
         file.gid = snapshot.gid;
-    }
-
-    fn applyRenameContentRootTransition(
-        self: *Model,
-        from: []const u8,
-        to: []const u8,
-        source_persistent: bool,
-        target_persistent: bool,
-    ) i32 {
-        if (source_persistent and target_persistent) {
-            const from_host_path = self.hostPathAlloc(from) catch |err| return mapFsError(err);
-            defer self.allocator.free(from_host_path);
-            const to_host_path = self.hostPathAlloc(to) catch |err| return mapFsError(err);
-            defer self.allocator.free(to_host_path);
-
-            std.fs.renameAbsolute(from_host_path, to_host_path) catch |err| return mapFsError(err);
-            return 0;
-        }
-
-        if (source_persistent and !target_persistent) {
-            const from_host_path = self.hostPathAlloc(from) catch |err| return mapFsError(err);
-            defer self.allocator.free(from_host_path);
-
-            std.fs.deleteFileAbsolute(from_host_path) catch |err| return mapFsError(err);
-        }
-
-        return 0;
     }
 
     fn renameStoredFile(
@@ -1913,14 +1674,6 @@ pub const Model = struct {
             var removed = file;
             removed.deinit(self.allocator);
         }
-    }
-
-    fn applyModeToHost(host_file: *std.fs.File, file: *const StoredFile) !void {
-        try host_file.chmod(@intCast(file.mode));
-    }
-
-    fn applyOwnershipToHost(host_file: *std.fs.File, file: *const StoredFile) !void {
-        try host_file.chown(file.uid, file.gid);
     }
 
     fn appendFile(
@@ -2012,23 +1765,7 @@ pub const Model = struct {
             return 0;
         }
 
-        const host_path = self.hostPathAlloc(file.path) catch |err| return mapFsError(err);
-        defer self.allocator.free(host_path);
-
-        var host_file = std.fs.createFileAbsolute(host_path, .{
-            .truncate = true,
-            .read = true,
-        }) catch |err| return mapFsError(err);
-        defer host_file.close();
-
-        if (file.content.items.len != 0) {
-            host_file.writeAll(file.content.items) catch |err| return mapFsError(err);
-        }
-
-        host_file.chmod(@intCast(file.mode)) catch |err| return mapFsError(err);
-        host_file.chown(file.uid, file.gid) catch |err| return mapFsError(err);
-        host_file.sync() catch |err| return mapFsError(err);
-        return 0;
+        return errnoCode(.IO);
     }
 
     fn removeGuardedBackingFile(self: *Model, file: *const StoredFile) i32 {
@@ -2039,9 +1776,6 @@ pub const Model = struct {
     }
 
     fn isGuardedPath(self: *const Model, path: []const u8) bool {
-        if (self.layout != .enrolled_parent) {
-            return true;
-        }
         const file = self.findFile(path) orelse return false;
         return file.backing_object_id != null;
     }
@@ -2055,68 +1789,22 @@ pub const Model = struct {
         err: i32,
     } {
         const lookup = self.lookupPath(path);
-        if (lookup.open_kind != .user_file or !lookup.persistent) {
+        if (lookup.open_kind != .user_file or !lookup.guarded) {
             return .{ .err = missing_result };
         }
-
-        if (self.findFile(path) == null) {
-            return .{ .err = errnoCode(.NOENT) };
-        }
-
-        const host_path = self.hostPathAlloc(path) catch |err| switch (err) {
-            error.InvalidPath, error.FileNotFound => return .{ .err = missing_result },
-            else => return .{ .err = errnoCode(.NOMEM) },
-        };
-        defer self.allocator.free(host_path);
-
-        const host_path_z = self.allocator.dupeZ(u8, host_path) catch {
-            return .{ .err = errnoCode(.NOMEM) };
-        };
-        return .{ .ok = host_path_z };
+        return .{ .err = missing_result };
     }
 
-    fn hostPathAlloc(self: *const Model, path: []const u8) ![]u8 {
-        return switch (self.layout) {
-            .guarded_root => blk: {
-                if (!isUserFilePath(path)) {
-                    break :blk error.InvalidPath;
-                }
+    pub fn openGuardedLockFd(self: *const Model, path: []const u8, requested_flags: i32) i32 {
+        _ = requested_flags;
+        const file = self.findFile(path) orelse return errnoCode(.NOENT);
+        const lock_anchor_path = file.lock_anchor_path orelse return errnoCode(.NOENT);
+        ensureParentDirectoryAbsolute(lock_anchor_path) catch |err| return mapFsError(err);
 
-                break :blk std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.content_root_path, path[1..] });
-            },
-            .enrolled_parent => blk: {
-                const file = self.findFile(path) orelse break :blk error.FileNotFound;
-                if (file.backing_object_id != null) {
-                    break :blk error.InvalidPath;
-                }
-                break :blk error.InvalidPath;
-            },
-        };
-    }
+        const lock_anchor_z = self.allocator.dupeZ(u8, lock_anchor_path) catch return errnoCode(.NOMEM);
+        defer self.allocator.free(lock_anchor_z);
 
-    pub fn openPersistentBackingFd(self: *const Model, path: []const u8, requested_flags: i32) i32 {
-        if (self.layout == .enrolled_parent) {
-            const file = self.findFile(path) orelse return errnoCode(.NOENT);
-            const lock_anchor_path = file.lock_anchor_path orelse return errnoCode(.NOENT);
-            ensureParentDirectoryAbsolute(lock_anchor_path) catch |err| return mapFsError(err);
-
-            const lock_anchor_z = self.allocator.dupeZ(u8, lock_anchor_path) catch return errnoCode(.NOMEM);
-            defer self.allocator.free(lock_anchor_z);
-
-            const descriptor = c.open(lock_anchor_z.ptr, c.O_RDWR | c.O_CREAT, @as(std.posix.mode_t, 0o600));
-            if (descriptor < 0) {
-                return -std.c._errno().*;
-            }
-            return descriptor;
-        }
-
-        const host_path = self.hostPathAlloc(path) catch |err| return mapFsError(err);
-        defer self.allocator.free(host_path);
-
-        const host_path_z = self.allocator.dupeZ(u8, host_path) catch return errnoCode(.NOMEM);
-        defer self.allocator.free(host_path_z);
-
-        const descriptor = c.open(host_path_z.ptr, requested_flags, @as(std.posix.mode_t, 0));
+        const descriptor = c.open(lock_anchor_z.ptr, c.O_RDWR | c.O_CREAT, @as(std.posix.mode_t, 0o600));
         if (descriptor < 0) {
             return -std.c._errno().*;
         }
@@ -2253,7 +1941,6 @@ pub const Model = struct {
             .action = "status",
             .backend = "libfuse",
             .mount_path = self.mount_path,
-            .content_root = self.content_root_path,
             .configured_ops = self.runtime_stats.configured_operation_count,
             .planned_args = self.runtime_stats.planned_argument_count,
             .tracked_files = self.files.items.len,
@@ -2301,16 +1988,6 @@ pub const Model = struct {
         output_file.writeAll(line.written()) catch {};
     }
 };
-
-fn ensureContentRootDirectory(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            var dir = try std.fs.openDirAbsolute(path, .{});
-            dir.close();
-        },
-        else => return err,
-    };
-}
 
 fn writeIntoArrayList(
     allocator: std.mem.Allocator,
@@ -2406,7 +2083,7 @@ fn missingLookup() Lookup {
             .ctime = .{ .sec = 0, .nsec = 0 },
         },
         .open_kind = .missing,
-        .persistent = false,
+        .guarded = false,
     };
 }
 
@@ -2580,14 +2257,6 @@ fn isTransientSidecarName(name: []const u8) bool {
 
 fn isTransientVirtualPath(path: []const u8) bool {
     return path.len > 3 and path[0] == '/' and isTransientSidecarName(path[1..]);
-}
-
-fn isUserFilePath(path: []const u8) bool {
-    if (path.len < 2 or path[0] != '/') {
-        return false;
-    }
-
-    return std.mem.indexOfScalarPos(u8, path, 1, '/') == null;
 }
 
 fn shouldPersistPath(path: []const u8) bool {

@@ -13,12 +13,10 @@ const c = struct {
 
     pub const RawSessionConfig = extern struct {
         mount_path: [*:0]const u8,
-        backing_store_path: ?[*:0]const u8,
         source_dir_fd: i32,
-        layout_kind: u8,
         daemon_state: ?*anyopaque,
         run_in_foreground: u8,
-        reserved: [3]u8,
+        reserved: [7]u8,
     };
 
     pub const RawSessionInfo = extern struct {
@@ -54,9 +52,7 @@ pub const Environment = struct {
 
 pub const SessionConfig = struct {
     mount_path: [*:0]const u8,
-    backing_store_path: ?[*:0]const u8 = null,
     source_dir_fd: i32 = -1,
-    layout_kind: u8 = 0,
     daemon_state: ?*anyopaque = null,
     run_in_foreground: bool,
 };
@@ -101,12 +97,10 @@ pub fn probe() Error!Environment {
 pub fn createSession(config: SessionConfig) Error!*RawSession {
     var raw_config = c.RawSessionConfig{
         .mount_path = config.mount_path,
-        .backing_store_path = config.backing_store_path,
         .source_dir_fd = config.source_dir_fd,
-        .layout_kind = config.layout_kind,
         .daemon_state = config.daemon_state,
         .run_in_foreground = @intFromBool(config.run_in_foreground),
-        .reserved = std.mem.zeroes([3]u8),
+        .reserved = std.mem.zeroes([7]u8),
     };
     var session: ?*RawSession = null;
     if (c.fsn_fuse_session_create(&raw_config, &session) != 0 or session == null) {
