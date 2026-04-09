@@ -22,21 +22,21 @@ const allowed_prompt_note_path = "/allowed-prompt-note.txt";
 const Fixture = struct {
     allocator: std.mem.Allocator,
     mount_path: []u8,
-    backing_store_path: []u8,
+    content_root_path: []u8,
 
     fn init(allocator: std.mem.Allocator) !Fixture {
         const run_id = std.time.nanoTimestamp();
         const mount_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-mount-{d}", .{run_id});
         errdefer allocator.free(mount_path);
-        const backing_store_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-store-{d}", .{run_id});
-        errdefer allocator.free(backing_store_path);
+        const content_root_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-store-{d}", .{run_id});
+        errdefer allocator.free(content_root_path);
 
         try std.fs.makeDirAbsolute(mount_path);
         errdefer std.fs.deleteTreeAbsolute(mount_path) catch {};
-        try std.fs.makeDirAbsolute(backing_store_path);
-        errdefer std.fs.deleteTreeAbsolute(backing_store_path) catch {};
+        try std.fs.makeDirAbsolute(content_root_path);
+        errdefer std.fs.deleteTreeAbsolute(content_root_path) catch {};
 
-        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ backing_store_path, seed_name });
+        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ content_root_path, seed_name });
         defer allocator.free(seed_host_path);
 
         var seed_file = try std.fs.createFileAbsolute(seed_host_path, .{ .truncate = true });
@@ -46,15 +46,15 @@ const Fixture = struct {
         return .{
             .allocator = allocator,
             .mount_path = mount_path,
-            .backing_store_path = backing_store_path,
+            .content_root_path = content_root_path,
         };
     }
 
     fn deinit(self: Fixture) void {
         std.fs.deleteTreeAbsolute(self.mount_path) catch {};
-        std.fs.deleteTreeAbsolute(self.backing_store_path) catch {};
+        std.fs.deleteTreeAbsolute(self.content_root_path) catch {};
         self.allocator.free(self.mount_path);
-        self.allocator.free(self.backing_store_path);
+        self.allocator.free(self.content_root_path);
     }
 };
 
@@ -65,7 +65,7 @@ test "session exercise is covered by core assertions" {
 
     var session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -84,7 +84,7 @@ test "session exercise is covered by core assertions" {
     try std.testing.expect(description.run_in_foreground);
     try std.testing.expectEqual(policy.Outcome.allow, description.default_mutation_outcome);
     try std.testing.expectEqualStrings(fixture.mount_path, description.mount_path);
-    try std.testing.expectEqualStrings(fixture.backing_store_path, description.backing_store_path);
+    try std.testing.expectEqualStrings(fixture.content_root_path, description.content_root_path);
     try std.testing.expect(description.configured_operation_count >= 1);
 
     const plan = try session.executionPlan(allocator);
@@ -125,7 +125,7 @@ test "session exercise is covered by core assertions" {
 
     var reloaded_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .deny,
     });
@@ -144,7 +144,7 @@ test "policy and prompt paths are covered by core assertions" {
 
     var base_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -155,7 +155,7 @@ test "policy and prompt paths are covered by core assertions" {
 
     var readonly_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .deny,
     });
@@ -168,7 +168,7 @@ test "policy and prompt paths are covered by core assertions" {
 
     var policy_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
         .policy_rules = &.{
@@ -198,7 +198,7 @@ test "policy and prompt paths are covered by core assertions" {
     var allow_prompt_context = prompt.ScriptedContext.init(&.{.allow});
     var allowed_prompt_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
         .policy_rules = &.{
@@ -238,7 +238,7 @@ test "policy and prompt paths are covered by core assertions" {
     var default_prompt_context = prompt.ScriptedContext.init(&.{.allow});
     var default_prompt_session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .prompt,
         .prompt_broker = prompt.scriptedBroker(&default_prompt_context),
@@ -262,7 +262,7 @@ test "directory operations fail explicitly in the file-only spike" {
 
     var session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -281,7 +281,7 @@ test "directory operations fail explicitly in the file-only spike" {
         (try session.inspectPath("/empty-dir")).kind,
     );
 
-    const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.backing_store_path});
+    const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.content_root_path});
     defer allocator.free(host_path);
     try std.testing.expectError(error.FileNotFound, std.fs.openDirAbsolute(host_path, .{}));
 
@@ -299,7 +299,7 @@ test "transient rename rollback keeps source entry when persist fails" {
 
     var session = try daemon.Session.init(allocator, .{
         .mount_path = fixture.mount_path,
-        .backing_store_path = fixture.backing_store_path,
+        .backing_store_path = fixture.content_root_path,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
     });
@@ -308,7 +308,7 @@ test "transient rename rollback keeps source entry when persist fails" {
     try session.debugCreateFile("/._rename-source.txt", 0o600);
     try session.debugWriteFile("/._rename-source.txt", "transient contents");
 
-    try std.fs.deleteTreeAbsolute(fixture.backing_store_path);
+    try std.fs.deleteTreeAbsolute(fixture.content_root_path);
 
     try std.testing.expectError(
         error.DebugRenameFailed,

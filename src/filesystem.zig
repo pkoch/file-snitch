@@ -288,7 +288,7 @@ pub const Model = struct {
     allocator: std.mem.Allocator,
     layout: Layout,
     mount_path: []u8,
-    backing_store_path: []u8,
+    content_root_path: []u8,
     source_dir: ?std.fs.Dir = null,
     guarded_store: ?store.Backend = null,
     policy_engine: policy.Engine,
@@ -309,7 +309,7 @@ pub const Model = struct {
             .allocator = allocator,
             .layout = .guarded_root,
             .mount_path = try allocator.dupe(u8, config.mount_path),
-            .backing_store_path = try allocator.dupe(u8, config.backing_store_path),
+            .content_root_path = try allocator.dupe(u8, config.backing_store_path),
             .policy_engine = try policy.Engine.init(
                 allocator,
                 config.default_mutation_outcome,
@@ -333,7 +333,7 @@ pub const Model = struct {
             .allocator = allocator,
             .layout = .enrolled_parent,
             .mount_path = try allocator.dupe(u8, config.mount_path),
-            .backing_store_path = try allocator.dupe(u8, config.mount_path),
+            .content_root_path = try allocator.dupe(u8, config.mount_path),
             .source_dir = source_dir,
             .guarded_store = config.guarded_store,
             .policy_engine = try policy.Engine.init(
@@ -361,9 +361,9 @@ pub const Model = struct {
             return error.BackingStoreAlreadyLoaded;
         }
 
-        try ensureBackingStoreDirectory(self.backing_store_path);
+        try ensureBackingStoreDirectory(self.content_root_path);
 
-        var directory = try std.fs.openDirAbsolute(self.backing_store_path, .{ .iterate = true });
+        var directory = try std.fs.openDirAbsolute(self.content_root_path, .{ .iterate = true });
         defer directory.close();
 
         var iterator = directory.iterate();
@@ -466,7 +466,7 @@ pub const Model = struct {
             dir.close();
         }
         self.allocator.free(self.mount_path);
-        self.allocator.free(self.backing_store_path);
+        self.allocator.free(self.content_root_path);
         self.* = undefined;
     }
 
@@ -2082,7 +2082,7 @@ pub const Model = struct {
                     break :blk error.InvalidPath;
                 }
 
-                break :blk std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.backing_store_path, path[1..] });
+                break :blk std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.content_root_path, path[1..] });
             },
             .enrolled_parent => blk: {
                 const file = self.findFile(path) orelse break :blk error.FileNotFound;
@@ -2253,10 +2253,10 @@ pub const Model = struct {
             .action = "status",
             .backend = "libfuse",
             .mount_path = self.mount_path,
-            .backing_store = self.backing_store_path,
+            .content_root = self.content_root_path,
             .configured_ops = self.runtime_stats.configured_operation_count,
             .planned_args = self.runtime_stats.planned_argument_count,
-            .backing_files = self.files.items.len,
+            .tracked_files = self.files.items.len,
         }, .{}, &line.writer) catch return;
         line.writer.writeByte('\n') catch return;
 

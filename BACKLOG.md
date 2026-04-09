@@ -63,7 +63,7 @@ file-enrollment pivot, and the major Phase 0 research references.
 
 ## Phase 2: encryption layer
 
-- `[ ]` Design encrypted backing-store format
+- `[ ]` Design encrypted guarded-object format
 - `[ ]` Define metadata model for paths, modes, timestamps, and IDs
 - `[ ]` Implement per-file authenticated encryption
 - `[ ]` Implement crash-safe write and rename handling
@@ -113,6 +113,6 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[x]` Whether reads and writes need separate approval classes in v1
   - yes: keep distinct read-like and write-capable approval classes
   - read approval must not silently authorize later write behavior
-- `[x]` Whether the backing store should expose filenames or only opaque IDs
+- `[x]` Whether the guarded-object store should expose filenames or only opaque IDs
   - use opaque IDs
-  - canonical user paths live in enrollment and policy state, not as backing-store object names
+  - canonical user paths live in enrollment and policy state, not as guarded-object names

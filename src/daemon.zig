@@ -39,7 +39,7 @@ pub const EnrolledParentConfig = struct {
 pub const Description = struct {
     backend_name: []const u8,
     mount_path: []const u8,
-    backing_store_path: []const u8,
+    content_root_path: []const u8,
     high_level_ops_size: usize,
     configured_operation_count: u32,
     planned_argument_count: u32,
@@ -234,7 +234,7 @@ pub const Session = struct {
         return .{
             .backend_name = runtime.backend_name,
             .mount_path = self.state.filesystem.mount_path,
-            .backing_store_path = self.state.filesystem.backing_store_path,
+            .content_root_path = self.state.filesystem.content_root_path,
             .high_level_ops_size = runtime.high_level_ops_size,
             .configured_operation_count = runtime.configured_operation_count,
             .planned_argument_count = runtime.planned_argument_count,
@@ -389,10 +389,10 @@ pub fn mount(allocator: std.mem.Allocator, config: Config) !void {
 
     const description = try session.describe();
     std.debug.print(
-        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
+        "mounting file-snitch: mount={s} content_root={s} configured_ops={d} default_mutation={s}\n",
         .{
             description.mount_path,
-            description.backing_store_path,
+            description.content_root_path,
             description.configured_operation_count,
             @tagName(description.default_mutation_outcome),
         },
@@ -410,10 +410,10 @@ pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentC
 
     const description = try session.describe();
     std.debug.print(
-        "mounting file-snitch: mount={s} backing={s} configured_ops={d} default_mutation={s}\n",
+        "mounting file-snitch: mount={s} content_root={s} configured_ops={d} default_mutation={s}\n",
         .{
             description.mount_path,
-            description.backing_store_path,
+            description.content_root_path,
             description.configured_operation_count,
             @tagName(description.default_mutation_outcome),
         },
