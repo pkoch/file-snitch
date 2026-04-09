@@ -98,7 +98,7 @@ Toolchain pinning:
 
 FUSE discovery:
 - the Zig build now prefers `pkg-config` when available
-- Linux falls back to standard `fuse3` system locations if `pkg-config` is absent
+- Linux falls back to standard `fuse3` system locations if `pkg-config` is absent or cannot resolve a usable `fuse3.pc`
 - macOS falls back to standard macFUSE locations under `/usr/local` and `/opt/homebrew` if `pkg-config` is absent
 - `zig build compile-commands` now writes `compile_commands.json` for clangd from the same discovery logic
 - after cloning or changing build flags, run `zig build compile-commands` so clangd picks up the correct C flags; `build.zig` remains the source of truth

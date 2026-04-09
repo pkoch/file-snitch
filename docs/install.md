@@ -54,6 +54,9 @@ For example, on Debian/Ubuntu-like systems:
 sudo apt-get install -y fuse3 libfuse3-dev
 ```
 
+This path has been verified on an Ubuntu arm64 Lima VM with Linuxbrew plus
+distro `fuse3` and `libfuse3-dev`.
+
 ## First real-user drill
 
 The current prompt path uses two foreground processes:
