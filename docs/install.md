@@ -110,6 +110,13 @@ file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 That file is meant to accompany GitHub bug reports. It includes policy and
 environment diagnostics, but not guarded file contents.
 
+## User service examples
+
+Example per-user service files live in:
+- [docs/services.md](./services.md)
+- [packaging/systemd/file-snitch-run.service](../packaging/systemd/file-snitch-run.service)
+- [packaging/launchd/dev.file-snitch.run.plist](../packaging/launchd/dev.file-snitch.run.plist)
+
 ## Notes
 
 - `policy.yml` lives at `~/.config/file-snitch/policy.yml` unless

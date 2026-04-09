@@ -44,6 +44,8 @@ Then choose one of these:
   - `./scripts/demo-session.sh`
 - real install and first-user drill:
   - [docs/install.md](./docs/install.md)
+- user service examples:
+  - [docs/services.md](./docs/services.md)
 
 ## Recorded Demo
 
