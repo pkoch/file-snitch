@@ -88,12 +88,24 @@ pub fn build(b: *std.Build) void {
     });
     const run_enrollment_tests = b.addRunArtifact(enrollment_tests);
 
+    const agent_test_module = b.createModule(.{
+        .root_source_file = b.path("src/agent.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const agent_tests = b.addTest(.{
+        .root_module = agent_test_module,
+    });
+    const run_agent_tests = b.addRunArtifact(agent_tests);
+
     const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
     test_step.dependOn(&run_store_tests.step);
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_enrollment_tests.step);
+    test_step.dependOn(&run_agent_tests.step);
 }
 
 fn configureFuseInterop(

@@ -31,9 +31,9 @@ Current state:
   - clean `SIGINT` teardown back to the original host view
 - Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key, and expired decisions age out at evaluation time.
 - Audit output is structured JSON on stdout. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
-- The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
+- A first local agent path now exists: `file-snitch agent --foreground` starts a TTY agent on a user-owned Unix socket, and `run prompt` talks to that socket instead of reading the daemon's stdin directly.
 - The remaining runtime limits are:
-  - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
+  - the current agent frontend is still terminal-only; remote forwarding and richer agent UX are future work
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
 - New enrollments are currently limited to regular files under the current user's home directory and owned by that user.
 - The old guarded-root spike now survives only in historical notes. It is no longer a supported or implemented CLI/runtime path.
@@ -47,6 +47,7 @@ Current state:
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
+- `src/agent.zig`: local requester/agent socket protocol and TTY agent implementation
 - `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
@@ -126,6 +127,7 @@ What each command covers:
   - `tests/core_integration.zig`: dry-run core coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
   - `src/store.zig`: guarded-store unit tests for object serialization and the mock backend
+  - `src/agent.zig`: requester/agent framing and ULID unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that foreground `run` stays alive and watches for future changes even when policy is currently empty
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
@@ -144,11 +146,12 @@ Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, polls `policy.yml`, and adds or removes mount workers as the derived mount plan changes
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
+- `file-snitch agent --foreground` starts the current local TTY agent on the default Unix socket
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
 - foreground and daemon mode now share the same policy-reconciliation behavior
-- `run prompt` is still a local interactive debugging path, not the long-term broker model
+- `run prompt` now resolves decisions through the local agent socket instead of reading from the daemon's stdin
 - `file-snitch enroll <path>` migrates the plaintext file into the configured guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan
@@ -160,8 +163,7 @@ Prompt notes:
   - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
-- `run prompt --daemon` is intentionally rejected for now because the current broker is interactive
-- the long-term goal is an agent-style broker, more like `ssh-agent` or `gpg-agent`, not richer local TTY prompting per daemon
+- the current agent is intentionally TTY-only; the long-term goal is a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
 - a real local `pass` drill has been run outside CI with:
   - a disposable temp home
@@ -171,7 +173,7 @@ Prompt notes:
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations
-- the terminal broker currently prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
+- the current TTY agent frontend prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

@@ -1,4 +1,5 @@
 const std = @import("std");
+const agent = @import("agent.zig");
 const config = @import("config.zig");
 const daemon = @import("daemon.zig");
 const enrollment_ops = @import("enrollment.zig");
@@ -51,6 +52,10 @@ pub fn main() !void {
 pub fn run(args: []const []const u8) !void {
     switch (try parseCommand(args)) {
         .help => printUsage(),
+        .agent => |command| {
+            defer command.deinit(allocator);
+            try runAgent(command);
+        },
         .run => |command| {
             defer command.deinit(allocator);
             try runWithPolicy(command);
@@ -76,11 +81,21 @@ pub fn run(args: []const []const u8) !void {
 
 const Command = union(enum) {
     help,
+    agent: AgentCommand,
     run: RunCommand,
     enroll: PathCommand,
     unenroll: PathCommand,
     status: PolicyCommand,
     doctor: PolicyCommand,
+};
+
+const AgentCommand = struct {
+    socket_path: []const u8,
+    run_in_foreground: bool,
+
+    fn deinit(self: AgentCommand, alloc: std.mem.Allocator) void {
+        alloc.free(self.socket_path);
+    }
 };
 
 const RunCommand = struct {
@@ -128,6 +143,9 @@ fn parseCommand(args: []const []const u8) !Command {
 
     if (std.mem.eql(u8, args[0], "run")) {
         return .{ .run = try parseRunCommand(args[1..]) };
+    }
+    if (std.mem.eql(u8, args[0], "agent")) {
+        return .{ .agent = try parseAgentCommand(args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "enroll")) {
         return .{ .enroll = try parsePathCommand(args[1..], true) };
@@ -201,8 +219,56 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
     }
     command.run_in_foreground = selected_execution_mode.?;
 
-    if (!command.run_in_foreground and command.default_mutation_outcome == .prompt) {
-        return invalidUsage("error: `run prompt` requires --foreground because the current broker is interactive\n", .{});
+    return command;
+}
+
+fn parseAgentCommand(args: []const []const u8) !AgentCommand {
+    const socket_path = try agent.defaultSocketPathAlloc(allocator);
+    errdefer allocator.free(socket_path);
+
+    var command: AgentCommand = .{
+        .socket_path = socket_path,
+        .run_in_foreground = undefined,
+    };
+    errdefer command.deinit(allocator);
+
+    var selected_execution_mode: ?bool = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+
+        if (std.mem.eql(u8, arg, "--foreground")) {
+            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
+            selected_execution_mode = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--daemon")) {
+            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
+            selected_execution_mode = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--socket")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            allocator.free(command.socket_path);
+            command.socket_path = try resolvePathArgument(args[index]);
+            continue;
+        }
+
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    if (selected_execution_mode == null) {
+        return invalidUsage("error: `agent` requires exactly one of --foreground or --daemon\n", .{});
+    }
+
+    command.run_in_foreground = selected_execution_mode.?;
+    if (!command.run_in_foreground) {
+        return invalidUsage("error: the TTY agent currently requires --foreground\n", .{});
     }
 
     return command;
@@ -302,6 +368,20 @@ fn runWithPolicy(command: RunCommand) !void {
     try runStaticPolicy(command);
 }
 
+fn runAgent(command: AgentCommand) !void {
+    std.debug.assert(command.run_in_foreground);
+
+    var cli_context = prompt.CliContext{
+        .timeout_ms = try loadPromptTimeoutMs(),
+    };
+    var tty_agent_context = agent.TtyAgentContext{
+        .allocator = allocator,
+        .socket_path = command.socket_path,
+        .cli_context = &cli_context,
+    };
+    try agent.runTtyAgent(&tty_agent_context);
+}
+
 fn daemonizeSupervisor() !void {
     const child_pid = std.posix.fork() catch return error.DaemonizeFailed;
     if (child_pid != 0) {
@@ -347,11 +427,6 @@ fn runStaticPolicy(command: RunCommand) !void {
         return;
     }
 
-    if (mount_plan.paths.len > 1 and command.default_mutation_outcome == .prompt) {
-        std.debug.print("error: multi-mount `run prompt` is not supported yet\n", .{});
-        return error.InvalidUsage;
-    }
-
     if (!command.run_in_foreground and mount_plan.paths.len != 1) {
         std.debug.print(
             "error: multi-mount `run --daemon` is not supported yet; got {d} planned mounts in {s}\n",
@@ -373,9 +448,16 @@ fn runStaticPolicy(command: RunCommand) !void {
         if (status_output_file) |file| file.close();
     }
 
-    var cli_prompt_context = prompt.CliContext{
-        .timeout_ms = command.prompt_timeout_ms,
-    };
+    const prompt_requester = if (command.default_mutation_outcome == .prompt)
+        agent.RequesterContext{
+            .allocator = allocator,
+            .socket_path = try agent.defaultSocketPathAlloc(allocator),
+            .timeout_ms = command.prompt_timeout_ms,
+        }
+    else
+        null;
+    defer if (prompt_requester) |requester| allocator.free(requester.socket_path);
+
     const PlannedMount = struct {
         mount_path: []const u8,
         guarded_entries: []filesystem.GuardedEntryConfig,
@@ -432,7 +514,7 @@ fn runStaticPolicy(command: RunCommand) !void {
             .default_mutation_outcome = command.default_mutation_outcome,
             .policy_rules = compiled_rules.items,
             .prompt_broker = if (command.default_mutation_outcome == .prompt)
-                prompt.cliBroker(&cli_prompt_context)
+                agent.socketBroker(@constCast(&prompt_requester.?))
             else
                 null,
             .status_output_file = status_output_file,
@@ -811,12 +893,6 @@ fn reconcileManagedMountChildren(
     };
     defer mount_plan.deinit();
 
-    if (command.default_mutation_outcome == .prompt and mount_plan.paths.len > 1) {
-        std.log.err("refusing to project {d} mounts in prompt mode; keeping the daemon alive without active mounts", .{mount_plan.paths.len});
-        stopManagedMountChildren(children);
-        return next_expiration_unix_seconds;
-    }
-
     stopManagedMountChildren(children);
 
     if (mount_plan.paths.len == 0) {
@@ -1093,6 +1169,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
+        \\  file-snitch agent (--daemon|--foreground) [--socket <path>]
         \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
@@ -1100,11 +1177,11 @@ fn printUsage() void {
         \\  file-snitch doctor [--policy <path>]
         \\
         \\notes:
+        \\  - `agent --foreground` starts the local TTY decision agent on a Unix socket
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - foreground and daemon mode now share the same policy-reconciliation model
         \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes
-        \\  - multiple planned mounts are supported except in `prompt` mode
-        \\  - `run prompt --daemon` is still unsupported because the current broker is interactive
+        \\  - prompt mode now talks to the local agent socket instead of reading from the daemon's stdin
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems

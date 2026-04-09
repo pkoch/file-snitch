@@ -1,11 +1,15 @@
 home_dir=""
 config_home_dir=""
+runtime_dir=""
 policy_file=""
 password_store_dir=""
 fake_bin_dir=""
 log_file=""
 daemon_pid=""
 run_input_fd=""
+agent_log_file=""
+agent_pid=""
+agent_input_fd=""
 mount_paths=()
 run_mode=""
 run_execution_mode=""
@@ -15,18 +19,23 @@ prepare_run_fixture() {
 
   home_dir="$(mktemp -d "$TMP_ROOT/${fixture_name}-home.XXXXXX")"
   config_home_dir="$home_dir/.config"
+  runtime_dir="$home_dir/.run"
   policy_file="$config_home_dir/file-snitch/policy.yml"
   password_store_dir="$home_dir/.password-store"
   fake_bin_dir="$home_dir/.local/file-snitch-test-bin"
   log_file="$(mktemp "$TMP_ROOT/${fixture_name}-log.XXXXXX")"
+  agent_log_file="$(mktemp "$TMP_ROOT/${fixture_name}-agent-log.XXXXXX")"
   daemon_pid=""
   run_input_fd=""
+  agent_pid=""
+  agent_input_fd=""
   mount_paths=()
   run_mode=""
   run_execution_mode=""
 
   mkdir -p \
     "$config_home_dir/file-snitch" \
+    "$runtime_dir" \
     "$password_store_dir" \
     "$fake_bin_dir"
 
@@ -41,6 +50,7 @@ run_file_snitch() {
   PATH="$fake_bin_dir:$PATH" \
     HOME="$home_dir" \
     XDG_CONFIG_HOME="$config_home_dir" \
+    XDG_RUNTIME_DIR="$runtime_dir" \
     PASSWORD_STORE_DIR="$password_store_dir" \
     "$repo_root/zig-out/bin/file-snitch" "$@"
 }
@@ -49,6 +59,7 @@ capture_file_snitch() {
   PATH="$fake_bin_dir:$PATH" \
     HOME="$home_dir" \
     XDG_CONFIG_HOME="$config_home_dir" \
+    XDG_RUNTIME_DIR="$runtime_dir" \
     PASSWORD_STORE_DIR="$password_store_dir" \
     "$repo_root/zig-out/bin/file-snitch" "$@" 2>&1
 }
@@ -64,12 +75,14 @@ start_file_snitch_run() {
     PATH="$fake_bin_dir:$PATH" \
       HOME="$home_dir" \
       XDG_CONFIG_HOME="$config_home_dir" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
       "$repo_root/zig-out/bin/file-snitch" run "$mode" "$execution_mode" <&$run_input_fd >"$log_file" 2>&1 &
   else
     PATH="$fake_bin_dir:$PATH" \
       HOME="$home_dir" \
       XDG_CONFIG_HOME="$config_home_dir" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
       "$repo_root/zig-out/bin/file-snitch" run "$mode" "$execution_mode" >"$log_file" 2>&1 &
   fi
@@ -81,6 +94,47 @@ start_file_snitch_run() {
   fi
 
   wait_for_mounts_ready
+}
+
+start_file_snitch_agent() {
+  local execution_mode="${1:---foreground}"
+
+  if [[ -n "$agent_input_fd" ]]; then
+    PATH="$fake_bin_dir:$PATH" \
+      HOME="$home_dir" \
+      XDG_CONFIG_HOME="$config_home_dir" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
+      PASSWORD_STORE_DIR="$password_store_dir" \
+      "$repo_root/zig-out/bin/file-snitch" agent "$execution_mode" <&$agent_input_fd >"$agent_log_file" 2>&1 &
+  else
+    PATH="$fake_bin_dir:$PATH" \
+      HOME="$home_dir" \
+      XDG_CONFIG_HOME="$config_home_dir" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
+      PASSWORD_STORE_DIR="$password_store_dir" \
+      "$repo_root/zig-out/bin/file-snitch" agent "$execution_mode" >"$agent_log_file" 2>&1 &
+  fi
+  agent_pid="$!"
+  wait_for_agent_ready
+}
+
+wait_for_agent_ready() {
+  local attempts="${1:-100}"
+  local socket_path="$runtime_dir/file-snitch/agent.sock"
+
+  for _ in $(seq 1 "$attempts"); do
+    if [[ -S "$socket_path" ]]; then
+      return
+    fi
+
+    if [[ -n "${agent_pid:-}" ]] && ! kill -0 "$agent_pid" 2>/dev/null; then
+      fail "agent exited before socket became ready"
+    fi
+
+    sleep 0.1
+  done
+
+  fail "agent did not create its socket"
 }
 
 find_run_daemon_pid() {
@@ -191,6 +245,20 @@ stop_run_fixture() {
 
   daemon_pid=""
   run_input_fd=""
+  if [[ -n "${agent_pid:-}" ]] && kill -0 "$agent_pid" 2>/dev/null; then
+    kill -INT "$agent_pid" 2>/dev/null || true
+    if ! wait_for_daemon_exit "$agent_pid" 20; then
+      kill -TERM "$agent_pid" 2>/dev/null || true
+      if ! wait_for_daemon_exit "$agent_pid" 20; then
+        kill -KILL "$agent_pid" 2>/dev/null || true
+        wait_for_daemon_exit "$agent_pid" 20 || status=$?
+      fi
+    fi
+
+    wait_for_run_process "$agent_pid" || status=$?
+  fi
+  agent_pid=""
+  agent_input_fd=""
   mount_paths=()
   run_mode=""
   run_execution_mode=""
@@ -232,14 +300,17 @@ cleanup_run_fixture() {
   stop_run_fixture || status=$?
 
   [[ -n "$log_file" ]] && rm -f "$log_file"
+  [[ -n "$agent_log_file" ]] && rm -f "$agent_log_file"
   [[ -n "$home_dir" ]] && rm -rf "$home_dir"
 
   home_dir=""
   config_home_dir=""
+  runtime_dir=""
   policy_file=""
   password_store_dir=""
   fake_bin_dir=""
   log_file=""
+  agent_log_file=""
 
   return "$status"
 }

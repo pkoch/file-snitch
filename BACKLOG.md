@@ -33,10 +33,11 @@ Status:
   - expiring durable decisions now age out at evaluation time without waiting for a policy reload
   - the reconciler rewrites `policy.yml` after pruning expired durable decisions
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
-  - the current CLI prompt is acceptable as a bootstrap and debugging broker only
+  - a first local TTY agent now exists on a user-owned Unix socket
+  - the current terminal UI is acceptable as a bootstrap and debugging frontend only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
-  - stop treating improvements to the current local TTY prompt path as the product goal
+  - stop treating improvements to the current terminal UI as the product goal
 - `[x]` Replace the old guarded-root smoke coverage with policy-driven black-box smoke tests
   - empty policy
   - policy lifecycle
@@ -80,8 +81,13 @@ file-enrollment pivot, and the major Phase 0 research references.
 
 - `[~]` Define daemon-to-broker protocol
   - initial protocol note: [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)
-- `[ ]` Implement a local agent-style broker with default-deny timeout behavior
-- `[ ]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
+- `[~]` Implement a local agent-style broker with default-deny timeout behavior
+  - `file-snitch agent --foreground` now speaks the first local requester/agent socket protocol
+  - `run prompt` now resolves through that local agent socket in both foreground and daemon mode
+  - the current frontend is still TTY-only
+- `[~]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
+  - the old direct daemon-stdin prompt path is gone
+  - the remaining work is better agent frontends, not richer terminal prompting
 - `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
   - forwarding is still user-to-user, not a shared multi-user authority model
 - `[ ]` Add decisions: allow once, deny once, allow 5 min, always allow, always deny
