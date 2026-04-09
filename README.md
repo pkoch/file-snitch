@@ -273,6 +273,8 @@ Prompt notes:
   - always allow
   - always deny
 - remembered decisions are written by the requester into `policy.yml`; the agent only returns the chosen response
+- remembered decisions take effect through the existing policy-reconciliation path, so there is a brief post-decision handoff window while `run` restarts the affected mount worker
+- during that window, immediate back-to-back accesses can still hit the old worker and may briefly re-prompt, time out, or see the mount disappear during remount
 - `expires_at` is optional on durable decisions and is enforced without requiring a daemon restart
 - the reconciler also rewrites `policy.yml` after pruning expired durable decisions so the file does not accumulate dead entries
 - accepted `expires_at` formats are:
