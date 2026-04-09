@@ -33,7 +33,7 @@ start_prompt_run() {
   exec 3<>"$prompt_fifo"
   agent_input_fd=3
   mount_paths=("$home_dir/.kube")
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 start_file_snitch_agent --foreground
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=200 start_file_snitch_agent --daemon
   FILE_SNITCH_PROMPT_TIMEOUT_MS=200 start_file_snitch_run prompt --daemon
 }
 

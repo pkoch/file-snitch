@@ -65,7 +65,7 @@ fn resolveCli(raw_context: ?*anyopaque, request: Request) Decision {
     return resolveCliWithContext(cli_context, request);
 }
 
-fn resolveCliWithContext(context: *CliContext, request: Request) Decision {
+pub fn resolveCliWithContext(context: *CliContext, request: Request) Decision {
     context.mutex.lock();
     defer context.mutex.unlock();
 

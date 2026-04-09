@@ -10,6 +10,10 @@ run_input_fd=""
 agent_log_file=""
 agent_pid=""
 agent_input_fd=""
+agent_terminal_pid=""
+agent_tty_path=""
+agent_tty_path_file=""
+agent_execution_mode=""
 mount_paths=()
 run_mode=""
 run_execution_mode=""
@@ -29,6 +33,10 @@ prepare_run_fixture() {
   run_input_fd=""
   agent_pid=""
   agent_input_fd=""
+  agent_terminal_pid=""
+  agent_tty_path=""
+  agent_tty_path_file=""
+  agent_execution_mode=""
   mount_paths=()
   run_mode=""
   run_execution_mode=""
@@ -98,6 +106,12 @@ start_file_snitch_run() {
 
 start_file_snitch_agent() {
   local execution_mode="${1:---foreground}"
+  agent_execution_mode="$execution_mode"
+
+  if [[ "$execution_mode" == "--daemon" && -n "$agent_input_fd" ]]; then
+    start_file_snitch_agent_daemon_terminal
+    return
+  fi
 
   if [[ -n "$agent_input_fd" ]]; then
     PATH="$fake_bin_dir:$PATH" \
@@ -118,6 +132,107 @@ start_file_snitch_agent() {
   wait_for_agent_ready
 }
 
+start_file_snitch_agent_daemon_terminal() {
+  agent_tty_path_file="$(mktemp "$TMP_ROOT/file-snitch-agent-tty.XXXXXX")"
+
+  TTY_PATH_FILE="$agent_tty_path_file" \
+  AGENT_LOG_FILE="$agent_log_file" \
+  FILE_SNITCH_AGENT_INPUT_FD="$agent_input_fd" \
+    python3 - <<'PY' &
+import os
+import pty
+import selectors
+import signal
+import sys
+
+tty_path_file = os.environ["TTY_PATH_FILE"]
+log_path = os.environ["AGENT_LOG_FILE"]
+input_fd = int(os.environ["FILE_SNITCH_AGENT_INPUT_FD"])
+
+master_fd, slave_fd = pty.openpty()
+tty_path = os.ttyname(slave_fd)
+
+with open(tty_path_file, "w", encoding="utf-8") as handle:
+    handle.write(tty_path)
+
+log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+selector = selectors.DefaultSelector()
+selector.register(master_fd, selectors.EVENT_READ)
+selector.register(input_fd, selectors.EVENT_READ)
+
+stop = False
+
+def request_stop(signum, frame):
+    del signum, frame
+    global stop
+    stop = True
+
+signal.signal(signal.SIGTERM, request_stop)
+signal.signal(signal.SIGINT, request_stop)
+
+try:
+    while not stop:
+        for key, _ in selector.select(timeout=0.1):
+            if key.fd == input_fd:
+                try:
+                    chunk = os.read(input_fd, 4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    stop = True
+                    break
+                os.write(master_fd, chunk)
+            elif key.fd == master_fd:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    stop = True
+                    break
+                if not chunk:
+                    stop = True
+                    break
+                os.write(log_fd, chunk)
+finally:
+    selector.close()
+    os.close(log_fd)
+    os.close(master_fd)
+    os.close(slave_fd)
+PY
+  agent_terminal_pid="$!"
+
+  wait_for_agent_terminal_ready
+
+  PATH="$fake_bin_dir:$PATH" \
+    HOME="$home_dir" \
+    XDG_CONFIG_HOME="$config_home_dir" \
+    XDG_RUNTIME_DIR="$runtime_dir" \
+    PASSWORD_STORE_DIR="$password_store_dir" \
+    "$repo_root/zig-out/bin/file-snitch" agent --daemon --tty "$agent_tty_path" >"$agent_log_file" 2>&1 &
+  agent_pid="$!"
+  wait "$agent_pid" || true
+  agent_pid="$(find_agent_daemon_pid "$agent_tty_path")"
+  wait_for_agent_ready
+}
+
+wait_for_agent_terminal_ready() {
+  local attempts="${1:-100}"
+
+  for _ in $(seq 1 "$attempts"); do
+    if [[ -s "$agent_tty_path_file" ]]; then
+      agent_tty_path="$(cat "$agent_tty_path_file")"
+      return
+    fi
+
+    if [[ -n "${agent_terminal_pid:-}" ]] && ! kill -0 "$agent_terminal_pid" 2>/dev/null; then
+      fail "agent terminal helper exited before tty became ready"
+    fi
+
+    sleep 0.1
+  done
+
+  fail "agent terminal helper did not expose its tty"
+}
+
 wait_for_agent_ready() {
   local attempts="${1:-100}"
   local socket_path="$runtime_dir/file-snitch/agent.sock"
@@ -135,6 +250,24 @@ wait_for_agent_ready() {
   done
 
   fail "agent did not create its socket"
+}
+
+find_agent_daemon_pid() {
+  local tty_path="$1"
+  local attempts="${2:-100}"
+  local pattern="$repo_root/zig-out/bin/file-snitch agent --daemon --tty $tty_path"
+  local pid=""
+
+  for _ in $(seq 1 "$attempts"); do
+    pid="$(pgrep -f "$pattern" | head -n 1 || true)"
+    if [[ -n "$pid" ]]; then
+      printf '%s\n' "$pid"
+      return
+    fi
+    sleep 0.1
+  done
+
+  fail "agent daemon did not stay alive"
 }
 
 find_run_daemon_pid() {
@@ -255,10 +388,24 @@ stop_run_fixture() {
       fi
     fi
 
-    wait_for_run_process "$agent_pid" || status=$?
+    if [[ "${agent_execution_mode:-}" != "--daemon" ]]; then
+      wait_for_run_process "$agent_pid" || status=$?
+    fi
   fi
   agent_pid=""
   agent_input_fd=""
+  if [[ -n "${agent_terminal_pid:-}" ]] && kill -0 "$agent_terminal_pid" 2>/dev/null; then
+    kill -TERM "$agent_terminal_pid" 2>/dev/null || true
+    wait_for_daemon_exit "$agent_terminal_pid" 20 || status=$?
+    wait_for_run_process "$agent_terminal_pid" || status=$?
+  fi
+  agent_terminal_pid=""
+  agent_tty_path=""
+  if [[ -n "$agent_tty_path_file" ]]; then
+    rm -f "$agent_tty_path_file"
+  fi
+  agent_tty_path_file=""
+  agent_execution_mode=""
   mount_paths=()
   run_mode=""
   run_execution_mode=""
@@ -311,6 +458,10 @@ cleanup_run_fixture() {
   fake_bin_dir=""
   log_file=""
   agent_log_file=""
+  agent_terminal_pid=""
+  agent_tty_path=""
+  agent_tty_path_file=""
+  agent_execution_mode=""
 
   return "$status"
 }

@@ -33,7 +33,8 @@ Status:
   - expiring durable decisions now age out at evaluation time without waiting for a policy reload
   - the reconciler rewrites `policy.yml` after pruning expired durable decisions
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
-  - a first local TTY agent now exists on a user-owned Unix socket
+  - a first local agent service now exists on a user-owned Unix socket
+  - the current frontend is `terminal-pinentry`
   - the current terminal UI is acceptable as a bootstrap and debugging frontend only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
@@ -82,9 +83,10 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[~]` Define daemon-to-broker protocol
   - initial protocol note: [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)
 - `[~]` Implement a local agent-style broker with default-deny timeout behavior
-  - `file-snitch agent --foreground` now speaks the first local requester/agent socket protocol
+  - `file-snitch agent (--foreground|--daemon)` now speaks the first local requester/agent socket protocol
   - `run prompt` now resolves through that local agent socket in both foreground and daemon mode
-  - the current frontend is still TTY-only
+  - the current frontend is still terminal-only
+  - the current smoke suite now covers the daemonized agent path through `terminal-pinentry`
 - `[~]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
   - the old direct daemon-stdin prompt path is gone
   - the remaining work is better agent frontends, not richer terminal prompting
@@ -110,7 +112,7 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[~]` Add installers with Homebrew-focused packaging
   - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
   - install notes now live at [docs/install.md](./docs/install.md)
-  - background user services are intentionally deferred until the agent has a non-interactive frontend
+  - daemonized agent service now exists, but the current `terminal-pinentry` frontend is not yet the final user-service UX
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export
 - `[ ]` Add debug bundle generation

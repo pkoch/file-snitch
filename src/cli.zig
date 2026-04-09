@@ -91,10 +91,14 @@ const Command = union(enum) {
 
 const AgentCommand = struct {
     socket_path: []const u8,
+    tty_path: ?[]const u8 = null,
     run_in_foreground: bool,
 
     fn deinit(self: AgentCommand, alloc: std.mem.Allocator) void {
         alloc.free(self.socket_path);
+        if (self.tty_path) |path| {
+            alloc.free(path);
+        }
     }
 };
 
@@ -228,6 +232,7 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
 
     var command: AgentCommand = .{
         .socket_path = socket_path,
+        .tty_path = null,
         .run_in_foreground = undefined,
     };
     errdefer command.deinit(allocator);
@@ -257,6 +262,16 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
             command.socket_path = try resolvePathArgument(args[index]);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--tty")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            if (command.tty_path) |path| allocator.free(path);
+            command.tty_path = try resolvePathArgument(args[index]);
+            continue;
+        }
 
         printUsage();
         return error.InvalidUsage;
@@ -267,10 +282,6 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
     }
 
     command.run_in_foreground = selected_execution_mode.?;
-    if (!command.run_in_foreground) {
-        return invalidUsage("error: the TTY agent currently requires --foreground\n", .{});
-    }
-
     return command;
 }
 
@@ -369,17 +380,45 @@ fn runWithPolicy(command: RunCommand) !void {
 }
 
 fn runAgent(command: AgentCommand) !void {
-    std.debug.assert(command.run_in_foreground);
-
+    const timeout_ms = try loadPromptTimeoutMs();
     var cli_context = prompt.CliContext{
-        .timeout_ms = try loadPromptTimeoutMs(),
+        .timeout_ms = timeout_ms,
     };
-    var tty_agent_context = agent.TtyAgentContext{
+
+    var derived_tty_path: ?[]const u8 = null;
+    defer if (derived_tty_path) |path| allocator.free(path);
+
+    const tty_path = if (command.tty_path) |path|
+        path
+    else if (command.run_in_foreground)
+        null
+    else blk: {
+        derived_tty_path = agent.defaultTerminalPathAlloc(allocator) catch {
+            return invalidUsage(
+                "error: `agent --daemon` requires --tty <path> or a startup TTY it can capture\n",
+                .{},
+            );
+        };
+        break :blk derived_tty_path.?;
+    };
+
+    var terminal_pinentry_context = agent.TerminalPinentryContext{
+        .allocator = allocator,
+        .timeout_ms = timeout_ms,
+        .tty_path = tty_path,
+        .inherited_cli_context = if (tty_path == null) &cli_context else null,
+    };
+    var service_context = agent.AgentServiceContext{
         .allocator = allocator,
         .socket_path = command.socket_path,
-        .cli_context = &cli_context,
+        .frontend = agent.terminalPinentryFrontend(&terminal_pinentry_context),
     };
-    try agent.runTtyAgent(&tty_agent_context);
+
+    if (!command.run_in_foreground) {
+        try daemonizeSupervisor();
+    }
+
+    try agent.runAgentService(&service_context);
 }
 
 fn daemonizeSupervisor() !void {
@@ -1169,7 +1208,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch agent (--daemon|--foreground) [--socket <path>]
+        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--tty <path>]
         \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
@@ -1177,7 +1216,10 @@ fn printUsage() void {
         \\  file-snitch doctor [--policy <path>]
         \\
         \\notes:
-        \\  - `agent --foreground` starts the local TTY decision agent on a Unix socket
+        \\  - `agent` starts the local agent service on a Unix socket
+        \\  - the current agent frontend is `terminal-pinentry`
+        \\  - `agent --foreground` uses inherited stdio when no --tty is provided
+        \\  - `agent --daemon` requires --tty <path> or a startup TTY it can capture
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - foreground and daemon mode now share the same policy-reconciliation model
         \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes

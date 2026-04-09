@@ -2,6 +2,10 @@ const std = @import("std");
 const net = std.net;
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const c = @cImport({
+    @cInclude("stdlib.h");
+    @cInclude("unistd.h");
+});
 
 const protocol_name = "file-snitch-agent";
 const protocol_version = "1.0";
@@ -14,10 +18,27 @@ pub const RequesterContext = struct {
     timeout_ms: u32 = 5_000,
 };
 
-pub const TtyAgentContext = struct {
+pub const Frontend = struct {
+    context: ?*anyopaque,
+    resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Decision,
+
+    pub fn resolve(self: Frontend, request: prompt.Request) prompt.Decision {
+        return self.resolve_fn(self.context, request);
+    }
+};
+
+pub const TerminalPinentryContext = struct {
+    allocator: std.mem.Allocator,
+    timeout_ms: u32 = 5_000,
+    tty_path: ?[]const u8 = null,
+    inherited_cli_context: ?*prompt.CliContext = null,
+    mutex: std.Thread.Mutex = .{},
+};
+
+pub const AgentServiceContext = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
-    cli_context: *prompt.CliContext,
+    frontend: Frontend,
 };
 
 pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -48,7 +69,26 @@ pub fn socketBroker(context: *RequesterContext) prompt.Broker {
     };
 }
 
-pub fn runTtyAgent(context: *TtyAgentContext) !void {
+pub fn terminalPinentryFrontend(context: *TerminalPinentryContext) Frontend {
+    return .{
+        .context = context,
+        .resolve_fn = resolveTerminalPinentry,
+    };
+}
+
+pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_TTY")) |value| {
+        return value;
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
+    return terminalPathFromStandardFilesAlloc(allocator) catch
+        error.NotATerminal;
+}
+
+pub fn runAgentService(context: *AgentServiceContext) !void {
     try ensureParentDirectory(context.socket_path);
     removeStaleSocketFile(context.socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -137,7 +177,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     }
 }
 
-fn handleConnection(context: *TtyAgentContext, stream: net.Stream) !void {
+fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
     const hello_request_id = try generateUlidAlloc(context.allocator);
     defer context.allocator.free(hello_request_id);
     try sendHello(stream, hello_request_id);
@@ -164,7 +204,7 @@ fn handleConnection(context: *TtyAgentContext, stream: net.Stream) !void {
         }
 
         if (std.mem.eql(u8, message_type, "decide")) {
-            const decision = try decideFromFrame(context.allocator, frame, context.cli_context);
+            const decision = try decideFromFrame(context.allocator, frame, context.frontend);
             try sendDecision(stream, decision.request_id, decision.decision);
             continue;
         }
@@ -333,7 +373,7 @@ fn sendError(stream: net.Stream, request_id: []const u8, code: []const u8, messa
     });
 }
 
-fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, cli_context: *prompt.CliContext) !ResolvedDecision {
+fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Frontend) !ResolvedDecision {
     const parsed = try std.json.parseFromSlice(DecideMessage, allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
@@ -347,11 +387,52 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, cli_context:
         .executable_path = parsed.value.subject.executable_path,
     };
 
-    const broker = prompt.cliBroker(cli_context);
     return .{
         .request_id = parsed.value.request_id,
-        .decision = broker.resolve(request),
+        .decision = frontend.resolve(request),
     };
+}
+
+fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
+    const context = raw_context orelse return .unavailable;
+    const pinentry_context: *TerminalPinentryContext = @ptrCast(@alignCast(context));
+    pinentry_context.mutex.lock();
+    defer pinentry_context.mutex.unlock();
+
+    if (pinentry_context.inherited_cli_context) |cli_context| {
+        return prompt.resolveCliWithContext(cli_context, request);
+    }
+
+    const tty_path = pinentry_context.tty_path orelse return .unavailable;
+    var tty_file = std.fs.openFileAbsolute(tty_path, .{ .mode = .read_write }) catch return .unavailable;
+    defer tty_file.close();
+
+    var cli_context = prompt.CliContext{
+        .timeout_ms = pinentry_context.timeout_ms,
+        .stdin_file = tty_file,
+        .stderr_file = tty_file,
+    };
+    return prompt.resolveCliWithContext(&cli_context, request);
+}
+
+fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.fs.File.stderr().isTty()) {
+        return terminalPathForFileAlloc(allocator, std.fs.File.stderr());
+    }
+    if (std.fs.File.stdin().isTty()) {
+        return terminalPathForFileAlloc(allocator, std.fs.File.stdin());
+    }
+    return error.NotATerminal;
+}
+
+fn terminalPathForFileAlloc(allocator: std.mem.Allocator, file: std.fs.File) ![]u8 {
+    if (!file.isTty()) return error.NotATerminal;
+
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const result = c.ttyname_r(file.handle, &buffer, buffer.len);
+    if (result != 0) return error.NotATerminal;
+
+    return allocator.dupe(u8, std.mem.sliceTo(&buffer, 0));
 }
 
 fn decisionFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Decision {
@@ -639,4 +720,17 @@ test "generated ulid is well-formed" {
     for (value) |byte| {
         try std.testing.expect(std.mem.indexOfScalar(u8, "0123456789ABCDEFGHJKMNPQRSTVWXYZ", byte) != null);
     }
+}
+
+test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
+    const allocator = std.testing.allocator;
+    const key = "FILE_SNITCH_AGENT_TTY";
+    const value = "/tmp/file-snitch-agent-test-tty";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try defaultTerminalPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
 }

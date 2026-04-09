@@ -6,7 +6,7 @@ Current assumptions:
 - single-user, user-space tool
 - `pass` is the guarded-object backend
 - FUSE support is installed outside Homebrew
-- the current authorization frontend is still a TTY agent
+- the current authorization frontend is `terminal-pinentry`
 
 ## Homebrew
 
@@ -59,7 +59,7 @@ distro `fuse3` and `libfuse3-dev`.
 
 ## First real-user drill
 
-The current prompt path uses two foreground processes:
+The current prompt path can run entirely in the foreground:
 
 Terminal 1:
 
@@ -81,8 +81,11 @@ kubectl config view >/dev/null
 file-snitch unenroll ~/.kube/config
 ```
 
-That is intentionally manual for now. Background user services are deferred
-until the agent has a non-interactive frontend.
+That is intentionally manual for now.
+
+`file-snitch agent --daemon` also exists now. It still uses the same
+`terminal-pinentry` frontend, so it needs `--tty <path>` or a startup TTY it
+can capture.
 
 ## Notes
 
@@ -90,5 +93,7 @@ until the agent has a non-interactive frontend.
   `XDG_CONFIG_HOME` overrides it.
 - the default local agent socket lives under `XDG_RUNTIME_DIR` when it is
   set, otherwise under `~/.local/state/file-snitch/agent.sock`
+- set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a daemonized
+  agent to use a specific terminal
 - `run prompt` defaults timeout to deny
 - the current store backend is `pass:file-snitch/<object_id>`

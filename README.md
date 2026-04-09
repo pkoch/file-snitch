@@ -31,7 +31,10 @@ Current state:
   - clean `SIGINT` teardown back to the original host view
 - Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key, and expired decisions age out at evaluation time.
 - Audit output is structured JSON on stdout. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
-- A first local agent path now exists: `file-snitch agent --foreground` starts a TTY agent on a user-owned Unix socket, and `run prompt` talks to that socket instead of reading the daemon's stdin directly.
+- A first local agent service now exists: `file-snitch agent` owns a user-owned Unix socket, and `run prompt` talks to that socket instead of reading the daemon's stdin directly.
+- The current agent frontend is `terminal-pinentry`:
+  - `agent --foreground` uses inherited stdio when no `--tty` is provided
+  - `agent --daemon` can keep serving requests by reopening an explicit or startup-derived TTY path
 - The remaining runtime limits are:
   - the current agent frontend is still terminal-only; remote forwarding and richer agent UX are future work
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
@@ -47,7 +50,7 @@ Current state:
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
-- `src/agent.zig`: local requester/agent socket protocol and TTY agent implementation
+- `src/agent.zig`: local requester/agent socket protocol, agent service, and `terminal-pinentry` frontend
 - `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
@@ -110,8 +113,8 @@ The first packaging slice now lives at:
 - [docs/install.md](./docs/install.md)
 
 This is intentionally a `HEAD`-oriented Homebrew formula plus manual runtime
-setup. The current prompt frontend is still a TTY agent, so background user
-services are deferred until the agent has a non-interactive frontend.
+setup. The current prompt frontend is still `terminal-pinentry`, so background
+user services are possible but not yet the final UX story.
 
 ## Verification
 
@@ -146,7 +149,7 @@ What each command covers:
 - `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
-- `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior
+- `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/core_integration.zig`
@@ -156,7 +159,10 @@ Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, polls `policy.yml`, and adds or removes mount workers as the derived mount plan changes
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
-- `file-snitch agent --foreground` starts the current local TTY agent on the default Unix socket
+- `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
+- the current frontend is `terminal-pinentry`
+- `agent --foreground` uses inherited stdio when no `--tty` is provided
+- `agent --daemon` requires `--tty <path>` or a startup TTY it can capture
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
@@ -173,7 +179,7 @@ Prompt notes:
   - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
-- the current agent is intentionally TTY-only; the long-term goal is a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
+- the current agent service is intentionally paired only with a terminal frontend; the long-term goal is a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
 - a real local `pass` drill has been run outside CI with:
   - a disposable temp home
@@ -183,7 +189,7 @@ Prompt notes:
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations
-- the current TTY agent frontend prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
+- the current `terminal-pinentry` frontend prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work
