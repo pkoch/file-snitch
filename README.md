@@ -80,6 +80,11 @@ The short threat model lives in [docs/threat-model.md](./docs/threat-model.md).
 Read that before assuming File Snitch is trying to be a system security
 boundary. It is not.
 
+## Working On The Repo
+
+- contributor guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- release and packaging checklist: [docs/releasing.md](./docs/releasing.md)
+
 ## Current State
 
 - File Snitch is intentionally user-space and single-user. It is meant to
