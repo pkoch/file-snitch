@@ -55,6 +55,8 @@ main() {
   doctor_output="$(capture_file_snitch doctor)"
   grep -F "policy: ok ($policy_file)" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the policy file"
   grep -F "mount_plan: 1 mounts for 1 enrollments" <<<"$doctor_output" >/dev/null || fail "expected doctor to report one mount"
+  grep -F "ok: pass backend is usable: pass" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate pass usability"
+  grep -F "warn: agent socket path is absent: $runtime_dir/file-snitch/agent.sock" <<<"$doctor_output" >/dev/null || fail "expected doctor to mention missing agent socket"
   grep -F "ok: guarded object exists in store: pass:file-snitch/$object_id" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
   grep -F "ok: target path currently absent: $home_dir/.kube/config" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the evacuated target path"
 

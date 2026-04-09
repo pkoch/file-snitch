@@ -143,9 +143,28 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         else => return err,
     };
     defer allocator.free(home_dir);
+    const agent_socket_path = try defaultAgentSocketPathForDossier(allocator);
+    defer allocator.free(agent_socket_path);
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     try report_writer.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
+
+    if (loaded_policy.enrollments.len != 0) {
+        const pass_command = try detectPassCommandAlloc(allocator);
+        defer allocator.free(pass_command);
+        if (try passBackendIsUsable(allocator, pass_command)) {
+            try report_writer.print("ok: pass backend is usable: {s}\n", .{pass_command});
+        } else {
+            has_errors = true;
+            try report_writer.print("error: pass backend is not usable: {s}\n", .{pass_command});
+        }
+    }
+
+    if (enrollment.pathExists(agent_socket_path)) {
+        try report_writer.print("ok: agent socket path exists: {s}\n", .{agent_socket_path});
+    } else {
+        try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
+    }
 
     for (loaded_policy.enrollments) |entry| {
         if (!enrollment.pathIsWithinDirectory(entry.path, home_dir)) {
@@ -383,6 +402,24 @@ fn summarizeCommandVersionAlloc(allocator: std.mem.Allocator, command: []const u
 
     const first_line = std.mem.sliceTo(output, '\n');
     return allocator.dupe(u8, first_line);
+}
+
+fn passBackendIsUsable(allocator: std.mem.Allocator, command: []const u8) !bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ command, "ls" },
+        .max_output_bytes = 4096,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
 }
 
 fn backendName(guarded_store: ?store.Backend) []const u8 {

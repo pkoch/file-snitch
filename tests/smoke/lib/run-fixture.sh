@@ -546,6 +546,10 @@ entry_path() {
 }
 
 case "$command" in
+  ls)
+    mkdir -p "$store_dir"
+    find "$store_dir" -type f | sed "s#^$store_dir/##" | sort
+    ;;
   show)
     entry="${1:?missing entry}"
     path="$(entry_path "$entry")"
