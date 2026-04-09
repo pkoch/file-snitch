@@ -1501,7 +1501,6 @@ fn printUsage() void {
         \\  file-snitch unenroll <path> [--policy <path>]
         \\  file-snitch status [--policy <path>]
         \\  file-snitch doctor [--policy <path>]
-        \\  file-snitch mount <mount-path> <backing-store-path> [allow|deny|prompt] [--status-fifo <path>]
         \\
         \\notes:
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
@@ -1512,7 +1511,6 @@ fn printUsage() void {
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems
-        \\  - `mount` is the legacy guarded-root spike entrypoint
         \\
     , .{});
 }

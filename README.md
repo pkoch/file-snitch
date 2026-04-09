@@ -35,14 +35,14 @@ Current state:
   - multi-mount `run prompt`
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
-- The old guarded-root spike still exists behind `file-snitch mount <mount-path> <backing-store-path> ...`, but it is now legacy scaffolding rather than the product direction.
+- The old guarded-root spike is still implemented internally for now, but it is no longer part of the public product surface.
 
 ## Layout
 
 - `build.zig`: Zig build entrypoint
 - `src/`: Zig application code
 - `src/root.zig`: shared application module surface for tests and other non-CLI consumers
-- `src/cli.zig`: command-line parsing, env loading, and mount command dispatch
+- `src/cli.zig`: command-line parsing, env loading, and runtime command dispatch
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
 - `src/filesystem.zig`: Zig-owned guarded-root and enrolled-parent filesystem behavior
 - `tests/`: Zig integration tests and scenario coverage
@@ -139,9 +139,6 @@ Prompt notes:
   - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
-- `file-snitch mount <mount-path> <backing-store-path> prompt` enables the CLI broker
-- `file-snitch mount ... --status-fifo <path>` writes status JSON snapshots to an existing named pipe
-- mount mode always writes audit JSON lines to stdout
 - `run prompt --daemon` is intentionally rejected for now because the current broker is interactive
 - the long-term goal is an agent-style broker, more like `ssh-agent` or `gpg-agent`, not richer local TTY prompting per daemon
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly

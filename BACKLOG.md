@@ -13,7 +13,7 @@ Status:
 - `[~]` Make policy-driven exact-file enrollment the default product path
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
-  - the old `mount <mount-path> <backing-store-path>` path still exists as legacy scaffolding
+  - the old guarded-root spike still exists internally as legacy scaffolding, but it should stay out of the public surface
 - `[x]` Move from projection-only protection to real secret custody
   - `enroll` already evacuates plaintext from the original path
   - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`
@@ -167,7 +167,7 @@ Goal: keep the Phase 1 FUSE core, but replace the guarded-root demo with a real 
 - `[x]` Make `doctor` validate the policy file, guarded objects, and target-path health without mutating state
 - `[~]` Replace the legacy guarded-root product path with policy-driven mount planning
   - `run` is now the real product path
-  - `mount` still exists as legacy scaffolding and should not remain the public center of gravity
+  - the remaining legacy guarded-root code should shrink over time instead of leaking back into docs or the advertised CLI
 - `[x]` Preserve one real underlying parent-directory handle per planned mount for sibling passthrough after mounting
 - `[x]` Distinguish guarded files from passthrough files in the Zig-owned lookup model
 - `[x]` Move directory enumeration out of the root-only shim path so mounted parent directories can expose guarded files plus passthrough siblings
