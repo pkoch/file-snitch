@@ -1165,7 +1165,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>] [--status-fifo <path>]
+        \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
         \\  file-snitch status [--policy <path>]

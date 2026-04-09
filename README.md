@@ -29,7 +29,7 @@ Current state:
   - simultaneous `.kube` and `.ssh` projections in one foreground run
   - clean `SIGINT` teardown back to the original host view
 - Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key, and expired decisions age out at evaluation time.
-- Audit output is structured JSON on stdout and can include status snapshots via FIFO. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
+- Audit output is structured JSON on stdout. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
 - The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
 - The remaining runtime limits are:
   - multi-mount `run prompt`
