@@ -29,6 +29,13 @@ Run the Zig test roots:
 zig build test
 ```
 
+CI also enforces a small hygiene layer:
+
+```bash
+bash -n $(find scripts tests/smoke -type f \( -name '*.sh' -o -path 'tests/smoke/lib/*' \) | sort)
+./scripts/check-demo-artifacts.sh
+```
+
 Run the smoke suite:
 
 ```bash

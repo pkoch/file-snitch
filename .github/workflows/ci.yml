@@ -7,6 +7,22 @@ on:
   pull_request:
 
 jobs:
+  hygiene:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check shell scripts
+        run: |
+          mapfile -t shell_files < <(
+            find scripts tests/smoke -type f \( -name '*.sh' -o -path 'tests/smoke/lib/*' \) | sort
+          )
+          bash -n "${shell_files[@]}"
+
+      - name: Check demo artifact redaction
+        run: ./scripts/check-demo-artifacts.sh
+
   build:
     runs-on: ubuntu-24.04
     env:
