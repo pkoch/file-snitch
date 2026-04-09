@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Debug dossier guidance
+    url: https://github.com/pkoch/file-snitch/blob/master/README.md
+    about: Run `file-snitch doctor --export-debug-dossier <path>` before filing install or runtime bugs when possible.

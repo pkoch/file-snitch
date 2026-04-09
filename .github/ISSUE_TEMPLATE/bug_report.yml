@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a runtime bug in File Snitch.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: Describe the bug and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: List the exact commands or actions needed to reproduce the issue.
+      placeholder: |
+        1. file-snitch agent --daemon --tty ...
+        2. file-snitch run prompt --daemon
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x86_64 / ...
+    validations:
+      required: true
+  - type: input
+    id: install_method
+    attributes:
+      label: Install method
+      placeholder: Homebrew HEAD / Linuxbrew / built from source / ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: `file-snitch doctor`
+      description: Paste the output, or attach a debug dossier if you exported one.
+      render: text
+  - type: textarea
+    id: dossier
+    attributes:
+      label: Debug dossier notes
+      description: If you ran `file-snitch doctor --export-debug-dossier`, mention whether you attached it and anything you redacted.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Relevant logs, screenshots, or environment notes.

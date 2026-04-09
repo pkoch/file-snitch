@@ -113,12 +113,15 @@ file-enrollment pivot, and the major Phase 0 research references.
   - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
   - install notes now live at [docs/install.md](./docs/install.md)
   - daemonized agent service now exists, but the current `terminal-pinentry` frontend is not yet the final user-service UX
+- `[ ]` Add a native `.deb` package in addition to the Homebrew path
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export
-- `[ ]` Add debug bundle generation
+- `[x]` Add debug dossier export from `doctor`
 - `[ ]` Write threat-model and operations docs. Be sure to include the hash of the requesting bin.
 - `[~]` Write install, usage, and troubleshooting docs
-  - initial install notes are now in [docs/install.md](./docs/install.md)
+  - install notes now live at [docs/install.md](./docs/install.md)
+  - disposable demo driver now lives at [scripts/demo-session.sh](./scripts/demo-session.sh)
+  - issue templates now exist under [.github/ISSUE_TEMPLATE](./.github/ISSUE_TEMPLATE)
 
 ## Open decisions
 

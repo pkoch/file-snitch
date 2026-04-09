@@ -1,0 +1,25 @@
+name: Improvement
+description: Suggest a UX, documentation, or product improvement.
+title: "[improvement] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the problem
+      description: Explain the current friction or missing behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the change you want and why it would help.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Examples, workflows, or related tools that motivate the suggestion.

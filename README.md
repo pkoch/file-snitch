@@ -4,42 +4,80 @@ Guarded FUSE mounts for secret files.
 
 ## Intro
 
+File Snitch keeps selected secret-bearing files out of their normal host paths
+until a user-owned daemon projects them back into place through FUSE. The
+daemon consults a local agent before guarded access, and unguarded siblings in
+the same directory still behave normally.
+
 The product brief lives in [docs/initial-brief.md](./docs/initial-brief.md).
 
-Current state:
-- File Snitch is intentionally a user-space, single-user tool. It is meant to mediate one user's own secret-bearing files from that same user's software, not to enforce system policy between users or protect against root.
-- The repo has a real Zig `libfuse` core with a thin C shim. The shim preserves raw callback detail; policy timing, filesystem behavior, prompting, and audit semantics live in Zig.
-- The product path is now policy-driven exact-file enrollment, not the old synthetic guarded-root demo. `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default, derives the mount plan, and in both foreground and daemon mode stays alive to reconcile policy changes over time.
-- The product-facing CLI surface is in place:
-  - `run`
-  - `enroll`
-  - `unenroll`
-  - `status`
-  - `doctor`
-- `enroll` now migrates plaintext into a store-backed guarded object, records the exact enrolled path in `policy.yml`, and `unenroll` restores it.
-- the current store backend is `pass`, using entries under a `file-snitch/` subtree.
-- the real `pass` path has now been verified end to end on macOS against a disposable temp home and a real local GPG key.
-- The live projection model now works for real parent directories:
-  - an enrolled file is projected back into its original parent directory from the guarded object
-  - unguarded siblings passthrough from the preserved underlying directory
-  - nested guarded paths under one mounted tree are supported
-  - multiple planned mounts are supported in `run allow` and `run deny` by supervising one child mount process per mount path
-- This has been verified live on macOS for:
-  - a real kubeconfig-style target
-  - multiple guarded files under one mounted parent
-  - simultaneous `.kube` and `.ssh` projections in one foreground run
-  - clean `SIGINT` teardown back to the original host view
-- Durable remembered decisions from `policy.yml` compile into the runtime policy engine using the documented exact-path decision key, and expired decisions age out at evaluation time.
-- Audit output is structured JSON on stdout. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
-- A first local agent service now exists: `file-snitch agent` owns a user-owned Unix socket, and `run prompt` talks to that socket instead of reading the daemon's stdin directly.
+## What It Does Today
+
+- exact-file enrollment for user-owned regular files under your home directory
+- policy-driven `run`, `enroll`, `unenroll`, `status`, and `doctor` commands
+- guarded-object custody through `pass:file-snitch/<object_id>`
+- in-place projection back into real parent directories, with sibling passthrough
+- durable remembered decisions in `policy.yml`, including RFC3339 UTC expiry
+- a local requester/agent socket with the current `terminal-pinentry` frontend
+- Homebrew/Linuxbrew packaging from `HEAD`
+
+## What It Explicitly Does Not Do
+
+- protect against root
+- arbitrate between local users
+- act as a system-wide MAC framework
+- provide a GUI agent yet
+- support store backends other than `pass` yet
+
+## Quick Evaluation
+
+Build the binary:
+
+```bash
+zig build
+```
+
+Then choose one of these:
+
+- safe disposable demo:
+  - [docs/demo.md](./docs/demo.md)
+  - `./scripts/demo-session.sh`
+- real install and first-user drill:
+  - [docs/install.md](./docs/install.md)
+
+## Reporting Problems
+
+Before opening an issue, export a dossier:
+
+```bash
+file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
+```
+
+The dossier includes environment and policy diagnostics, but it does not export
+guarded file contents. Then use the issue templates under
+[.github/ISSUE_TEMPLATE](./.github/ISSUE_TEMPLATE).
+
+## Current State
+
+- File Snitch is intentionally user-space and single-user. It is meant to
+  mediate one user's own secret-bearing files from that same user's software.
+- `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default,
+  derives the mount plan, and in both foreground and daemon mode stays alive to
+  reconcile policy changes over time.
+- `enroll` migrates plaintext into the guarded store, `unenroll` restores it,
+  and `status`/`doctor` inspect the resulting policy and mount plan.
+- The current store backend is `pass`, and the real `pass` path has been
+  verified end to end on macOS and Linux.
+- The current agent service is local-only and user-owned. `run prompt` talks to
+  that socket instead of reading daemon stdin directly.
 - The current agent frontend is `terminal-pinentry`:
   - `agent --foreground` uses inherited stdio when no `--tty` is provided
-  - `agent --daemon` can keep serving requests by reopening an explicit or startup-derived TTY path
+  - `agent --daemon` can keep serving requests by reopening an explicit or
+    startup-derived TTY path
 - The remaining runtime limits are:
-  - the current agent frontend is still terminal-only; remote forwarding and richer agent UX are future work
-  - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
-- New enrollments are currently limited to regular files under the current user's home directory and owned by that user.
-- The old guarded-root spike now survives only in historical notes. It is no longer a supported or implemented CLI/runtime path.
+  - the current agent frontend is still terminal-only
+  - only the `pass` backend exists today
+  - remote forwarding and richer agent UX are future work
 
 ## Layout
 
@@ -126,6 +164,7 @@ zig build test
 zig build compile-commands
 ./tests/smoke/run-empty-policy.sh
 ./tests/smoke/policy-lifecycle.sh
+./tests/smoke/doctor-debug-dossier.sh
 ./tests/smoke/run-policy-reload.sh
 ./tests/smoke/run-daemon-policy-reload.sh
 ./tests/smoke/run-expired-decision-cleanup.sh
@@ -144,6 +183,7 @@ What each command covers:
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that foreground `run` stays alive and watches for future changes even when policy is currently empty
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
+- `./tests/smoke/doctor-debug-dossier.sh`: black-box verification that `doctor --export-debug-dossier` writes a shareable report without guarded file contents
 - `./tests/smoke/run-policy-reload.sh`: black-box verification that foreground `run` watches `policy.yml`, activates a new projection after `enroll`, and tears it down again after the enrollment is removed from policy
 - `./tests/smoke/run-daemon-policy-reload.sh`: black-box verification that daemonized `run` uses the same reconciler model and reacts to `policy.yml` changes without restart
 - `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`

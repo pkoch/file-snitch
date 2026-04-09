@@ -87,6 +87,29 @@ That is intentionally manual for now.
 `terminal-pinentry` frontend, so it needs `--tty <path>` or a startup TTY it
 can capture.
 
+## Disposable evaluation
+
+If you want to see the current feature set without touching your real secrets,
+use the repo demo driver:
+
+```bash
+zig build
+./scripts/demo-session.sh
+```
+
+For a recording-friendly version, see [docs/demo.md](./demo.md).
+
+## Reporting install or runtime problems
+
+Export a dossier before filing an issue when possible:
+
+```bash
+file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
+```
+
+That file is meant to accompany GitHub bug reports. It includes policy and
+environment diagnostics, but not guarded file contents.
+
 ## Notes
 
 - `policy.yml` lives at `~/.config/file-snitch/policy.yml` unless

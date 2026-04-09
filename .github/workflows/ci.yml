@@ -66,6 +66,7 @@ jobs:
 
       - run: ./tests/smoke/run-empty-policy.sh
       - run: ./tests/smoke/policy-lifecycle.sh
+      - run: ./tests/smoke/doctor-debug-dossier.sh
       - run: ./tests/smoke/run-policy-reload.sh
       - run: ./tests/smoke/run-daemon-policy-reload.sh
       - run: ./tests/smoke/run-expired-decision-cleanup.sh

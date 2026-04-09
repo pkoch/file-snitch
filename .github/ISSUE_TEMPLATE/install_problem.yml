@@ -1,0 +1,54 @@
+name: Install or packaging problem
+description: Report an installation, packaging, or environment setup problem.
+title: "[install] "
+labels:
+  - packaging
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What failed
+      description: Describe the install or setup step that failed.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 arm64 / ...
+    validations:
+      required: true
+  - type: input
+    id: install_method
+    attributes:
+      label: Install method
+      placeholder: Homebrew HEAD / Linuxbrew / built from source / ...
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Exact commands
+      description: Paste the install and setup commands you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Exact output
+      description: Paste the relevant error output.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: `file-snitch doctor` or debug dossier
+      description: Include this if the binary installed but runtime setup still fails.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: FUSE setup details, `pass`/GPG notes, or anything unusual about the machine.

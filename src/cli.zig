@@ -74,7 +74,10 @@ pub fn run(args: []const []const u8) !void {
         },
         .doctor => |command| {
             defer command.deinit(allocator);
-            try policy_commands.doctor(allocator, command.policy_path);
+            try policy_commands.doctor(allocator, .{
+                .policy_path = command.policy_path,
+                .export_debug_dossier_path = command.export_debug_dossier_path,
+            });
         },
     }
 }
@@ -86,7 +89,7 @@ const Command = union(enum) {
     enroll: PathCommand,
     unenroll: PathCommand,
     status: PolicyCommand,
-    doctor: PolicyCommand,
+    doctor: DoctorCommand,
 };
 
 const AgentCommand = struct {
@@ -139,6 +142,18 @@ const PolicyCommand = struct {
     }
 };
 
+const DoctorCommand = struct {
+    policy_path: []const u8,
+    export_debug_dossier_path: ?[]const u8 = null,
+
+    fn deinit(self: DoctorCommand, alloc: std.mem.Allocator) void {
+        alloc.free(self.policy_path);
+        if (self.export_debug_dossier_path) |path| {
+            alloc.free(path);
+        }
+    }
+};
+
 fn parseCommand(args: []const []const u8) !Command {
     if (args.len == 0) {
         printUsage();
@@ -161,7 +176,7 @@ fn parseCommand(args: []const []const u8) !Command {
         return .{ .status = try parsePolicyCommand(args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "doctor")) {
-        return .{ .doctor = try parsePolicyCommand(args[1..]) };
+        return .{ .doctor = try parseDoctorCommand(args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {
         return .help;
@@ -304,6 +319,48 @@ fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
             }
             allocator.free(command.policy_path);
             command.policy_path = try resolvePathArgument(args[index]);
+            continue;
+        }
+
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    return command;
+}
+
+fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
+    const policy_path = try config.defaultPolicyPathAlloc(allocator);
+    errdefer allocator.free(policy_path);
+
+    var command: DoctorCommand = .{
+        .policy_path = policy_path,
+        .export_debug_dossier_path = null,
+    };
+    errdefer command.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], "--policy")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            allocator.free(command.policy_path);
+            command.policy_path = try resolvePathArgument(args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, args[index], "--export-debug-dossier")) {
+            index += 1;
+            if (index >= args.len) {
+                return invalidUsage(
+                    "error: `doctor --export-debug-dossier` requires an output path\n",
+                    .{},
+                );
+            }
+            if (command.export_debug_dossier_path) |path| allocator.free(path);
+            command.export_debug_dossier_path = try resolvePathArgument(args[index]);
             continue;
         }
 
@@ -1213,7 +1270,7 @@ fn printUsage() void {
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
         \\  file-snitch status [--policy <path>]
-        \\  file-snitch doctor [--policy <path>]
+        \\  file-snitch doctor [--policy <path>] [--export-debug-dossier <path>]
         \\
         \\notes:
         \\  - `agent` starts the local agent service on a Unix socket
@@ -1226,7 +1283,7 @@ fn printUsage() void {
         \\  - prompt mode now talks to the local agent socket instead of reading from the daemon's stdin
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
-        \\  - `status` and `doctor` inspect `policy.yml`; `doctor` exits non-zero on actionable problems
+        \\  - `status` inspects `policy.yml`; `doctor` also exits non-zero on actionable problems and can export a shareable debug dossier
         \\
     , .{});
 }
