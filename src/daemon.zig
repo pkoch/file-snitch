@@ -157,7 +157,7 @@ pub const Session = struct {
             }),
         };
         errdefer state.filesystem.deinit();
-        try state.filesystem.loadBackingStore();
+        try state.filesystem.loadGuardedRootFiles();
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,

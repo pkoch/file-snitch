@@ -352,16 +352,16 @@ pub const Model = struct {
         return model;
     }
 
-    pub fn loadBackingStore(self: *Model) !void {
+    pub fn loadGuardedRootFiles(self: *Model) !void {
         if (self.layout != .guarded_root) {
             return error.InvalidLayout;
         }
 
         if (self.files.items.len != 0) {
-            return error.BackingStoreAlreadyLoaded;
+            return error.ContentRootAlreadyLoaded;
         }
 
-        try ensureBackingStoreDirectory(self.content_root_path);
+        try ensureContentRootDirectory(self.content_root_path);
 
         var directory = try std.fs.openDirAbsolute(self.content_root_path, .{ .iterate = true });
         defer directory.close();
@@ -414,7 +414,7 @@ pub const Model = struct {
         }
 
         if (self.files.items.len != 0) {
-            return error.BackingStoreAlreadyLoaded;
+            return error.ContentRootAlreadyLoaded;
         }
 
         const guarded_store = &(self.guarded_store orelse return error.InvalidLayout);
@@ -1298,7 +1298,7 @@ pub const Model = struct {
         errdefer self.removeFileAtIndex(self.files.items.len - 1);
 
         if (shouldPersistPath(path)) {
-            const persist_result = self.syncFileToBackingStore(file);
+            const persist_result = self.syncFileToContentRoot(file);
             if (persist_result != 0) {
                 self.removeFileAtIndex(self.files.items.len - 1);
                 return persist_result;
@@ -1454,7 +1454,7 @@ pub const Model = struct {
             return 0;
         }
 
-        return self.syncFileToBackingStore(file);
+        return self.syncFileToContentRoot(file);
     }
 
     fn removeFileInternal(
@@ -1524,7 +1524,7 @@ pub const Model = struct {
         const source_persistent = shouldPersistPath(from);
         const target_persistent = shouldPersistPath(to);
 
-        const persist_result = self.applyRenameBackingStoreTransition(from, to, source_persistent, target_persistent);
+        const persist_result = self.applyRenameContentRootTransition(from, to, source_persistent, target_persistent);
         if (persist_result != 0) {
             return persist_result;
         }
@@ -1537,7 +1537,7 @@ pub const Model = struct {
 
         if (!source_persistent and target_persistent) {
             const file = &self.files.items[rename_mutation.source_index];
-            const sync_result = self.syncFileToBackingStore(file);
+            const sync_result = self.syncFileToContentRoot(file);
             if (sync_result != 0) {
                 return sync_result;
             }
@@ -1714,7 +1714,7 @@ pub const Model = struct {
         file.gid = @intCast(posix_stat.gid);
         touchFileContent(file);
 
-        const sync_result = self.syncFileToBackingStore(file);
+        const sync_result = self.syncFileToContentRoot(file);
         if (sync_result != 0) {
             return sync_result;
         }
@@ -1775,7 +1775,7 @@ pub const Model = struct {
             return success_result;
         }
 
-        const persist_result = self.syncFileToBackingStore(file);
+        const persist_result = self.syncFileToContentRoot(file);
         if (persist_result != 0) {
             self.restoreFileContent(file, snapshot);
             return persist_result;
@@ -1801,7 +1801,7 @@ pub const Model = struct {
         }
 
         if (file.backing_object_id != null) {
-            const persist_result = self.syncFileToBackingStore(file);
+            const persist_result = self.syncFileToContentRoot(file);
             if (persist_result != 0) {
                 restoreFileMetadata(file, snapshot);
             }
@@ -1834,7 +1834,7 @@ pub const Model = struct {
         file.gid = snapshot.gid;
     }
 
-    fn applyRenameBackingStoreTransition(
+    fn applyRenameContentRootTransition(
         self: *Model,
         from: []const u8,
         to: []const u8,
@@ -1996,7 +1996,7 @@ pub const Model = struct {
         return null;
     }
 
-    fn syncFileToBackingStore(self: *Model, file: *const StoredFile) i32 {
+    fn syncFileToContentRoot(self: *Model, file: *const StoredFile) i32 {
         if (file.backing_object_id) |object_id| {
             const guarded_store = &(self.guarded_store orelse return errnoCode(.IO));
             guarded_store.putObject(self.allocator, object_id, .{
@@ -2302,7 +2302,7 @@ pub const Model = struct {
     }
 };
 
-fn ensureBackingStoreDirectory(path: []const u8) !void {
+fn ensureContentRootDirectory(path: []const u8) !void {
     std.fs.makeDirAbsolute(path) catch |err| switch (err) {
         error.PathAlreadyExists => {
             var dir = try std.fs.openDirAbsolute(path, .{});

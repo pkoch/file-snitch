@@ -41,7 +41,7 @@ const Fixture = struct {
 
         var seed_file = try std.fs.createFileAbsolute(seed_host_path, .{ .truncate = true });
         defer seed_file.close();
-        try seed_file.writeAll("seeded from backing store\n");
+        try seed_file.writeAll("seeded from content root\n");
 
         return .{
             .allocator = allocator,
@@ -109,7 +109,7 @@ test "session exercise is covered by core assertions" {
 
     const seed_content = try session.readPath(allocator, seed_path);
     defer allocator.free(seed_content);
-    try std.testing.expectEqualStrings("seeded from backing store\n", seed_content);
+    try std.testing.expectEqualStrings("seeded from content root\n", seed_content);
 
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
