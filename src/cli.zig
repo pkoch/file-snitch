@@ -94,6 +94,7 @@ const Command = union(enum) {
 
 const AgentCommand = struct {
     socket_path: []const u8,
+    frontend_kind: agent.FrontendKind,
     tty_path: ?[]const u8 = null,
     run_in_foreground: bool,
 
@@ -247,6 +248,7 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
 
     var command: AgentCommand = .{
         .socket_path = socket_path,
+        .frontend_kind = .terminal_pinentry,
         .tty_path = null,
         .run_in_foreground = undefined,
     };
@@ -275,6 +277,18 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
             }
             allocator.free(command.socket_path);
             command.socket_path = try resolvePathArgument(args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--frontend")) {
+            index += 1;
+            if (index >= args.len) {
+                printUsage();
+                return error.InvalidUsage;
+            }
+            command.frontend_kind = parseFrontendKind(args[index]) orelse {
+                std.debug.print("error: unsupported agent frontend: {s}\n", .{args[index]});
+                return error.InvalidUsage;
+            };
             continue;
         }
         if (std.mem.eql(u8, arg, "--tty")) {
@@ -445,30 +459,57 @@ fn runAgent(command: AgentCommand) !void {
     var derived_tty_path: ?[]const u8 = null;
     defer if (derived_tty_path) |path| allocator.free(path);
 
-    const tty_path = if (command.tty_path) |path|
-        path
-    else if (command.run_in_foreground)
-        null
-    else blk: {
-        derived_tty_path = agent.defaultTerminalPathAlloc(allocator) catch {
-            return invalidUsage(
-                "error: `agent --daemon` requires --tty <path> or a startup TTY it can capture\n",
-                .{},
-            );
-        };
-        break :blk derived_tty_path.?;
+    var derived_osascript_path: ?[]const u8 = null;
+    defer if (derived_osascript_path) |path| allocator.free(path);
+
+    var terminal_pinentry_context: ?agent.TerminalPinentryContext = null;
+    var macos_ui_context: ?agent.MacosUiContext = null;
+    const frontend = switch (command.frontend_kind) {
+        .terminal_pinentry => blk: {
+            const tty_path = if (command.tty_path) |path|
+                path
+            else if (command.run_in_foreground)
+                null
+            else tty: {
+                derived_tty_path = agent.defaultTerminalPathAlloc(allocator) catch {
+                    return invalidUsage(
+                        "error: `agent --daemon --frontend terminal-pinentry` requires --tty <path> or a startup TTY it can capture\n",
+                        .{},
+                    );
+                };
+                break :tty derived_tty_path.?;
+            };
+
+            terminal_pinentry_context = .{
+                .allocator = allocator,
+                .timeout_ms = timeout_ms,
+                .tty_path = tty_path,
+                .inherited_cli_context = if (tty_path == null) &cli_context else null,
+            };
+            break :blk agent.terminalPinentryFrontend(&terminal_pinentry_context.?);
+        },
+        .macos_ui => blk: {
+            if (command.tty_path != null) {
+                return invalidUsage(
+                    "error: `agent --frontend macos-ui` does not accept --tty\n",
+                    .{},
+                );
+            }
+
+            derived_osascript_path = try agent.defaultOsascriptPathAlloc(allocator);
+            macos_ui_context = .{
+                .allocator = allocator,
+                .timeout_ms = timeout_ms,
+                .osascript_path = derived_osascript_path.?,
+            };
+            break :blk agent.macosUiFrontend(&macos_ui_context.?);
+        },
     };
 
-    var terminal_pinentry_context = agent.TerminalPinentryContext{
-        .allocator = allocator,
-        .timeout_ms = timeout_ms,
-        .tty_path = tty_path,
-        .inherited_cli_context = if (tty_path == null) &cli_context else null,
-    };
     var service_context = agent.AgentServiceContext{
         .allocator = allocator,
         .socket_path = command.socket_path,
-        .frontend = agent.terminalPinentryFrontend(&terminal_pinentry_context),
+        .frontend = frontend,
     };
 
     if (!command.run_in_foreground) {
@@ -733,6 +774,12 @@ fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
     const resolved = try resolvePathArgument(raw_value);
     allocator.free(raw_value);
     return resolved;
+}
+
+fn parseFrontendKind(raw: []const u8) ?agent.FrontendKind {
+    if (std.mem.eql(u8, raw, "terminal-pinentry")) return .terminal_pinentry;
+    if (std.mem.eql(u8, raw, "macos-ui")) return .macos_ui;
+    return null;
 }
 
 fn openStatusFifo(path: []const u8) !std.fs.File {
@@ -1265,7 +1312,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--tty <path>]
+        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--frontend <terminal-pinentry|macos-ui>] [--tty <path>]
         \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
@@ -1274,9 +1321,10 @@ fn printUsage() void {
         \\
         \\notes:
         \\  - `agent` starts the local agent service on a Unix socket
-        \\  - the current agent frontend is `terminal-pinentry`
-        \\  - `agent --foreground` uses inherited stdio when no --tty is provided
-        \\  - `agent --daemon` requires --tty <path> or a startup TTY it can capture
+        \\  - `agent` defaults to the `terminal-pinentry` frontend
+        \\  - `agent --frontend terminal-pinentry --foreground` uses inherited stdio when no --tty is provided
+        \\  - `agent --frontend terminal-pinentry --daemon` requires --tty <path> or a startup TTY it can capture
+        \\  - `agent --frontend macos-ui` uses `osascript` and does not accept --tty
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - foreground and daemon mode now share the same policy-reconciliation model
         \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes

@@ -18,6 +18,11 @@ pub const RequesterContext = struct {
     timeout_ms: u32 = 5_000,
 };
 
+pub const FrontendKind = enum {
+    terminal_pinentry,
+    macos_ui,
+};
+
 pub const Frontend = struct {
     context: ?*anyopaque,
     resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Decision,
@@ -33,6 +38,12 @@ pub const TerminalPinentryContext = struct {
     tty_path: ?[]const u8 = null,
     inherited_cli_context: ?*prompt.CliContext = null,
     mutex: std.Thread.Mutex = .{},
+};
+
+pub const MacosUiContext = struct {
+    allocator: std.mem.Allocator,
+    timeout_ms: u32 = 5_000,
+    osascript_path: []const u8,
 };
 
 pub const AgentServiceContext = struct {
@@ -76,6 +87,13 @@ pub fn terminalPinentryFrontend(context: *TerminalPinentryContext) Frontend {
     };
 }
 
+pub fn macosUiFrontend(context: *MacosUiContext) Frontend {
+    return .{
+        .context = context,
+        .resolve_fn = resolveMacosUi,
+    };
+}
+
 pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_TTY")) |value| {
         return value;
@@ -86,6 +104,17 @@ pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 
     return terminalPathFromStandardFilesAlloc(allocator) catch
         error.NotATerminal;
+}
+
+pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_OSASCRIPT_BIN")) |value| {
+        return value;
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
+    return allocator.dupe(u8, "osascript");
 }
 
 pub fn runAgentService(context: *AgentServiceContext) !void {
@@ -415,6 +444,102 @@ fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) pr
     return prompt.resolveCliWithContext(&cli_context, request);
 }
 
+fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
+    const context = raw_context orelse return .unavailable;
+    const ui_context: *MacosUiContext = @ptrCast(@alignCast(context));
+
+    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch return .unavailable;
+    defer ui_context.allocator.free(script);
+
+    const argv = [_][]const u8{
+        ui_context.osascript_path,
+        "-e",
+        script,
+    };
+    const result = std.process.Child.run(.{
+        .allocator = ui_context.allocator,
+        .argv = &argv,
+    }) catch return .unavailable;
+    defer ui_context.allocator.free(result.stdout);
+    defer ui_context.allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) return .unavailable;
+    return parseMacosUiDecision(result.stdout) catch .unavailable;
+}
+
+fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Request, timeout_ms: u32) ![]u8 {
+    const title = "File Snitch";
+    const prompt_text = try buildMacosDialogPromptAlloc(allocator, request);
+    defer allocator.free(prompt_text);
+
+    const escaped_title = try appleScriptStringLiteralContentsAlloc(allocator, title);
+    defer allocator.free(escaped_title);
+    const escaped_prompt = try appleScriptStringLiteralContentsAlloc(allocator, prompt_text);
+    defer allocator.free(escaped_prompt);
+
+    const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000), 1);
+    return std.fmt.allocPrint(
+        allocator,
+        \\try
+        \\  set prompt_text to "{s}"
+        \\  set decision to display dialog prompt_text with title "{s}" buttons {{"Deny", "Allow"}} default button "Allow" giving up after {d} with icon caution
+        \\  if gave up of decision then
+        \\    return "timeout"
+        \\  end if
+        \\  if button returned of decision is "Allow" then
+        \\    return "allow"
+        \\  end if
+        \\  return "deny"
+        \\on error number -128
+        \\  return "deny"
+        \\end try
+        ,
+        .{ escaped_prompt, escaped_title, timeout_seconds },
+    );
+}
+
+fn buildMacosDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
+    const label = request.label orelse blk: {
+        const generated = try std.fmt.allocPrint(
+            allocator,
+            "{s} {s}",
+            .{ accessClassLabel(request.access_class), request.path },
+        );
+        break :blk generated;
+    };
+    defer if (request.label == null) allocator.free(label);
+
+    const executable_path = request.executable_path orelse "unknown executable";
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n\nProcess: {s}\nPID: {d}\nUID: {d}",
+        .{ label, executable_path, request.pid, request.uid },
+    );
+}
+
+fn appleScriptStringLiteralContentsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+
+    for (raw) |byte| switch (byte) {
+        '"' => try output.appendSlice(allocator, "\\\""),
+        '\\' => try output.appendSlice(allocator, "\\\\"),
+        '\n' => try output.appendSlice(allocator, "\\n"),
+        '\r' => {},
+        else => try output.append(allocator, byte),
+    };
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn parseMacosUiDecision(raw_output: []const u8) !prompt.Decision {
+    const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
+    if (std.mem.eql(u8, trimmed, "allow")) return .allow;
+    if (std.mem.eql(u8, trimmed, "deny")) return .deny;
+    if (std.mem.eql(u8, trimmed, "timeout")) return .timeout;
+    return error.InvalidProtocolMessage;
+}
+
 fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.fs.File.stderr().isTty()) {
         return terminalPathForFileAlloc(allocator, std.fs.File.stderr());
@@ -733,4 +858,31 @@ test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
     const resolved = try defaultTerminalPathAlloc(allocator);
     defer allocator.free(resolved);
     try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
+    const allocator = std.testing.allocator;
+    const key = "FILE_SNITCH_OSASCRIPT_BIN";
+    const value = "/tmp/file-snitch-test-osascript";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try defaultOsascriptPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "parse macos ui decision accepts known values" {
+    try std.testing.expectEqual(prompt.Decision.allow, try parseMacosUiDecision("allow\n"));
+    try std.testing.expectEqual(prompt.Decision.deny, try parseMacosUiDecision("deny\r\n"));
+    try std.testing.expectEqual(prompt.Decision.timeout, try parseMacosUiDecision("timeout"));
+}
+
+test "apple script escaping covers control characters" {
+    const allocator = std.testing.allocator;
+    const escaped = try appleScriptStringLiteralContentsAlloc(allocator, "quoted \"value\"\npath\\name\r");
+    defer allocator.free(escaped);
+
+    try std.testing.expectEqualStrings("quoted \\\"value\\\"\\npath\\\\name", escaped);
 }

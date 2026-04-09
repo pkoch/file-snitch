@@ -14,9 +14,11 @@ agent_terminal_pid=""
 agent_tty_path=""
 agent_tty_path_file=""
 agent_execution_mode=""
+agent_frontend_args=()
 mount_paths=()
 run_mode=""
 run_execution_mode=""
+fake_osascript_queue_file=""
 
 prepare_run_fixture() {
   local fixture_name="$1"
@@ -37,9 +39,11 @@ prepare_run_fixture() {
   agent_tty_path=""
   agent_tty_path_file=""
   agent_execution_mode=""
+  agent_frontend_args=()
   mount_paths=()
   run_mode=""
   run_execution_mode=""
+  fake_osascript_queue_file=""
 
   mkdir -p \
     "$config_home_dir/file-snitch" \
@@ -119,14 +123,14 @@ start_file_snitch_agent() {
       XDG_CONFIG_HOME="$config_home_dir" \
       XDG_RUNTIME_DIR="$runtime_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
-      "$repo_root/zig-out/bin/file-snitch" agent "$execution_mode" <&$agent_input_fd >"$agent_log_file" 2>&1 &
+      "$repo_root/zig-out/bin/file-snitch" agent "${agent_frontend_args[@]}" "$execution_mode" <&$agent_input_fd >"$agent_log_file" 2>&1 &
   else
     PATH="$fake_bin_dir:$PATH" \
       HOME="$home_dir" \
       XDG_CONFIG_HOME="$config_home_dir" \
       XDG_RUNTIME_DIR="$runtime_dir" \
       PASSWORD_STORE_DIR="$password_store_dir" \
-      "$repo_root/zig-out/bin/file-snitch" agent "$execution_mode" >"$agent_log_file" 2>&1 &
+      "$repo_root/zig-out/bin/file-snitch" agent "${agent_frontend_args[@]}" "$execution_mode" >"$agent_log_file" 2>&1 &
   fi
   agent_pid="$!"
   wait_for_agent_ready
@@ -207,7 +211,7 @@ PY
     XDG_CONFIG_HOME="$config_home_dir" \
     XDG_RUNTIME_DIR="$runtime_dir" \
     PASSWORD_STORE_DIR="$password_store_dir" \
-    "$repo_root/zig-out/bin/file-snitch" agent --daemon --tty "$agent_tty_path" >"$agent_log_file" 2>&1 &
+    "$repo_root/zig-out/bin/file-snitch" agent "${agent_frontend_args[@]}" --daemon --tty "$agent_tty_path" >"$agent_log_file" 2>&1 &
   agent_pid="$!"
   wait "$agent_pid" || true
   agent_pid="$(find_agent_daemon_pid "$agent_tty_path")"
@@ -253,13 +257,20 @@ wait_for_agent_ready() {
 }
 
 find_agent_daemon_pid() {
-  local tty_path="$1"
+  local tty_path="${1:-}"
   local attempts="${2:-100}"
-  local pattern="$repo_root/zig-out/bin/file-snitch agent --daemon --tty $tty_path"
+  local frontend_pattern=""
+  if [[ ${#agent_frontend_args[@]} -gt 0 ]]; then
+    frontend_pattern=" ${agent_frontend_args[*]}"
+  fi
+  local pattern="$repo_root/zig-out/bin/file-snitch agent${frontend_pattern} --daemon"
+  if [[ -n "$tty_path" ]]; then
+    pattern="$pattern --tty $tty_path"
+  fi
   local pid=""
 
   for _ in $(seq 1 "$attempts"); do
-    pid="$(pgrep -f "$pattern" | head -n 1 || true)"
+    pid="$(pgrep -f "$pattern" | tail -n 1 || true)"
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
       return
@@ -277,7 +288,7 @@ find_run_daemon_pid() {
   local pid=""
 
   for _ in $(seq 1 "$attempts"); do
-    pid="$(pgrep -f "$pattern" | head -n 1 || true)"
+    pid="$(pgrep -f "$pattern" | tail -n 1 || true)"
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
       return
@@ -358,6 +369,10 @@ stop_run_fixture() {
     fi
   done
 
+  if [[ ${#mount_paths[@]} -gt 0 ]]; then
+    wait_for_mounts_gone || status=$?
+  fi
+
   if [[ -n "${daemon_pid:-}" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
     if ! wait_for_daemon_exit "$daemon_pid" 20; then
       kill -TERM "$daemon_pid" 2>/dev/null || true
@@ -406,6 +421,7 @@ stop_run_fixture() {
   fi
   agent_tty_path_file=""
   agent_execution_mode=""
+  agent_frontend_args=()
   mount_paths=()
   run_mode=""
   run_execution_mode=""
@@ -448,7 +464,9 @@ cleanup_run_fixture() {
 
   [[ -n "$log_file" ]] && rm -f "$log_file"
   [[ -n "$agent_log_file" ]] && rm -f "$agent_log_file"
-  [[ -n "$home_dir" ]] && rm -rf "$home_dir"
+  if [[ -n "$home_dir" ]]; then
+    remove_tree_with_retries "$home_dir" || status=$?
+  fi
 
   home_dir=""
   config_home_dir=""
@@ -462,8 +480,58 @@ cleanup_run_fixture() {
   agent_tty_path=""
   agent_tty_path_file=""
   agent_execution_mode=""
+  agent_frontend_args=()
+  fake_osascript_queue_file=""
 
   return "$status"
+}
+
+remove_tree_with_retries() {
+  local path="$1"
+  local attempts="${2:-20}"
+
+  for _ in $(seq 1 "$attempts"); do
+    if rm -rf "$path" 2>/dev/null; then
+      [[ ! -e "$path" ]] && return 0
+    fi
+    sleep 0.1
+  done
+
+  rm -rf "$path"
+}
+
+write_fake_osascript_script() {
+  fake_osascript_queue_file="$home_dir/.local/file-snitch-fake-osascript.queue"
+  cat >"$fake_bin_dir/osascript" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+queue_path="$fake_osascript_queue_file"
+
+if [[ ! -f "\$queue_path" ]]; then
+  echo "allow"
+  exit 0
+fi
+
+response="\$(head -n 1 "\$queue_path" || true)"
+if [[ -s "\$queue_path" ]]; then
+  tail -n +2 "\$queue_path" >"\$queue_path.next" || true
+  mv "\$queue_path.next" "\$queue_path"
+fi
+
+case "\$response" in
+  allow|deny|timeout)
+    printf '%s\n' "\$response"
+    ;;
+  "")
+    printf 'allow\n'
+    ;;
+  *)
+    printf '%s\n' "\$response"
+    ;;
+esac
+EOF
+  chmod +x "$fake_bin_dir/osascript"
 }
 
 guarded_object_id_for() {

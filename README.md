@@ -19,7 +19,9 @@ The product brief lives in
 - guarded-object custody through `pass:file-snitch/<object_id>`
 - in-place projection back into real parent directories, with sibling passthrough
 - durable remembered decisions in `policy.yml`, including RFC3339 UTC expiry
-- a local requester/agent socket with the current `terminal-pinentry` frontend
+- a local requester/agent socket with:
+  - `terminal-pinentry`
+  - `macos-ui` on macOS via `osascript`
 - Homebrew/Linuxbrew packaging from `HEAD`
 
 ## What It Explicitly Does Not Do
@@ -27,7 +29,7 @@ The product brief lives in
 - protect against root
 - arbitrate between local users
 - act as a system-wide MAC framework
-- provide a GUI agent yet
+- provide a Linux GUI agent yet
 - support store backends other than `pass` yet
 
 ## Quick Evaluation
@@ -101,12 +103,16 @@ boundary. It is not.
   verified end to end on macOS and Linux.
 - The current agent service is local-only and user-owned. `run prompt` talks to
   that socket instead of reading daemon stdin directly.
-- The current agent frontend is `terminal-pinentry`:
-  - `agent --foreground` uses inherited stdio when no `--tty` is provided
-  - `agent --daemon` can keep serving requests by reopening an explicit or
-    startup-derived TTY path
+- The current agent frontends are:
+  - `terminal-pinentry`
+    - `agent --foreground` uses inherited stdio when no `--tty` is provided
+    - `agent --daemon` can keep serving requests by reopening an explicit or
+      startup-derived TTY path
+  - `macos-ui`
+    - macOS-only frontend backed by `osascript`
+    - works in both foreground and daemon mode
 - The remaining runtime limits are:
-  - the current agent frontend is still terminal-only
+  - only macOS has a GUI frontend today
   - only the `pass` backend exists today
   - remote forwarding and richer agent UX are future work
 
@@ -119,7 +125,7 @@ boundary. It is not.
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
-- `src/agent.zig`: local requester/agent socket protocol, agent service, and `terminal-pinentry` frontend
+- `src/agent.zig`: local requester/agent socket protocol, agent service, and the current frontends
 - `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
@@ -182,8 +188,9 @@ The first packaging slice now lives at:
 - [docs/install.md](./docs/install.md)
 
 This is intentionally a `HEAD`-oriented Homebrew formula plus manual runtime
-setup. The current prompt frontend is still `terminal-pinentry`, so background
-user services are possible but not yet the final UX story.
+setup. The current agent now has both `terminal-pinentry` and a first macOS
+`osascript` UI frontend, but user-service polish and richer frontends are still
+in progress.
 
 ## Verification
 
@@ -201,6 +208,7 @@ zig build compile-commands
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
+./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
 ```
 
@@ -220,6 +228,7 @@ What each command covers:
 - `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
+- `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path that can run in CI
 - `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
@@ -231,9 +240,11 @@ Prompt notes:
 - `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, polls `policy.yml`, and adds or removes mount workers as the derived mount plan changes
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
 - `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
-- the current frontend is `terminal-pinentry`
-- `agent --foreground` uses inherited stdio when no `--tty` is provided
-- `agent --daemon` requires `--tty <path>` or a startup TTY it can capture
+- the default frontend is `terminal-pinentry`
+- `--frontend terminal-pinentry` keeps the existing terminal behavior
+- `--frontend macos-ui` uses `osascript` to show a native macOS dialog
+- `agent --foreground` uses inherited stdio when `--frontend terminal-pinentry` has no `--tty`
+- `agent --daemon` requires `--tty <path>` or a startup TTY it can capture when using `terminal-pinentry`
 - `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
@@ -250,7 +261,7 @@ Prompt notes:
   - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
-- the current agent service is intentionally paired only with a terminal frontend; the long-term goal is a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
+- the current agent service now has one bootstrap terminal frontend and one first native macOS frontend; the long-term goal is still a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
 - a real local `pass` drill has been run outside CI with:
   - a disposable temp home
@@ -261,6 +272,7 @@ Prompt notes:
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations
 - the current `terminal-pinentry` frontend prints structured prompt JSON before each question and defaults blank terminal input to allow (`[Y/n]`)
+- the current `macos-ui` frontend shells out to `osascript` and returns `allow`, `deny`, or `timeout` back to the agent
 - prompt timeout defaults to 5 seconds and falls back to deny
 - set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

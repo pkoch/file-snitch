@@ -36,8 +36,9 @@ Status:
   - the reconciler rewrites `policy.yml` after pruning expired durable decisions
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
   - a first local agent service now exists on a user-owned Unix socket
-  - the current frontend is `terminal-pinentry`
-  - the current terminal UI is acceptable as a bootstrap and debugging frontend only
+  - the current frontends are:
+    - `terminal-pinentry` as the bootstrap/debug fallback
+    - `macos-ui` as the first native frontend
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
   - stop treating improvements to the current terminal UI as the product goal
@@ -87,8 +88,12 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[~]` Implement a local agent-style broker with default-deny timeout behavior
   - `file-snitch agent (--foreground|--daemon)` now speaks the first local requester/agent socket protocol
   - `run prompt` now resolves through that local agent socket in both foreground and daemon mode
-  - the current frontend is still terminal-only
-  - the current smoke suite now covers the daemonized agent path through `terminal-pinentry`
+  - the current frontends are:
+    - `terminal-pinentry`
+    - `macos-ui`
+  - the current smoke suite now covers:
+    - the daemonized agent path through `terminal-pinentry`
+    - the `macos-ui` frontend through a fake `osascript` path in CI
 - `[~]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
   - the old direct daemon-stdin prompt path is gone
   - the remaining work is better agent frontends, not richer terminal prompting
@@ -114,7 +119,7 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[~]` Add installers with Homebrew-focused packaging
   - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
   - install notes now live at [docs/install.md](./docs/install.md)
-  - daemonized agent service now exists, but the current `terminal-pinentry` frontend is not yet the final user-service UX
+  - daemonized agent service now exists, with `terminal-pinentry` and a first macOS `osascript` UI frontend
 - `[ ]` Add a native `.deb` package in addition to the Homebrew path
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export

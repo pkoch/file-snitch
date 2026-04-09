@@ -6,7 +6,9 @@ Current assumptions:
 - single-user, user-space tool
 - `pass` is the guarded-object backend
 - FUSE support is installed outside Homebrew
-- the current authorization frontend is `terminal-pinentry`
+- the current authorization frontends are:
+  - `terminal-pinentry`
+  - `macos-ui` on macOS via `osascript`
 
 ## Homebrew
 
@@ -59,7 +61,9 @@ distro `fuse3` and `libfuse3-dev`.
 
 ## First real-user drill
 
-The current prompt path can run entirely in the foreground:
+The current prompt path can run entirely in the foreground.
+
+Cross-platform bootstrap path:
 
 Terminal 1:
 
@@ -81,11 +85,30 @@ kubectl config view >/dev/null
 file-snitch unenroll ~/.kube/config
 ```
 
-That is intentionally manual for now.
+macOS native dialog path:
 
-`file-snitch agent --daemon` also exists now. It still uses the same
-`terminal-pinentry` frontend, so it needs `--tty <path>` or a startup TTY it
-can capture.
+Terminal 1:
+
+```bash
+file-snitch agent --frontend macos-ui --daemon
+```
+
+Terminal 2:
+
+```bash
+file-snitch run prompt --foreground
+```
+
+Terminal 3:
+
+```bash
+file-snitch enroll ~/.kube/config
+kubectl config view >/dev/null
+file-snitch unenroll ~/.kube/config
+```
+
+That is still intentionally manual, but it now exercises the native dialog on
+macOS.
 
 ## Disposable evaluation
 
@@ -124,6 +147,7 @@ Example per-user service files live in:
 - the default local agent socket lives under `XDG_RUNTIME_DIR` when it is
   set, otherwise under `~/.local/state/file-snitch/agent.sock`
 - set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a daemonized
-  agent to use a specific terminal
+  `terminal-pinentry` agent to use a specific terminal
+- `macos-ui` uses `osascript` on macOS and does not accept `--tty`
 - `run prompt` defaults timeout to deny
 - the current store backend is `pass:file-snitch/<object_id>`

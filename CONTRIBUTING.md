@@ -47,6 +47,7 @@ Run the smoke suite:
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
+./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
 ```
 
