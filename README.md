@@ -71,6 +71,9 @@ The dossier includes environment and policy diagnostics, but it does not export
 guarded file contents. Then use the issue templates under
 [.github/ISSUE_TEMPLATE](./.github/ISSUE_TEMPLATE).
 
+Operational guidance and troubleshooting live in
+[docs/operations.md](./docs/operations.md).
+
 ## Security Stance
 
 The short threat model lives in [docs/threat-model.md](./docs/threat-model.md).
