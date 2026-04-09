@@ -20,7 +20,7 @@ zig build \
 
 case "$(uname -s)" in
   Darwin)
-    echo "==> zig test tests/integration.zig"
+    echo "==> zig test tests/core_integration.zig"
     zig test \
       -cflags -std=c11 -D_FILE_OFFSET_BITS=64 -- \
       c/libfuse_shim.c \
@@ -34,7 +34,7 @@ case "$(uname -s)" in
       -rpath /usr/local/lib \
       -rpath /opt/homebrew/lib \
       --dep app_src \
-      -Mroot=tests/integration.zig \
+      -Mroot=tests/core_integration.zig \
       -ODebug \
       --dep yaml \
       -Mapp_src=src/root.zig \

@@ -105,7 +105,7 @@ zig build compile-commands
 What each command covers:
 - `zig build`: compile the CLI binary and the C `libfuse` shim
 - `zig build test`: run both Zig test roots wired in `build.zig`
-  - `tests/integration.zig`: dry-run integration coverage for the session/filesystem boundary
+  - `tests/core_integration.zig`: dry-run core coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
   - `src/store.zig`: guarded-store unit tests for object serialization and the mock backend
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
@@ -119,7 +119,7 @@ What each command covers:
 - `./tests/smoke/run-prompt-single.sh`: live verification of single-mount `run prompt` allow, deny, and timeout behavior
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
-- `tests/integration.zig`
+- `tests/core_integration.zig`
 - `src/prompt.zig`
 
 Prompt notes:

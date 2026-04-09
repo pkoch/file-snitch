@@ -58,7 +58,7 @@ const Fixture = struct {
     }
 };
 
-test "session exercise is covered by integration assertions" {
+test "session exercise is covered by core assertions" {
     const allocator = std.testing.allocator;
     const fixture = try Fixture.init(allocator);
     defer fixture.deinit();
@@ -137,7 +137,7 @@ test "session exercise is covered by integration assertions" {
     try std.testing.expectEqual(@as(usize, 0), session.state.run_attempts);
 }
 
-test "policy and prompt paths are covered by integration assertions" {
+test "policy and prompt paths are covered by core assertions" {
     const allocator = std.testing.allocator;
     const fixture = try Fixture.init(allocator);
     defer fixture.deinit();

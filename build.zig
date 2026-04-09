@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const test_module = b.createModule(.{
-        .root_source_file = b.path("tests/integration.zig"),
+        .root_source_file = b.path("tests/core_integration.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_config_tests = b.addRunArtifact(config_tests);
 
-    const test_step = b.step("test", "Run integration tests");
+    const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
     test_step.dependOn(&run_store_tests.step);
