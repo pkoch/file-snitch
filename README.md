@@ -1,6 +1,10 @@
 # File Snitch
 
-Guarded FUSE mounts for secret files.
+Keep tools from silently reading your kubeconfig, SSH keys, and other
+secret-bearing files.
+
+If you are evaluating the project for the first time, start with
+[docs/index.md](./docs/index.md).
 
 ## Intro
 
