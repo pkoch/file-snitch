@@ -107,12 +107,16 @@ file-enrollment pivot, and the major Phase 0 research references.
 
 ## Phase 5: packaging and polish
 
-- `[ ]` Add installers with Homebrew-focused packaging
+- `[~]` Add installers with Homebrew-focused packaging
+  - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
+  - install notes now live at [docs/install.md](./docs/install.md)
+  - background user services are intentionally deferred until the agent has a non-interactive frontend
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export
 - `[ ]` Add debug bundle generation
 - `[ ]` Write threat-model and operations docs. Be sure to include the hash of the requesting bin.
-- `[ ]` Write install, usage, and troubleshooting docs
+- `[~]` Write install, usage, and troubleshooting docs
+  - initial install notes are now in [docs/install.md](./docs/install.md)
 
 ## Open decisions
 

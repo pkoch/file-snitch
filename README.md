@@ -103,6 +103,16 @@ FUSE discovery:
 - `zig build compile-commands` now writes `compile_commands.json` for clangd from the same discovery logic
 - after cloning or changing build flags, run `zig build compile-commands` so clangd picks up the correct C flags; `build.zig` remains the source of truth
 
+## Install notes
+
+The first packaging slice now lives at:
+- [Formula/file-snitch.rb](./Formula/file-snitch.rb)
+- [docs/install.md](./docs/install.md)
+
+This is intentionally a `HEAD`-oriented Homebrew formula plus manual runtime
+setup. The current prompt frontend is still a TTY agent, so background user
+services are deferred until the agent has a non-interactive frontend.
+
 ## Verification
 
 Current validation workflow:
