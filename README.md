@@ -32,7 +32,6 @@ Current state:
 - Audit output is structured JSON on stdout. Audit events include actor metadata (`pid`/`uid`/`gid` and `executable_path`), timestamps, and operation-specific detail.
 - The current CLI prompt broker is live as a bootstrap/debug path, defaults blank input to allow, and still defaults timeout to deny.
 - The remaining runtime limits are:
-  - multi-mount `run prompt`
   - the current prompt path is still a local interactive broker, not the eventual agent-style broker model
   - only the `pass` store backend exists today; `1password` and `bitwarden` are future work
 - The old guarded-root spike still survives in low-level core code and historical notes, but it is no longer a supported CLI path.
@@ -46,7 +45,7 @@ Current state:
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
-- `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime plus older guarded-root core paths
+- `src/filesystem.zig`: Zig-owned filesystem behavior for the current enrolled-parent runtime plus the remaining guarded-root core used by low-level tests
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
@@ -116,7 +115,7 @@ What each command covers:
 - `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
-- `./tests/smoke/run-prompt-single.sh`: live verification of single-mount `run prompt` allow, deny, and timeout behavior
+- `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/core_integration.zig`
@@ -130,6 +129,7 @@ Prompt notes:
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
 - foreground and daemon mode now share the same policy-reconciliation behavior
+- `run prompt` is still a local interactive debugging path, not the long-term broker model
 - `file-snitch enroll <path>` migrates the plaintext file into the configured guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan

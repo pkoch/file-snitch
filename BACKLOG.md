@@ -13,7 +13,7 @@ Status:
 - `[~]` Make policy-driven exact-file enrollment the default product path
   - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
   - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
-  - the old guarded-root spike still exists only as low-level scaffolding and should keep shrinking
+  - the old guarded-root spike survives only as low-level scaffolding and should keep shrinking until it disappears
 - `[x]` Move from projection-only protection to real secret custody
   - `enroll` already evacuates plaintext from the original path
   - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`
@@ -31,7 +31,7 @@ Status:
   - the current CLI prompt is acceptable as a bootstrap and debugging broker only
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
-  - stop treating multi-mount local `run prompt` as the product goal
+  - stop treating improvements to the current local TTY prompt path as the product goal
 - `[x]` Replace the old guarded-root smoke coverage with policy-driven black-box smoke tests
   - empty policy
   - policy lifecycle
