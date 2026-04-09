@@ -45,6 +45,20 @@ Then choose one of these:
 - real install and first-user drill:
   - [docs/install.md](./docs/install.md)
 
+## Recorded Demo
+
+[![Recorded File Snitch demo](./docs/assets/demo.gif)](./docs/demo.md)
+
+Regenerate the embedded demo artifacts with:
+
+```bash
+./scripts/regenerate-demo-artifacts.sh
+```
+
+The checked-in demo is a tmux-driven session that shows the agent pane, the
+daemon pane, and a user shell triggering guarded access and sibling
+passthrough.
+
 ## Reporting Problems
 
 Before opening an issue, export a dossier:
