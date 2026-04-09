@@ -15,6 +15,8 @@ pub const std_options: std.Options = .{
 
 const allocator = std.heap.page_allocator;
 var supervisor_shutdown_signal = std.atomic.Value(i32).init(0);
+const internal_mount_path_env = "FILE_SNITCH_INTERNAL_MOUNT_PATH";
+const internal_status_fifo_env = "FILE_SNITCH_INTERNAL_STATUS_FIFO";
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
@@ -156,6 +158,8 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
         .default_mutation_outcome = .deny,
         .prompt_timeout_ms = try loadPromptTimeoutMs(),
         .run_in_foreground = undefined,
+        .status_fifo_path = try loadOptionalInternalPath(internal_status_fifo_env),
+        .mount_path_filter = try loadOptionalInternalPath(internal_mount_path_env),
     };
     errdefer command.deinit(allocator);
 
@@ -188,25 +192,6 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
             command.policy_path = try resolvePathArgument(args[index]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--status-fifo")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            command.status_fifo_path = try allocator.dupe(u8, args[index]);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--mount-path")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            command.mount_path_filter = try resolvePathArgument(args[index]);
-            continue;
-        }
-
         printUsage();
         return error.InvalidUsage;
     }
@@ -525,6 +510,18 @@ fn loadPromptTimeoutMs() !u32 {
     return std.fmt.parseInt(u32, raw_value, 10);
 }
 
+fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
+    const raw_value = std.process.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return err,
+    };
+    errdefer allocator.free(raw_value);
+
+    const resolved = try resolvePathArgument(raw_value);
+    allocator.free(raw_value);
+    return resolved;
+}
+
 fn openStatusFifo(path: []const u8) !std.fs.File {
     const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
         error.FileNotFound => return invalidUsage("error: status fifo does not exist: {s}\n", .{path}),
@@ -582,25 +579,21 @@ fn superviseMountChildren(command: RunCommand, mount_paths: []const []const u8) 
     }
 
     for (mount_paths, 0..) |mount_path, index| {
-        const extra_args: usize = if (command.status_fifo_path != null) 2 else 0;
-        const argv = try allocator.alloc([]const u8, 8 + extra_args);
+        const argv = try allocator.alloc([]const u8, 6);
         argv[0] = exe_path;
         argv[1] = "run";
         argv[2] = outcomeArg(command.default_mutation_outcome);
         argv[3] = "--foreground";
         argv[4] = "--policy";
         argv[5] = command.policy_path;
-        argv[6] = "--mount-path";
-        argv[7] = mount_path;
-        if (command.status_fifo_path) |status_fifo_path| {
-            argv[8] = "--status-fifo";
-            argv[9] = status_fifo_path;
-        }
 
         var child = std.process.Child.init(argv, allocator);
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
         child.stderr_behavior = .Inherit;
+        var env_map = try buildMountChildEnv(command, mount_path);
+        defer env_map.deinit();
+        child.env_map = &env_map;
 
         children[index] = .{
             .child = child,
@@ -801,8 +794,6 @@ fn reconcileManagedMountChildren(
     for (mount_plan.paths) |mount_path| {
         var child = try spawnManagedMountChild(exe_path, command, mount_path);
         errdefer child.deinit();
-        try child.child.spawn();
-        child.alive = true;
         try children.append(allocator, child);
     }
 
@@ -828,8 +819,7 @@ fn spawnManagedMountChild(
     const mount_path_owned = try allocator.dupe(u8, mount_path);
     errdefer allocator.free(mount_path_owned);
 
-    const extra_args: usize = if (command.status_fifo_path != null) 2 else 0;
-    const argv = try allocator.alloc([]const u8, 8 + extra_args);
+    const argv = try allocator.alloc([]const u8, 6);
     errdefer allocator.free(argv);
 
     argv[0] = exe_path;
@@ -838,24 +828,36 @@ fn spawnManagedMountChild(
     argv[3] = "--foreground";
     argv[4] = "--policy";
     argv[5] = command.policy_path;
-    argv[6] = "--mount-path";
-    argv[7] = mount_path_owned;
-    if (command.status_fifo_path) |status_fifo_path| {
-        argv[8] = "--status-fifo";
-        argv[9] = status_fifo_path;
-    }
 
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
+    var env_map = try buildMountChildEnv(command, mount_path_owned);
+    defer env_map.deinit();
+    child.env_map = &env_map;
+    try child.spawn();
 
     return .{
         .child = child,
         .argv = argv,
         .mount_path = mount_path_owned,
-        .alive = false,
+        .alive = true,
     };
+}
+
+fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.EnvMap {
+    var env_map = try std.process.getEnvMap(allocator);
+    errdefer env_map.deinit();
+
+    try env_map.put(internal_mount_path_env, mount_path);
+    if (command.status_fifo_path) |status_fifo_path| {
+        try env_map.put(internal_status_fifo_env, status_fifo_path);
+    } else {
+        _ = env_map.remove(internal_status_fifo_env);
+    }
+
+    return env_map;
 }
 
 fn reapExitedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) bool {
