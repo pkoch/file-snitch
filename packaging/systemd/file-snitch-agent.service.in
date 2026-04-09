@@ -1,11 +1,11 @@
 [Unit]
-Description=File Snitch user daemon
+Description=File Snitch local agent
 Documentation=https://github.com/pkoch/file-snitch/blob/master/docs/services.md
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/file-snitch run allow --foreground
+ExecStart={{FILE_SNITCH_BIN}} agent --frontend linux-ui --foreground
 Restart=on-failure
 RestartSec=2
 

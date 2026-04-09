@@ -48,6 +48,7 @@ Install:
 - Homebrew or Linuxbrew
 - `pass`
 - a usable GPG setup for `pass`
+- `zenity` if you want the Linux `linux-ui` agent frontend or user-service path
 - distro-provided FUSE 3 runtime and development files
 
 For example, on Debian/Ubuntu-like systems:
@@ -133,12 +134,35 @@ file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 That file is meant to accompany GitHub bug reports. It includes policy and
 environment diagnostics, but not guarded file contents.
 
-## User service examples
+## User services
 
-Example per-user service files live in:
+Per-user service installation now has real helper scripts:
 - [docs/services.md](./services.md)
-- [packaging/systemd/file-snitch-run.service](../packaging/systemd/file-snitch-run.service)
-- [packaging/launchd/dev.file-snitch.run.plist](../packaging/launchd/dev.file-snitch.run.plist)
+- [scripts/render-user-services.sh](../scripts/render-user-services.sh)
+- [scripts/install-user-services.sh](../scripts/install-user-services.sh)
+- [scripts/uninstall-user-services.sh](../scripts/uninstall-user-services.sh)
+
+macOS first-class path:
+
+```bash
+./scripts/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
+```
+
+Linux first-class path:
+
+```bash
+./scripts/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
+```
+
+That installs:
+- macOS:
+  - `dev.file-snitch.agent` with `macos-ui`
+  - `dev.file-snitch.run` in `prompt` mode
+- Linux:
+  - `file-snitch-agent.service` with `linux-ui`
+  - `file-snitch-run.service` in `prompt` mode
+
+Linux requires `zenity` for that unattended prompt path.
 
 ## Notes
 

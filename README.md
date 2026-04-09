@@ -22,14 +22,15 @@ The product brief lives in
 - a local requester/agent socket with:
   - `terminal-pinentry`
   - `macos-ui` on macOS via `osascript`
+  - `linux-ui` on Linux via `zenity`
 - Homebrew/Linuxbrew packaging from `HEAD`
+- per-user service install helpers for `launchd` and `systemd --user`
 
 ## What It Explicitly Does Not Do
 
 - protect against root
 - arbitrate between local users
 - act as a system-wide MAC framework
-- provide a Linux GUI agent yet
 - support store backends other than `pass` yet
 
 ## Quick Evaluation
@@ -49,6 +50,7 @@ Then choose one of these:
   - [docs/install.md](./docs/install.md)
 - user service examples:
   - [docs/services.md](./docs/services.md)
+  - `./scripts/install-user-services.sh --bin "$(command -v file-snitch)"`
 
 ## Recorded Demo
 
@@ -103,6 +105,7 @@ boundary. It is not.
   verified end to end on macOS and Linux.
 - The current agent service is local-only and user-owned. `run prompt` talks to
   that socket instead of reading daemon stdin directly.
+- Per-user service install helpers now exist under `scripts/`.
 - The current agent frontends are:
   - `terminal-pinentry`
     - `agent --foreground` uses inherited stdio when no `--tty` is provided
@@ -111,8 +114,10 @@ boundary. It is not.
   - `macos-ui`
     - macOS-only frontend backed by `osascript`
     - works in both foreground and daemon mode
+  - `linux-ui`
+    - Linux-only frontend backed by `zenity`
+    - works in both foreground and daemon mode
 - The remaining runtime limits are:
-  - only macOS has a GUI frontend today
   - only the `pass` backend exists today
   - remote forwarding and richer agent UX are future work
 
@@ -188,9 +193,9 @@ The first packaging slice now lives at:
 - [docs/install.md](./docs/install.md)
 
 This is intentionally a `HEAD`-oriented Homebrew formula plus manual runtime
-setup. The current agent now has both `terminal-pinentry` and a first macOS
-`osascript` UI frontend, but user-service polish and richer frontends are still
-in progress.
+setup. The current agent now has `terminal-pinentry`, `macos-ui`, and
+`linux-ui`, and the repo now ships per-user service install helpers. Richer
+agent UX and broader packaging are still in progress.
 
 ## Verification
 
@@ -208,8 +213,10 @@ zig build compile-commands
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
+./tests/smoke/run-prompt-linux-ui.sh
 ./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
+./tests/smoke/user-service-rendering.sh
 ```
 
 What each command covers:
@@ -228,8 +235,10 @@ What each command covers:
 - `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
+- `./tests/smoke/run-prompt-linux-ui.sh`: black-box verification of the `linux-ui` frontend through a fake `zenity` path that can run in CI
 - `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path that can run in CI
 - `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
+- `./tests/smoke/user-service-rendering.sh`: black-box verification that the user-service helpers render the expected `launchd` and `systemd --user` files
 
 When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
 - `tests/core_integration.zig`

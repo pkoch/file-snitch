@@ -461,9 +461,12 @@ fn runAgent(command: AgentCommand) !void {
 
     var derived_osascript_path: ?[]const u8 = null;
     defer if (derived_osascript_path) |path| allocator.free(path);
+    var derived_zenity_path: ?[]const u8 = null;
+    defer if (derived_zenity_path) |path| allocator.free(path);
 
     var terminal_pinentry_context: ?agent.TerminalPinentryContext = null;
     var macos_ui_context: ?agent.MacosUiContext = null;
+    var linux_ui_context: ?agent.LinuxUiContext = null;
     const frontend = switch (command.frontend_kind) {
         .terminal_pinentry => blk: {
             const tty_path = if (command.tty_path) |path|
@@ -503,6 +506,22 @@ fn runAgent(command: AgentCommand) !void {
                 .osascript_path = derived_osascript_path.?,
             };
             break :blk agent.macosUiFrontend(&macos_ui_context.?);
+        },
+        .linux_ui => blk: {
+            if (command.tty_path != null) {
+                return invalidUsage(
+                    "error: `agent --frontend linux-ui` does not accept --tty\n",
+                    .{},
+                );
+            }
+
+            derived_zenity_path = try agent.defaultZenityPathAlloc(allocator);
+            linux_ui_context = .{
+                .allocator = allocator,
+                .timeout_ms = timeout_ms,
+                .zenity_path = derived_zenity_path.?,
+            };
+            break :blk agent.linuxUiFrontend(&linux_ui_context.?);
         },
     };
 
@@ -779,6 +798,7 @@ fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
 fn parseFrontendKind(raw: []const u8) ?agent.FrontendKind {
     if (std.mem.eql(u8, raw, "terminal-pinentry")) return .terminal_pinentry;
     if (std.mem.eql(u8, raw, "macos-ui")) return .macos_ui;
+    if (std.mem.eql(u8, raw, "linux-ui")) return .linux_ui;
     return null;
 }
 
@@ -1312,7 +1332,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--frontend <terminal-pinentry|macos-ui>] [--tty <path>]
+        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--frontend <terminal-pinentry|macos-ui|linux-ui>] [--tty <path>]
         \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
@@ -1325,6 +1345,7 @@ fn printUsage() void {
         \\  - `agent --frontend terminal-pinentry --foreground` uses inherited stdio when no --tty is provided
         \\  - `agent --frontend terminal-pinentry --daemon` requires --tty <path> or a startup TTY it can capture
         \\  - `agent --frontend macos-ui` uses `osascript` and does not accept --tty
+        \\  - `agent --frontend linux-ui` uses `zenity` and does not accept --tty
         \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
         \\  - foreground and daemon mode now share the same policy-reconciliation model
         \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes

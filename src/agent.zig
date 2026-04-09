@@ -21,6 +21,7 @@ pub const RequesterContext = struct {
 pub const FrontendKind = enum {
     terminal_pinentry,
     macos_ui,
+    linux_ui,
 };
 
 pub const Frontend = struct {
@@ -44,6 +45,12 @@ pub const MacosUiContext = struct {
     allocator: std.mem.Allocator,
     timeout_ms: u32 = 5_000,
     osascript_path: []const u8,
+};
+
+pub const LinuxUiContext = struct {
+    allocator: std.mem.Allocator,
+    timeout_ms: u32 = 5_000,
+    zenity_path: []const u8,
 };
 
 pub const AgentServiceContext = struct {
@@ -94,6 +101,13 @@ pub fn macosUiFrontend(context: *MacosUiContext) Frontend {
     };
 }
 
+pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
+    return .{
+        .context = context,
+        .resolve_fn = resolveLinuxUi,
+    };
+}
+
 pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_TTY")) |value| {
         return value;
@@ -115,6 +129,17 @@ pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     }
 
     return allocator.dupe(u8, "osascript");
+}
+
+pub fn defaultZenityPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_ZENITY_BIN")) |value| {
+        return value;
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
+    return allocator.dupe(u8, "zenity");
 }
 
 pub fn runAgentService(context: *AgentServiceContext) !void {
@@ -467,6 +492,39 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Deci
     return parseMacosUiDecision(result.stdout) catch .unavailable;
 }
 
+fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Decision {
+    const context = raw_context orelse return .unavailable;
+    const ui_context: *LinuxUiContext = @ptrCast(@alignCast(context));
+
+    const prompt_text = buildDialogPromptAlloc(ui_context.allocator, request) catch return .unavailable;
+    defer ui_context.allocator.free(prompt_text);
+
+    const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(ui_context.timeout_ms)) + 999, 1000), 1);
+    const timeout_text = std.fmt.allocPrint(ui_context.allocator, "{d}", .{timeout_seconds}) catch return .unavailable;
+    defer ui_context.allocator.free(timeout_text);
+
+    const argv = [_][]const u8{
+        ui_context.zenity_path,
+        "--question",
+        "--title=File Snitch",
+        "--ok-label=Allow",
+        "--cancel-label=Deny",
+        "--width=480",
+        "--timeout",
+        timeout_text,
+        "--text",
+        prompt_text,
+    };
+    const result = std.process.Child.run(.{
+        .allocator = ui_context.allocator,
+        .argv = &argv,
+    }) catch return .unavailable;
+    defer ui_context.allocator.free(result.stdout);
+    defer ui_context.allocator.free(result.stderr);
+
+    return parseLinuxUiDecision(result.term) catch .unavailable;
+}
+
 fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Request, timeout_ms: u32) ![]u8 {
     const title = "File Snitch";
     const prompt_text = try buildMacosDialogPromptAlloc(allocator, request);
@@ -498,7 +556,7 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
     );
 }
 
-fn buildMacosDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
+fn buildDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
     const label = request.label orelse blk: {
         const generated = try std.fmt.allocPrint(
             allocator,
@@ -515,6 +573,10 @@ fn buildMacosDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         "{s}\n\nProcess: {s}\nPID: {d}\nUID: {d}",
         .{ label, executable_path, request.pid, request.uid },
     );
+}
+
+fn buildMacosDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
+    return buildDialogPromptAlloc(allocator, request);
 }
 
 fn appleScriptStringLiteralContentsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
@@ -538,6 +600,18 @@ fn parseMacosUiDecision(raw_output: []const u8) !prompt.Decision {
     if (std.mem.eql(u8, trimmed, "deny")) return .deny;
     if (std.mem.eql(u8, trimmed, "timeout")) return .timeout;
     return error.InvalidProtocolMessage;
+}
+
+fn parseLinuxUiDecision(term: std.process.Child.Term) !prompt.Decision {
+    return switch (term) {
+        .Exited => |code| switch (code) {
+            0 => .allow,
+            1 => .deny,
+            5 => .timeout,
+            else => error.InvalidProtocolMessage,
+        },
+        else => error.InvalidProtocolMessage,
+    };
 }
 
 fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -873,10 +947,29 @@ test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
     try std.testing.expectEqualStrings(value, resolved);
 }
 
+test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
+    const allocator = std.testing.allocator;
+    const key = "FILE_SNITCH_ZENITY_BIN";
+    const value = "/tmp/file-snitch-test-zenity";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try defaultZenityPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
+}
+
 test "parse macos ui decision accepts known values" {
     try std.testing.expectEqual(prompt.Decision.allow, try parseMacosUiDecision("allow\n"));
     try std.testing.expectEqual(prompt.Decision.deny, try parseMacosUiDecision("deny\r\n"));
     try std.testing.expectEqual(prompt.Decision.timeout, try parseMacosUiDecision("timeout"));
+}
+
+test "parse linux ui decision accepts known exit codes" {
+    try std.testing.expectEqual(prompt.Decision.allow, try parseLinuxUiDecision(.{ .Exited = 0 }));
+    try std.testing.expectEqual(prompt.Decision.deny, try parseLinuxUiDecision(.{ .Exited = 1 }));
+    try std.testing.expectEqual(prompt.Decision.timeout, try parseLinuxUiDecision(.{ .Exited = 5 }));
 }
 
 test "apple script escaping covers control characters" {

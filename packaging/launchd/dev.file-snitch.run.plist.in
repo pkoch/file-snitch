@@ -8,9 +8,9 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/opt/homebrew/bin/file-snitch</string>
+      <string>{{FILE_SNITCH_BIN}}</string>
       <string>run</string>
-      <string>allow</string>
+      <string>prompt</string>
       <string>--foreground</string>
     </array>
 
@@ -21,9 +21,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/file-snitch-run.log</string>
+    <string>{{LOG_DIR}}/run.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/file-snitch-run.log</string>
+    <string>{{LOG_DIR}}/run.log</string>
   </dict>
 </plist>

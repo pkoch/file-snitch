@@ -26,6 +26,15 @@ assert_file_exists() {
   [[ -f "$path" ]] || fail "$message"
 }
 
+assert_file_contains() {
+  local path="$1"
+  local needle="$2"
+
+  if ! grep -F "$needle" "$path" >/dev/null 2>&1; then
+    fail "expected file entry missing from $path: $needle"
+  fi
+}
+
 assert_file_missing() {
   local path="$1"
   local message="$2"

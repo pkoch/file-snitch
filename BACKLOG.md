@@ -39,6 +39,7 @@ Status:
   - the current frontends are:
     - `terminal-pinentry` as the bootstrap/debug fallback
     - `macos-ui` as the first native frontend
+    - `linux-ui` as the first Linux native frontend
   - define one broker protocol that mount daemons can talk to locally or over forwarding
   - support forwarding prompt requests from remote hosts back to the workstation where the user is active
   - stop treating improvements to the current terminal UI as the product goal
@@ -91,6 +92,7 @@ file-enrollment pivot, and the major Phase 0 research references.
   - the current frontends are:
     - `terminal-pinentry`
     - `macos-ui`
+    - `linux-ui`
   - the current smoke suite now covers:
     - the daemonized agent path through `terminal-pinentry`
     - the `macos-ui` frontend through a fake `osascript` path in CI
@@ -119,7 +121,13 @@ file-enrollment pivot, and the major Phase 0 research references.
 - `[~]` Add installers with Homebrew-focused packaging
   - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
   - install notes now live at [docs/install.md](./docs/install.md)
-  - daemonized agent service now exists, with `terminal-pinentry` and a first macOS `osascript` UI frontend
+  - daemonized agent service now exists, with:
+    - `terminal-pinentry`
+    - macOS `osascript` UI
+    - Linux `zenity` UI
+  - per-user service install helpers now exist for:
+    - macOS LaunchAgents
+    - Linux `systemd --user` agent and run services
 - `[ ]` Add a native `.deb` package in addition to the Homebrew path
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export

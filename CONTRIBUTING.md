@@ -47,8 +47,10 @@ Run the smoke suite:
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
+./tests/smoke/run-prompt-linux-ui.sh
 ./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
+./tests/smoke/user-service-rendering.sh
 ```
 
 Refresh `compile_commands.json` when needed:
@@ -98,6 +100,7 @@ Use the templates in `.github/ISSUE_TEMPLATE/`.
 
 The current packaging story is still `HEAD`-shaped:
 - Homebrew/Linuxbrew formula in `Formula/`
+- per-user service helpers in `scripts/`
 - FUSE remains an external system prerequisite
 - `pass` is the only guarded-object backend today
 

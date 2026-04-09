@@ -166,6 +166,42 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
     }
 
+    switch (builtin.os.tag) {
+        .macos => {
+            const helper_command = try detectGuiHelperCommandAlloc(allocator, "FILE_SNITCH_OSASCRIPT_BIN", "osascript");
+            defer allocator.free(helper_command);
+            if (try commandExists(allocator, helper_command)) {
+                try report_writer.print("ok: macos-ui helper is available: {s}\n", .{helper_command});
+            } else {
+                try report_writer.print("warn: macos-ui helper is not available: {s}\n", .{helper_command});
+            }
+
+            const agent_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.agent.plist");
+            defer allocator.free(agent_service_path);
+            const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
+            defer allocator.free(run_service_path);
+            try appendServicePathReport(report_writer, "launchd agent", agent_service_path);
+            try appendServicePathReport(report_writer, "launchd run", run_service_path);
+        },
+        .linux => {
+            const helper_command = try detectGuiHelperCommandAlloc(allocator, "FILE_SNITCH_ZENITY_BIN", "zenity");
+            defer allocator.free(helper_command);
+            if (try commandExists(allocator, helper_command)) {
+                try report_writer.print("ok: linux-ui helper is available: {s}\n", .{helper_command});
+            } else {
+                try report_writer.print("warn: linux-ui helper is not available: {s}\n", .{helper_command});
+            }
+
+            const agent_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-agent.service");
+            defer allocator.free(agent_service_path);
+            const run_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-run.service");
+            defer allocator.free(run_service_path);
+            try appendServicePathReport(report_writer, "systemd user agent", agent_service_path);
+            try appendServicePathReport(report_writer, "systemd user run", run_service_path);
+        },
+        else => {},
+    }
+
     for (loaded_policy.enrollments) |entry| {
         if (!enrollment.pathIsWithinDirectory(entry.path, home_dir)) {
             has_errors = true;
@@ -374,6 +410,17 @@ fn detectPassCommandAlloc(allocator: std.mem.Allocator) ![]u8 {
     };
 }
 
+fn detectGuiHelperCommandAlloc(
+    allocator: std.mem.Allocator,
+    env_name: []const u8,
+    default_value: []const u8,
+) ![]u8 {
+    return std.process.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, default_value),
+        else => return err,
+    };
+}
+
 fn summarizeCommandVersionAlloc(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
@@ -409,6 +456,24 @@ fn passBackendIsUsable(allocator: std.mem.Allocator, command: []const u8) !bool 
         .allocator = allocator,
         .argv = &.{ command, "ls" },
         .max_output_bytes = 4096,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "sh", "-lc", "command -v \"$1\" >/dev/null 2>&1", "sh", command },
+        .max_output_bytes = 1,
     }) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
@@ -465,4 +530,32 @@ fn defaultAgentSocketPathForDossier(allocator: std.mem.Allocator) ![]u8 {
         },
         else => return err,
     }
+}
+
+fn appendServicePathReport(
+    writer: anytype,
+    label: []const u8,
+    path: []const u8,
+) !void {
+    if (enrollment.pathExists(path)) {
+        try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
+    } else {
+        try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
+    }
+}
+
+fn defaultMacosLaunchAgentPathAlloc(
+    allocator: std.mem.Allocator,
+    home_dir: []const u8,
+    filename: []const u8,
+) ![]u8 {
+    return std.fs.path.join(allocator, &.{ home_dir, "Library", "LaunchAgents", filename });
+}
+
+fn defaultLinuxUserUnitPathAlloc(
+    allocator: std.mem.Allocator,
+    home_dir: []const u8,
+    filename: []const u8,
+) ![]u8 {
+    return std.fs.path.join(allocator, &.{ home_dir, ".config", "systemd", "user", filename });
 }

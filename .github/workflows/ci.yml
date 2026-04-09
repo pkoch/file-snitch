@@ -83,9 +83,11 @@ jobs:
       - run: ./tests/smoke/run-empty-policy.sh
       - run: ./tests/smoke/policy-lifecycle.sh
       - run: ./tests/smoke/doctor-debug-dossier.sh
+      - run: ./tests/smoke/user-service-rendering.sh
       - run: ./tests/smoke/run-policy-reload.sh
       - run: ./tests/smoke/run-daemon-policy-reload.sh
       - run: ./tests/smoke/run-expired-decision-cleanup.sh
       - run: ./tests/smoke/run-single-enrollment.sh
       - run: ./tests/smoke/run-multi-mount.sh
+      - run: ./tests/smoke/run-prompt-linux-ui.sh
       - run: ./tests/smoke/run-prompt-macos-ui.sh

@@ -18,7 +18,7 @@ agent_frontend_args=()
 mount_paths=()
 run_mode=""
 run_execution_mode=""
-fake_osascript_queue_file=""
+fake_ui_queue_file=""
 
 prepare_run_fixture() {
   local fixture_name="$1"
@@ -43,7 +43,7 @@ prepare_run_fixture() {
   mount_paths=()
   run_mode=""
   run_execution_mode=""
-  fake_osascript_queue_file=""
+  fake_ui_queue_file=""
 
   mkdir -p \
     "$config_home_dir/file-snitch" \
@@ -481,7 +481,7 @@ cleanup_run_fixture() {
   agent_tty_path_file=""
   agent_execution_mode=""
   agent_frontend_args=()
-  fake_osascript_queue_file=""
+  fake_ui_queue_file=""
 
   return "$status"
 }
@@ -501,12 +501,12 @@ remove_tree_with_retries() {
 }
 
 write_fake_osascript_script() {
-  fake_osascript_queue_file="$home_dir/.local/file-snitch-fake-osascript.queue"
+  fake_ui_queue_file="$home_dir/.local/file-snitch-fake-osascript.queue"
   cat >"$fake_bin_dir/osascript" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-queue_path="$fake_osascript_queue_file"
+queue_path="$fake_ui_queue_file"
 
 if [[ ! -f "\$queue_path" ]]; then
   echo "allow"

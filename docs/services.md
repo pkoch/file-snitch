@@ -1,66 +1,84 @@
-# User Service Examples
+# User Services
 
-These are examples, not an installer.
-
-They are meant to show how File Snitch can be run as a per-user background
-service on:
+File Snitch now has real per-user service install helpers:
 - Linux with `systemd --user`
 - macOS with `launchd`
 
-Current caveat:
-- the agent frontend is still `terminal-pinentry`
-- so the examples below focus on the long-running `run` daemon
-- if you want interactive prompt mode, you still need a usable local agent and
-  terminal strategy
+Render the service files without installing them:
+
+```bash
+./scripts/render-user-services.sh --bin "$(command -v file-snitch)" --output-dir ./out
+```
+
+Install the default service set for the current platform:
+
+```bash
+./scripts/install-user-services.sh --bin "$(command -v file-snitch)"
+```
+
+Remove them again:
+
+```bash
+./scripts/uninstall-user-services.sh
+```
+
+Current platform stance:
+- macOS installs two LaunchAgents:
+  - `dev.file-snitch.agent`
+  - `dev.file-snitch.run`
+- Linux installs two `systemd --user` units:
+  - `file-snitch-agent.service`
+  - `file-snitch-run.service`
+- Linux uses the `linux-ui` frontend and therefore expects `zenity` to be
+  available.
 
 ## Linux: systemd --user
 
-Example unit:
-- [packaging/systemd/file-snitch-run.service](../packaging/systemd/file-snitch-run.service)
+Templates:
+- [packaging/systemd/file-snitch-agent.service.in](../packaging/systemd/file-snitch-agent.service.in)
+- [packaging/systemd/file-snitch-run.service.in](../packaging/systemd/file-snitch-run.service.in)
 
-Install it under:
+Install it with:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp packaging/systemd/file-snitch-run.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now file-snitch-run.service
+./scripts/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
 ```
 
 Then inspect it with:
 
 ```bash
 systemctl --user status file-snitch-run.service
+systemctl --user status file-snitch-agent.service
 journalctl --user -u file-snitch-run.service
+journalctl --user -u file-snitch-agent.service
 ```
 
 ## macOS: LaunchAgent
 
-Example plist:
-- [packaging/launchd/dev.file-snitch.run.plist](../packaging/launchd/dev.file-snitch.run.plist)
+Templates:
+- [packaging/launchd/dev.file-snitch.agent.plist.in](../packaging/launchd/dev.file-snitch.agent.plist.in)
+- [packaging/launchd/dev.file-snitch.run.plist.in](../packaging/launchd/dev.file-snitch.run.plist.in)
 
-Install it under:
+Install them with:
 
 ```bash
-mkdir -p ~/Library/LaunchAgents
-cp packaging/launchd/dev.file-snitch.run.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.file-snitch.run.plist
-launchctl enable gui/$(id -u)/dev.file-snitch.run
-launchctl kickstart -k gui/$(id -u)/dev.file-snitch.run
+./scripts/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
 ```
 
 Then inspect it with:
 
 ```bash
+launchctl print gui/$(id -u)/dev.file-snitch.agent
 launchctl print gui/$(id -u)/dev.file-snitch.run
 ```
 
 ## Notes
 
-- Both examples assume `file-snitch` is already on `PATH`.
+- The install helper resolves and embeds an absolute `file-snitch` binary path.
 - Both examples assume the default policy path:
   `~/.config/file-snitch/policy.yml`
-- Both examples run `file-snitch run allow --foreground` because the current
-  terminal-only agent frontend is not yet a good unattended service story.
-- When the agent story improves, these examples should be revisited rather than
-  stretched with ad hoc TTY hacks.
+- Rendered macOS plists log to `~/.local/state/file-snitch/log/`.
+- The helper installs per-user services only. It does not create a system
+  daemon or root-owned service.
+- Linux service installation expects `zenity` to be on `PATH` unless you set
+  `FILE_SNITCH_ZENITY_BIN` in the service environment yourself.
