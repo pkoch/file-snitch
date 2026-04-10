@@ -73,9 +73,14 @@ env \
     --cache-dir "$cache_dir" \
     --global-cache-dir "$global_cache_dir"
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  strip -no_uuid "$install_prefix/bin/file-snitch"
-fi
+case "$(uname -s)" in
+  Darwin)
+    strip -no_uuid "$install_prefix/bin/file-snitch"
+    ;;
+  Linux)
+    strip --strip-debug "$install_prefix/bin/file-snitch"
+    ;;
+esac
 
 version_command=("$install_prefix/bin/file-snitch" version)
 if [[ "$(uname -s)" == "Darwin" && -n "${FILE_SNITCH_FUSE_LIB_DIR:-}" ]]; then
