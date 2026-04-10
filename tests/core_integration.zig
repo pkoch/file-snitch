@@ -745,6 +745,41 @@ test "current policy marker preserves access errors" {
     try std.testing.expectError(error.AccessDenied, cli.currentPolicyMarker(policy_path));
 }
 
+test "current policy marker hashes policy contents beyond one megabyte" {
+    const allocator = std.testing.allocator;
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-large-{d}.yml", .{std.time.nanoTimestamp()});
+    defer allocator.free(policy_path);
+    defer std.fs.cwd().deleteFile(policy_path) catch {};
+
+    {
+        var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("version: 1\nenrollments: []\ndecisions:\n  - executable_path: \"/usr/bin/demo\"\n");
+        const filler = try allocator.alloc(u8, 1_100_000);
+        defer allocator.free(filler);
+        @memset(filler, 'a');
+        try file.writeAll(filler);
+    }
+    const first_marker = try cli.currentPolicyMarker(policy_path);
+
+    {
+        var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("version: 1\nenrollments: []\ndecisions:\n  - executable_path: \"/usr/bin/demo\"\n");
+        const filler = try allocator.alloc(u8, 1_100_000);
+        defer allocator.free(filler);
+        @memset(filler, 'a');
+        filler[filler.len - 1] = 'b';
+        try file.writeAll(filler);
+    }
+    const second_marker = try cli.currentPolicyMarker(policy_path);
+
+    try std.testing.expect(first_marker.exists);
+    try std.testing.expect(second_marker.exists);
+    try std.testing.expectEqual(first_marker.size, second_marker.size);
+    try std.testing.expect(first_marker.content_hash != second_marker.content_hash);
+}
+
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
     const run_id = std.time.nanoTimestamp();

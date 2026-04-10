@@ -1253,10 +1253,14 @@ pub fn currentPolicyMarker(policy_path: []const u8) !PolicyMarker {
 
 fn hashPolicyContents(file: *std.fs.File) !u64 {
     try file.seekTo(0);
-    const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(contents);
-
-    return std.hash.Wyhash.hash(0, contents);
+    var hasher = std.hash.Wyhash.init(0);
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        const bytes_read = try file.read(&buffer);
+        if (bytes_read == 0) break;
+        hasher.update(buffer[0..bytes_read]);
+    }
+    return hasher.final();
 }
 
 fn reconcileManagedMountChildren(
