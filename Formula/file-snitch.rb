@@ -2,9 +2,9 @@ class FileSnitch < Formula
   desc "Guarded FUSE mounts for a user's secret-bearing files"
   homepage "https://github.com/pkoch/file-snitch"
   # stable-release-start
-  url "https://github.com/pkoch/file-snitch/releases/download/v0.1.2/file-snitch-0.1.2-source.tar.gz"
-  sha256 "d3689440b7a457bf87295d604773c892d43ff5c8c2417c71a57aa24b7b1324ba"
-  version "0.1.2"
+  url "https://github.com/pkoch/file-snitch/releases/download/v0.1.3/file-snitch-0.1.3-source.tar.gz"
+  sha256 "84360acda687b1f70eca1550a6545456f3ac88a5fab8aace13a6b714d5ab28fe"
+  version "0.1.3"
   # stable-release-end
   head "https://github.com/pkoch/file-snitch.git", branch: "master"
 
