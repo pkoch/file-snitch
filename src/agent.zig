@@ -285,7 +285,11 @@ fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
 
         if (std.mem.eql(u8, message_type, "decide")) {
             const decision = try decideFromFrame(context.allocator, frame, context.frontend);
-            try sendDecision(stream, decision.request_id, decision.response);
+            defer context.allocator.free(decision.request_id);
+            sendDecision(stream, decision.request_id, decision.response) catch |err| {
+                if (isPeerClosedError(err)) return;
+                return err;
+            };
             continue;
         }
 
@@ -482,8 +486,11 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Fr
         .executable_path = parsed.value.subject.executable_path,
     };
 
+    const request_id = try allocator.dupe(u8, parsed.value.request_id);
+    errdefer allocator.free(request_id);
+
     return .{
-        .request_id = parsed.value.request_id,
+        .request_id = request_id,
         .response = frontend.resolve(request),
     };
 }
@@ -846,6 +853,10 @@ fn sendJsonFrame(stream: net.Stream, value: anytype) !void {
     defer output.deinit();
     try std.json.Stringify.value(value, .{}, &output.writer);
     try writeFrame(stream, output.written());
+}
+
+fn isPeerClosedError(err: anyerror) bool {
+    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting;
 }
 
 fn writeFrame(stream: net.Stream, payload: []const u8) !void {
@@ -1294,6 +1305,12 @@ fn runRequesterThread(done: *std.atomic.Value(bool), context: *RequesterContext,
     done.store(true, .release);
 }
 
+fn resolveAllowFrontend(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    _ = raw_context;
+    _ = request;
+    return .{ .decision = .allow, .remember_kind = .once };
+}
+
 fn runTestConnectionWorker(worker_context: *ConnectionWorkerContext) void {
     defer worker_context.allocator.destroy(worker_context);
 
@@ -1348,6 +1365,131 @@ fn waitForPathToExist(path: []const u8) !void {
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
     return error.FileNotFound;
+}
+
+test "decideFromFrame returns an owned request id" {
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const frame =
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"default_timeout":"2026-04-10T12:00:00Z","can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+    ;
+
+    const decision = try decideFromFrame(allocator, frame, .{
+        .context = null,
+        .resolve_fn = resolveAllowFrontend,
+    });
+    defer allocator.free(decision.request_id);
+
+    var reuse_allocations: [64][]u8 = undefined;
+    for (&reuse_allocations, 0..) |*slot, index| {
+        slot.* = try allocator.alloc(u8, decision.request_id.len);
+        @memset(slot.*, @as(u8, @intCast('a' + @as(u8, @intCast(index % 26)))));
+    }
+    defer for (reuse_allocations) |allocation| allocator.free(allocation);
+
+    try std.testing.expectEqualStrings("req-copy-check", decision.request_id);
+}
+
+const DelayedDecisionServerContext = struct {
+    service_context: *AgentServiceContext,
+    socket_path: []const u8,
+    failed: *std.atomic.Value(bool),
+};
+
+fn runDelayedDecisionServerThread(context: *DelayedDecisionServerContext) void {
+    runDelayedDecisionServer(context) catch {
+        context.failed.store(true, .release);
+    };
+}
+
+fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
+    try ensureParentDirectory(context.socket_path);
+    try removeSocketFileIfStale(context.socket_path);
+
+    const address = try net.Address.initUnix(context.socket_path);
+    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+    defer std.posix.close(listener);
+    defer removeStaleSocketFile(context.socket_path) catch {};
+
+    try std.posix.bind(listener, &address.any, address.getOsSockLen());
+    try std.posix.listen(listener, 1);
+
+    const accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
+    var stream: net.Stream = .{ .handle = accepted };
+    defer stream.close();
+    try handleConnection(context.service_context, stream);
+}
+
+test "handleConnection ignores requester disconnect after prompt timeout" {
+    const page_allocator = std.heap.page_allocator;
+    const socket_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-disconnect-{d}.sock", .{std.time.nanoTimestamp()});
+    defer page_allocator.free(socket_path);
+
+    const blocking_context = try page_allocator.create(BlockingFrontendContext);
+    defer page_allocator.destroy(blocking_context);
+    blocking_context.* = .{};
+
+    const service_context = try page_allocator.create(AgentServiceContext);
+    defer page_allocator.destroy(service_context);
+    service_context.* = .{
+        .allocator = page_allocator,
+        .socket_path = socket_path,
+        .frontend = .{
+            .context = blocking_context,
+            .resolve_fn = resolveBlockingFrontend,
+        },
+    };
+
+    const failed = try page_allocator.create(std.atomic.Value(bool));
+    defer page_allocator.destroy(failed);
+    failed.* = std.atomic.Value(bool).init(false);
+
+    const server_context = try page_allocator.create(DelayedDecisionServerContext);
+    defer page_allocator.destroy(server_context);
+    server_context.* = .{
+        .service_context = service_context,
+        .socket_path = socket_path,
+        .failed = failed,
+    };
+
+    const server_thread = try std.Thread.spawn(.{}, runDelayedDecisionServerThread, .{server_context});
+    try waitForPathToExist(socket_path);
+
+    var client_stream = try net.connectUnixSocket(socket_path);
+
+    const hello_frame = try readFrameAlloc(page_allocator, client_stream, 1_000);
+    defer page_allocator.free(hello_frame);
+    try validateHelloFrame(page_allocator, hello_frame);
+
+    const hello_request_id = try requestIdFromFrame(page_allocator, hello_frame);
+    defer page_allocator.free(hello_request_id);
+    try sendWelcome(client_stream, hello_request_id);
+
+    const request: prompt.Request = .{
+        .path = "/known_hosts.old",
+        .access_class = .read,
+        .label = "open O_RDONLY /known_hosts.old",
+        .can_remember = true,
+        .pid = 21065,
+        .uid = 501,
+        .gid = 0,
+        .executable_path = "/bin/cat",
+    };
+    try sendDecide(client_stream, "disconnect-check", request, request.label.?, "2026-04-10T12:00:00Z");
+    client_stream.close();
+
+    var wait_attempts: usize = 0;
+    while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(blocking_context.first_started.load(.acquire));
+
+    blocking_context.release_first.store(true, .release);
+    server_thread.join();
+
+    try std.testing.expect(!failed.load(.acquire));
 }
 
 test "agent accepts later connections while one prompt is blocked" {
