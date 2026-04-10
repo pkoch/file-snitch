@@ -149,5 +149,7 @@ fn configureFuseInterop(
 fn configureLinkerPolicy(compile: *std.Build.Step.Compile, os_tag: std.Target.Os.Tag) void {
     if (os_tag == .linux) {
         compile.linker_allow_shlib_undefined = true;
+    } else if (os_tag == .macos) {
+        compile.headerpad_max_install_names = true;
     }
 }
