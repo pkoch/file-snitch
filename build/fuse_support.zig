@@ -50,7 +50,7 @@ fn configureMacFuse(b: *std.Build, module: *std.Build.Module) void {
         return;
     }
 
-    if (hasPkgConfig(b)) {
+    if (pkgConfigPackageExists(b, "fuse")) {
         module.linkSystemLibrary("fuse", .{ .use_pkg_config = .force });
         return;
     }
