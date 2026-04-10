@@ -19,6 +19,26 @@ This script:
 EOF
 }
 
+require_release_tools() {
+  command -v gh >/dev/null 2>&1 || {
+    echo "error: gh is required for release monitoring" >&2
+    exit 1
+  }
+  command -v python3 >/dev/null 2>&1 || {
+    echo "error: python3 is required" >&2
+    exit 1
+  }
+  command -v zig >/dev/null 2>&1 || {
+    echo "error: zig is required" >&2
+    exit 1
+  }
+
+  gh auth status >/dev/null 2>&1 || {
+    echo "error: gh must be authenticated before releasing" >&2
+    exit 1
+  }
+}
+
 if [[ $# -ne 1 ]]; then
   usage
   exit 1
@@ -37,6 +57,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo "error: worktree must be clean before releasing" >&2
   exit 1
 fi
+
+require_release_tools
 
 current_version="$(tr -d '\n' < VERSION)"
 new_version="$(python3 - "$current_version" "$part" <<'PY'
@@ -117,6 +139,32 @@ run_host_release_sanity() {
     --output "$host_output"
 }
 
+wait_for_release_run() {
+  local release_commit="$1"
+  local run_id=""
+  local attempts=0
+
+  while [[ $attempts -lt 40 ]]; do
+    run_id="$(gh run list \
+      --workflow release.yml \
+      --commit "$release_commit" \
+      --event push \
+      --json databaseId,status,createdAt \
+      --jq 'map(select(.status != "")) | sort_by(.createdAt) | last | .databaseId // ""')"
+
+    if [[ -n "$run_id" ]]; then
+      printf '%s\n' "$run_id"
+      return 0
+    fi
+
+    attempts=$((attempts + 1))
+    sleep 3
+  done
+
+  echo "error: release workflow run did not appear for commit $release_commit" >&2
+  return 1
+}
+
 printf '%s\n' "$new_version" > VERSION
 python3 scripts/roll-changelog-release.py \
   --changelog CHANGELOG.md \
@@ -140,8 +188,17 @@ run_host_release_sanity
 git add VERSION CHANGELOG.md Formula/file-snitch.rb
 git commit -m "Release $new_version"
 git tag -a "$tag" -m "Release $new_version"
+release_commit="$(git rev-parse HEAD)"
 git push origin HEAD
 git push origin "$tag"
+
+run_id="$(wait_for_release_run "$release_commit")"
+echo "watching release workflow run $run_id"
+if ! gh run watch "$run_id" --compact --exit-status; then
+  echo "error: release workflow failed for $tag" >&2
+  echo "inspect: gh run view $run_id --log-failed" >&2
+  exit 1
+fi
 
 echo "pushed release commit and tag for $new_version"
 echo "release workflow should publish:"
