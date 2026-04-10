@@ -23,8 +23,8 @@ pub fn addCompileCommandsStep(b: *std.Build, os_tag: std.Target.Os.Tag) void {
 }
 
 fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
-    if (hasPkgConfig(b)) {
-        module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .yes });
+    if (pkgConfigPackageExists(b, "fuse3")) {
+        module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .force });
         return;
     }
 
@@ -208,6 +208,10 @@ fn appendPkgConfigCflags(
     package_name: []const u8,
 ) bool {
     const pkg_config = findPkgConfig(b) orelse return false;
+    if (!pkgConfigPackageExistsWithBinary(b, pkg_config, package_name)) {
+        return false;
+    }
+
     var code: u8 = 0;
     const stdout = b.runAllowFail(
         &.{ pkg_config, "--cflags", package_name },
@@ -224,6 +228,25 @@ fn appendPkgConfigCflags(
     }
 
     return true;
+}
+
+fn pkgConfigPackageExists(b: *std.Build, package_name: []const u8) bool {
+    const pkg_config = findPkgConfig(b) orelse return false;
+    return pkgConfigPackageExistsWithBinary(b, pkg_config, package_name);
+}
+
+fn pkgConfigPackageExistsWithBinary(
+    b: *std.Build,
+    pkg_config: []const u8,
+    package_name: []const u8,
+) bool {
+    var code: u8 = 0;
+    _ = b.runAllowFail(
+        &.{ pkg_config, "--exists", package_name },
+        &code,
+        .Ignore,
+    ) catch return false;
+    return code == 0;
 }
 
 fn appendIncludeDirIfPresent(
