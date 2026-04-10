@@ -140,13 +140,14 @@ run_host_release_sanity() {
 }
 
 wait_for_release_run() {
-  local release_commit="$1"
+  local workflow_name="$1"
+  local release_commit="$2"
   local run_id=""
   local attempts=0
 
   while [[ $attempts -lt 40 ]]; do
     run_id="$(gh run list \
-      --workflow release.yml \
+      --workflow "$workflow_name" \
       --commit "$release_commit" \
       --event push \
       --json databaseId,status,createdAt \
@@ -187,12 +188,21 @@ run_host_release_sanity
 
 git add VERSION CHANGELOG.md Formula/file-snitch.rb
 git commit -m "Release $new_version"
-git tag -a "$tag" -m "Release $new_version"
 release_commit="$(git rev-parse HEAD)"
 git push origin HEAD
+
+run_id="$(wait_for_release_run ci.yml "$release_commit")"
+echo "watching CI workflow run $run_id"
+if ! gh run watch "$run_id" --compact --exit-status; then
+  echo "error: CI workflow failed for release commit $release_commit" >&2
+  echo "inspect: gh run view $run_id --log-failed" >&2
+  exit 1
+fi
+
+git tag -a "$tag" -m "Release $new_version"
 git push origin "$tag"
 
-run_id="$(wait_for_release_run "$release_commit")"
+run_id="$(wait_for_release_run release.yml "$release_commit")"
 echo "watching release workflow run $run_id"
 if ! gh run watch "$run_id" --compact --exit-status; then
   echo "error: release workflow failed for $tag" >&2
