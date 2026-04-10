@@ -967,7 +967,7 @@ const PolicyWatchOutcome = enum {
     changed,
 };
 
-const LinuxPolicyWatcher = struct {
+const LinuxPolicyWatcher = if (builtin.os.tag == .linux) struct {
     fd: std.posix.fd_t,
     watch_descriptor: i32,
     filename: []u8,
@@ -1010,9 +1010,20 @@ const LinuxPolicyWatcher = struct {
 
         return .timeout;
     }
+} else struct {
+    fn deinit(self: *LinuxPolicyWatcher) void {
+        _ = self;
+        unreachable;
+    }
+
+    fn wait(self: *LinuxPolicyWatcher, timeout_ns: u64) !PolicyWatchOutcome {
+        _ = self;
+        _ = timeout_ns;
+        unreachable;
+    }
 };
 
-const DarwinPolicyWatcher = struct {
+const DarwinPolicyWatcher = if (builtin.os.tag == .macos) struct {
     kqueue_fd: std.posix.fd_t,
     directory_fd: std.posix.fd_t,
 
@@ -1028,6 +1039,17 @@ const DarwinPolicyWatcher = struct {
         const count = try std.posix.kevent(self.kqueue_fd, &.{}, &event_buffer, &timespec);
         if (count == 0) return .timeout;
         return .changed;
+    }
+} else struct {
+    fn deinit(self: *DarwinPolicyWatcher) void {
+        _ = self;
+        unreachable;
+    }
+
+    fn wait(self: *DarwinPolicyWatcher, timeout_ns: u64) !PolicyWatchOutcome {
+        _ = self;
+        _ = timeout_ns;
+        unreachable;
     }
 };
 
