@@ -221,7 +221,6 @@ zig build compile-commands
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
 ./tests/smoke/run-prompt-linux-ui.sh
-./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
 ./tests/smoke/run-prompt-remembered-decision.sh
 ./tests/smoke/user-service-rendering.sh
@@ -244,7 +243,7 @@ What each command covers:
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
 - `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
 - `./tests/smoke/run-prompt-linux-ui.sh`: black-box verification of the `linux-ui` frontend through a fake `zenity` path that can run in CI
-- `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path that can run in CI
+- `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path on macOS
 - `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
 - `./tests/smoke/run-prompt-remembered-decision.sh`: black-box verification that an `always allow` decision is written to `policy.yml`, reconciled by `run`, and suppresses later prompts
 - `./tests/smoke/user-service-rendering.sh`: black-box verification that the user-service helpers render the expected `launchd` and `systemd --user` files
