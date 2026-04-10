@@ -36,6 +36,16 @@ The Homebrew formula itself now lives in:
 - `pkoch/homebrew-tap`
 - https://github.com/pkoch/homebrew-tap
 
+This coupling is intentional for now.
+
+The release flow updates the tap as part of a normal release so packaging drift
+fails loudly instead of silently. That is an operational choice for visibility,
+not an architectural claim that the tap is the only valid downstream packaging
+home forever.
+
+If `file-snitch` later moves into `homebrew/core`, revisit this and decouple the
+tap update from the main release script then.
+
 ## Deterministic release inputs
 
 The release flow is built around deterministic inputs:
