@@ -23,12 +23,6 @@ pub fn addCompileCommandsStep(b: *std.Build, os_tag: std.Target.Os.Tag) void {
 }
 
 fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
-    if (pkgConfigPackageExists(b, "fuse3")) {
-        module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .force });
-        return;
-    }
-
-    addSystemIncludeIfPresent(module, "/usr/include/fuse3");
     for ([_][]const u8{
         "/usr/lib/aarch64-linux-gnu",
         "/lib/aarch64-linux-gnu",
@@ -39,6 +33,12 @@ fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
         addLibraryPathIfPresent(module, library_dir);
     }
 
+    if (pkgConfigPackageExists(b, "fuse3")) {
+        module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .force });
+        return;
+    }
+
+    addSystemIncludeIfPresent(module, "/usr/include/fuse3");
     module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .no });
 }
 
