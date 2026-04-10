@@ -1027,6 +1027,12 @@ fn reconcileManagedMountChildren(
 ) !?i64 {
     _ = marker;
 
+    var policy_lock = config.acquirePolicyLock(allocator, command.policy_path) catch |err| {
+        std.log.err("failed to lock policy at {s}: {}", .{ command.policy_path, err });
+        return null;
+    };
+    defer policy_lock.deinit();
+
     var loaded_policy = config.loadFromFile(allocator, command.policy_path) catch |err| {
         std.log.err("failed to reload policy from {s}: {}", .{ command.policy_path, err });
         return null;

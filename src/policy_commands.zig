@@ -6,6 +6,9 @@ const fuse = @import("fuse/shim.zig");
 const store = @import("store.zig");
 
 pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    defer policy_lock.deinit();
+
     var loaded_policy = try config.loadFromFile(allocator, policy_path);
     defer loaded_policy.deinit();
     var guarded_store = try store.Backend.initPass(allocator);
@@ -38,6 +41,9 @@ pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path
 }
 
 pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    defer policy_lock.deinit();
+
     var loaded_policy = try config.loadFromFile(allocator, policy_path);
     defer loaded_policy.deinit();
     var guarded_store = try store.Backend.initPass(allocator);

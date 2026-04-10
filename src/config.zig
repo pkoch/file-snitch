@@ -56,6 +56,19 @@ pub const CompiledRules = struct {
     }
 };
 
+pub const PolicyLock = struct {
+    allocator: std.mem.Allocator,
+    lock_path: []u8,
+    file: std.fs.File,
+
+    pub fn deinit(self: *PolicyLock) void {
+        self.file.unlock();
+        self.file.close();
+        self.allocator.free(self.lock_path);
+        self.* = undefined;
+    }
+};
+
 pub const PolicyFile = struct {
     allocator: std.mem.Allocator,
     source_path: []u8,
@@ -387,6 +400,32 @@ const RawPolicyFile = struct {
     enrollments: ?[]const RawEnrollment = null,
     decisions: ?[]const RawDecision = null,
 };
+
+pub fn acquirePolicyLock(allocator: std.mem.Allocator, policy_path: []const u8) !PolicyLock {
+    const lock_path = try std.fmt.allocPrint(allocator, "{s}.lock", .{policy_path});
+    errdefer allocator.free(lock_path);
+
+    const parent_dir_path = std.fs.path.dirname(lock_path) orelse return error.InvalidPolicyPath;
+    try std.fs.cwd().makePath(parent_dir_path);
+
+    const lock_file = std.fs.createFileAbsolute(lock_path, .{
+        .read = true,
+        .truncate = false,
+        .mode = 0o600,
+    }) catch |err| switch (err) {
+        error.PathAlreadyExists => try std.fs.openFileAbsolute(lock_path, .{ .mode = .read_write }),
+        else => return err,
+    };
+    errdefer lock_file.close();
+
+    try lock_file.lock(.exclusive);
+
+    return .{
+        .allocator = allocator,
+        .lock_path = lock_path,
+        .file = lock_file,
+    };
+}
 
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile {
     const source_path = try allocator.dupe(u8, path);

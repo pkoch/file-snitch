@@ -694,6 +694,28 @@ test "upsertDecision replaces matching durable decision" {
     try std.testing.expectEqualStrings("2100-01-01T00:00:00Z", loaded.decisions[0].expires_at.?);
 }
 
+test "policy lock prevents a second concurrent writer" {
+    const allocator = std.testing.allocator;
+    const path = try tempPolicyPath(allocator, "policy-lock");
+    defer {
+        std.fs.deleteFileAbsolute(path) catch {};
+        const lock_path = std.fmt.allocPrint(allocator, "{s}.lock", .{path}) catch null;
+        if (lock_path) |owned| {
+            std.fs.deleteFileAbsolute(owned) catch {};
+            allocator.free(owned);
+        }
+        allocator.free(path);
+    }
+
+    var first_lock = try config.acquirePolicyLock(allocator, path);
+    defer first_lock.deinit();
+
+    const second_file = try std.fs.openFileAbsolute(first_lock.lock_path, .{ .mode = .read_write });
+    defer second_file.close();
+
+    try std.testing.expect(!(try second_file.tryLock(.exclusive)));
+}
+
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
     const run_id = std.time.nanoTimestamp();

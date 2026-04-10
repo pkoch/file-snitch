@@ -768,6 +768,9 @@ fn persistRememberedDecision(
         null;
     defer if (expires_at) |value| context.allocator.free(value);
 
+    var policy_lock = try config.acquirePolicyLock(context.allocator, context.policy_path);
+    defer policy_lock.deinit();
+
     var loaded_policy = try config.loadFromFile(context.allocator, context.policy_path);
     defer loaded_policy.deinit();
 

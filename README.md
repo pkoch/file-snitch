@@ -270,6 +270,7 @@ Prompt notes:
 - `file-snitch status` prints the current enrollments plus the derived mount plan
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
+- policy updates are now serialized with a sidecar lock so `enroll`, `unenroll`, remembered decisions, and daemon expiry pruning do not clobber each other
 - prompt-capable frontends now expose:
   - allow once
   - deny once

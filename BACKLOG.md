@@ -34,6 +34,7 @@ Status:
   - reload durable decisions currently happens by restarting affected mount workers on policy change
   - expiring durable decisions now age out at evaluation time without waiting for a policy reload
   - the reconciler rewrites `policy.yml` after pruning expired durable decisions
+  - current policy writers now serialize `policy.yml` updates with a sidecar lock to avoid lost updates across requester, daemon, and CLI mutation paths
 - `[ ]` Replace the current local TTY prompt path with an agent-style broker model
   - a first local agent service now exists on a user-owned Unix socket
   - the current frontends are:
