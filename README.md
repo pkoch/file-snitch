@@ -252,6 +252,7 @@ When debugging a specific area, the build-managed test step above is still the d
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
 - `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, prefers event-driven `policy.yml` wakeups where the host supports them, falls back to polling where it does not, and adds or removes mount workers as the derived mount plan changes
+- the polling fallback now compares `policy.yml` content as well as file metadata, so same-size rewrites do not rely on mtime luck
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
 - `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
 - the default frontend is `terminal-pinentry`

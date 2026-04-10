@@ -947,11 +947,13 @@ const PolicyMarker = struct {
     exists: bool,
     size: u64 = 0,
     mtime: i128 = 0,
+    content_hash: u64 = 0,
 
     fn eql(a: PolicyMarker, b: PolicyMarker) bool {
         return a.exists == b.exists and
             a.size == b.size and
-            a.mtime == b.mtime;
+            a.mtime == b.mtime and
+            a.content_hash == b.content_hash;
     }
 };
 
@@ -1224,7 +1226,18 @@ fn currentPolicyMarker(policy_path: []const u8) PolicyMarker {
         .exists = true,
         .size = stat.size,
         .mtime = stat.mtime,
+        .content_hash = hashPolicyContents(policy_path),
     };
+}
+
+fn hashPolicyContents(policy_path: []const u8) u64 {
+    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch return 0;
+    defer file.close();
+
+    const contents = file.readToEndAlloc(allocator, 1024 * 1024) catch return 0;
+    defer allocator.free(contents);
+
+    return std.hash.Wyhash.hash(0, contents);
 }
 
 fn reconcileManagedMountChildren(

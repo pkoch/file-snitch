@@ -29,6 +29,7 @@ Status:
   - keep the boundary generic enough to add `1password` and `bitwarden` backends later
 - `[x]` Make the daemon reconcile policy changes without restart
   - foreground `run` now prefers event-driven `policy.yml` wakeups and falls back to polling where watchers are unavailable
+  - the polling fallback now compares file content as well as metadata, so same-size rewrites still trigger reconciliation
   - foreground `run` now stays alive even when policy is empty
   - daemonized `run` now uses the same reconciler model
   - reload durable decisions currently happens by restarting affected mount workers on policy change
