@@ -1,8 +1,6 @@
 # Backlog
 
-Long-term task tracking for turning the brief in
-[docs/research/0 - initial-brief.md](./docs/research/0%20-%20initial-brief.md)
-into a working product.
+Forward-looking task tracking for File Snitch.
 
 Status:
 - `[ ]` not started
@@ -12,146 +10,65 @@ Status:
 
 ## Current priorities
 
-- `[x]` Make the project stance explicitly single-user and user-first
-  - this is a user-space mediation tool for one user's own secret-bearing files
-  - optimize for per-user services, per-user state, and home-directory secrets
-  - do not design toward system-wide policy or protection from root
-- `[~]` Make policy-driven exact-file enrollment the default product path
-  - `run`, `enroll`, `unenroll`, `status`, and `doctor` now exist
-  - `policy.yml` is now the durable source of truth for enrollments and remembered decisions
-  - the old guarded-root spike has been removed from the supported runtime and now survives only in historical notes
-  - new enrollments are currently limited to regular files under the current user's home directory and owned by that user
-- `[x]` Move from projection-only protection to real secret custody
-  - `enroll` already evacuates plaintext from the original path
-  - guarded objects now live behind a store abstraction instead of plaintext files in `~/.var`
-  - the current backend is `pass` under a `file-snitch/` subtree
-  - the current `pass` path has been verified end to end against a real local `pass` installation
-  - keep the boundary generic enough to add `1password` and `bitwarden` backends later
-- `[x]` Make the daemon reconcile policy changes without restart
-  - foreground `run` now prefers event-driven `policy.yml` wakeups and falls back to polling where watchers are unavailable
-  - the polling fallback now compares file content as well as metadata, so same-size rewrites still trigger reconciliation
-  - foreground `run` now stays alive even when policy is empty
-  - daemonized `run` now uses the same reconciler model
-  - mount planning still reconciles through worker restarts, but remembered decisions now also take effect inside the live worker on the next access
-  - expiring durable decisions now age out at evaluation time without waiting for a policy reload
-  - the reconciler rewrites `policy.yml` after pruning expired durable decisions
-  - current policy writers now serialize `policy.yml` updates with a sidecar lock to avoid lost updates across requester, daemon, and CLI mutation paths
-- `[ ]` Replace the current local TTY prompt path with an agent-style broker model
-  - a first local agent service now exists on a user-owned Unix socket
-  - the current frontends are:
-    - `terminal-pinentry` as the bootstrap/debug fallback
-    - `macos-ui` as the first native frontend
-    - `linux-ui` as the first Linux native frontend
-  - define one broker protocol that mount daemons can talk to locally or over forwarding
-  - support forwarding prompt requests from remote hosts back to the workstation where the user is active
-  - stop treating improvements to the current terminal UI as the product goal
-- `[x]` Replace the old guarded-root smoke coverage with policy-driven black-box smoke tests
-  - empty policy
-  - policy lifecycle
-  - single-enrollment projection
-  - multi-mount projection
-  - single-mount prompt behavior
+- `[ ]` Support remote forwarding for the requester/agent protocol
+  - keep the transport stream-friendly and user-to-user
+  - make it easy to forward prompts back to the workstation where the user is present
+  - keep requester-side policy ownership: forwarded decisions should still land in the requester's `policy.yml`
+- `[ ]` Make the packaged user-service story boring
+  - verify the current `launchd` and `systemd --user` helpers in more real environments
+  - tighten `doctor` around service drift and common install mistakes
+  - decide later whether service install stays script-based or moves into the CLI
+- `[ ]` Improve daily-driver frontend UX
+  - keep `terminal-pinentry` as the bootstrap/debug fallback
+  - harden `macos-ui` and `linux-ui` behavior around helper failures and restarts
+  - make sure remembered decisions feel predictable and visible without adding a second policy surface
+- `[ ]` Broaden packaging beyond Homebrew/Linuxbrew
+  - add a native `.deb` package
+  - keep Linux honest about distro FUSE prerequisites even when Homebrew is used
+- `[ ]` Harden macOS-specific attribution and install behavior
+  - add signer lookup for caller attribution
+  - validate TCC and Full Disk Access friction explicitly
+  - test more real macOS target apps against the current product path
 
-## Cross-cutting guardrails
+## Active product work
 
-These are not backlog items to “finish.” They are constraints that future changes should preserve.
-
-- Keep the product unapologetically user-first. This is not a system policy engine or a multi-user security boundary.
-- Keep the C shim as a faithful FUSE harness. It should expose complete callback detail upward even if Zig later filters or suppresses user-facing audit output.
-- Keep authorization aligned with the requested behavior. A granted read-like handle must not silently authorize later write-like behavior.
-- Keep prompts ahead of side effects. Authorization decisions should happen before the guarded operation takes effect.
-
-## Completed milestones
-
-Earlier completed phases are summarized in
-[docs/research/11 - completed-milestones.md](./docs/research/11%20-%20completed-milestones.md).
-That note now carries the guarded-root spike history, the policy-driven
-file-enrollment pivot, and the major Phase 0 research references.
-
-## Future work
-
+- `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
+  - protocol note: [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)
+- `[ ]` Verify daemon behavior when the UI is unavailable or restarted
+- `[ ]` Add a recent-events view
+- `[ ]` Add a basic rule editor
+- `[ ]` Add a specific warning for [LOLBins](https://gtfobins.org)
 - `[ ]` Add directory support beyond the root itself
 - `[ ]` Revisit xattr mediation beyond the current passthrough-only path
 - `[ ]` Align editor probe and save flows, including Vim writability probes and temp-file save semantics
-
-## Phase 2: encryption layer
-
-- `[ ]` Design encrypted guarded-object format
-- `[ ]` Define metadata model for paths, modes, timestamps, and IDs
-- `[ ]` Implement per-file authenticated encryption
-- `[ ]` Implement crash-safe write and rename handling
-- `[ ]` Add key bootstrap via passphrase or OS keystore
-- `[ ]` Verify ciphertext-only persistence at rest
-
-## Phase 3: agent-style prompt broker
-
-- `[~]` Define daemon-to-broker protocol
-  - initial protocol note: [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)
-- `[~]` Implement a local agent-style broker with default-deny timeout behavior
-  - `file-snitch agent (--foreground|--daemon)` now speaks the first local requester/agent socket protocol
-  - `run prompt` now resolves through that local agent socket in both foreground and daemon mode
-  - the current frontends are:
-    - `terminal-pinentry`
-    - `macos-ui`
-    - `linux-ui`
-  - the current smoke suite now covers:
-    - the daemonized agent path through `terminal-pinentry`
-    - the `macos-ui` frontend through a fake `osascript` path in CI
-    - remembered durable decisions written through the requester path and reconciled by `run`
-- `[~]` Keep the current terminal broker as a bootstrap/debug fallback, not the final UX
-  - the old direct daemon-stdin prompt path is gone
-  - the remaining work is better agent frontends, not richer terminal prompting
-- `[ ]` Support forwarding decision requests from remote hosts back to the active user workstation
-  - forwarding is still user-to-user, not a shared multi-user authority model
-- `[ ]` Persist rules independently from the daemon process
-- `[ ]` Add a recent-events view
-- `[ ]` Add a basic rule editor
-- `[ ]` Verify daemon behavior when the UI is unavailable or restarted
-- `[ ]` Add a specific warning for [LOLBins](https://gtfobins.org)
-
-## Phase 4: macOS hardening
-
-- `[x]` Port the guarded-directory demo to macOS with macFUSE
-- `[x]` Reuse the shared rule model where possible
-- `[ ]` Add signer lookup for caller attribution
-- `[ ]` Validate install and permission friction around TCC and Full Disk Access
-- `[ ]` Test at least 3 real target apps on macOS
-
-## Phase 5: packaging and polish
-
-- `[~]` Add installers with Homebrew-focused packaging
-  - first `HEAD`-oriented Homebrew formula now exists at [Formula/file-snitch.rb](./Formula/file-snitch.rb)
-  - install notes now live at [docs/install.md](./docs/install.md)
-  - daemonized agent service now exists, with:
-    - `terminal-pinentry`
-    - macOS `osascript` UI
-    - Linux `zenity` UI
-  - per-user service install helpers now exist for:
-    - macOS LaunchAgents
-    - Linux `systemd --user` agent and run services
-- `[ ]` Add a native `.deb` package in addition to the Homebrew path
 - `[ ]` Support mount persistence across restarts
 - `[ ]` Add config import and export
-- `[x]` Add debug dossier export from `doctor`
-- `[ ]` Write threat-model and operations docs. Be sure to include the hash of the requesting bin.
-- `[~]` Write install, usage, and troubleshooting docs
-  - install notes now live at [docs/install.md](./docs/install.md)
-  - disposable demo driver now lives at [scripts/demo-session.sh](./scripts/demo-session.sh)
-  - issue templates now exist under [.github/ISSUE_TEMPLATE](./.github/ISSUE_TEMPLATE)
 
-## Open decisions
+## Future backend work
 
-- `[x]` Exact Zig/C boundary for `libfuse` interop after the current model/ABI split cleanup
-- `[x]` Exact v1 protected scope: per-file enrollment with sparse parent-directory virtualization
-  - architecture note: [docs/research/4 - file-enrollment-architecture.md](./docs/research/4%20-%20file-enrollment-architecture.md)
-  - exact-path enrollment only, full unprotected-subtree passthrough, ignore temp files as protected objects
-- `[x]` Exact v1 durable decision key
-  - request-time executable path + uid + exact enrolled path + approval class
-  - one-shot decisions stay ephemeral; time-bounded and persistent decisions live in a watched policy store
-  - recommendation captured in [docs/research/6 - durable-decision-key.md](./docs/research/6%20-%20durable-decision-key.md)
-- `[x]` Whether reads and writes need separate approval classes in v1
-  - yes: keep distinct read-like and write-capable approval classes
-  - read approval must not silently authorize later write behavior
-- `[x]` Whether the guarded-object store should expose filenames or only opaque IDs
-  - use opaque IDs
-  - canonical user paths live in enrollment and policy state, not as guarded-object names
+- `[ ]` Add more guarded-object backends beyond `pass`
+  - likely first candidates: `1password`, `bitwarden`
+- `[ ]` Revisit an encrypted native guarded-object format only if the project outgrows the external-store model
+
+## Docs and packaging follow-up
+
+- `[ ]` Keep the public docs and demo assets in sync with the real product path
+- `[ ]` Keep the issue templates and debug dossier aligned with the most common support failures
+- `[ ]` Add a native `.deb` package in addition to the Homebrew path
+
+## Settled architecture
+
+These are no longer open decisions. Future changes should preserve them unless
+the product direction changes explicitly.
+
+- File Snitch is a single-user, user-space mediation tool. It is not a system policy engine and it does not protect against root.
+- Exact-file enrollment is the product shape. Unprotected siblings should keep passing through normally.
+- `policy.yml` is the durable source of truth for enrollments and remembered decisions.
+- The requester writes remembered decisions; the agent does not own durable policy.
+- Guarded-object custody currently lives behind a store abstraction, with `pass:file-snitch/<object_id>` as the first backend.
+- The agent protocol is requester/agent, local-first, and designed to be forwardable.
+
+## Completed milestones
+
+Earlier completed phases and the old guarded-root spike history are summarized in
+[docs/research/11 - completed-milestones.md](./docs/research/11%20-%20completed-milestones.md).

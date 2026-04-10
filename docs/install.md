@@ -9,6 +9,7 @@ Current assumptions:
 - the current authorization frontends are:
   - `terminal-pinentry`
   - `macos-ui` on macOS via `osascript`
+  - `linux-ui` on Linux via `zenity`
 
 ## Homebrew
 
@@ -62,7 +63,7 @@ distro `fuse3` and `libfuse3-dev`.
 
 ## First real-user drill
 
-The current prompt path can run entirely in the foreground.
+The manual bootstrap path can run entirely in the foreground.
 
 Cross-platform bootstrap path:
 
@@ -110,6 +111,30 @@ file-snitch unenroll ~/.kube/config
 
 That is still intentionally manual, but it now exercises the native dialog on
 macOS.
+
+Linux native dialog path:
+
+Terminal 1:
+
+```bash
+file-snitch agent --frontend linux-ui --daemon
+```
+
+Terminal 2:
+
+```bash
+file-snitch run prompt --foreground
+```
+
+Terminal 3:
+
+```bash
+file-snitch enroll ~/.kube/config
+kubectl config view >/dev/null
+file-snitch unenroll ~/.kube/config
+```
+
+That uses `zenity` as the current Linux native frontend.
 
 ## Disposable evaluation
 

@@ -71,6 +71,8 @@ file-snitch status
 4. A remembered decision may already cover the access.
    Check `file-snitch status` or inspect `policy.yml` before assuming the
    prompt path is broken.
+   Remembered decisions should apply on the next guarded access; they no longer
+   need a supervisor remount before prompt suppression starts.
 
 If the current agent frontend is terminal-based, also confirm that the agent
 has a usable TTY:
