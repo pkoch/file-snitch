@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
         .name = "file-snitch",
         .root_module = executable_module,
     });
+    configureLinkerPolicy(exe, target.result.os.tag);
     fuse_support.addCompileCommandsStep(b, target.result.os.tag);
     b.installArtifact(exe);
 
@@ -49,6 +50,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{
         .root_module = test_module,
     });
+    configureLinkerPolicy(tests, target.result.os.tag);
     const run_integration_tests = b.addRunArtifact(tests);
 
     const prompt_test_module = b.createModule(.{
@@ -61,6 +63,7 @@ pub fn build(b: *std.Build) void {
     const prompt_tests = b.addTest(.{
         .root_module = prompt_test_module,
     });
+    configureLinkerPolicy(prompt_tests, target.result.os.tag);
     const run_prompt_tests = b.addRunArtifact(prompt_tests);
 
     const store_test_module = b.createModule(.{
@@ -72,6 +75,7 @@ pub fn build(b: *std.Build) void {
     const store_tests = b.addTest(.{
         .root_module = store_test_module,
     });
+    configureLinkerPolicy(store_tests, target.result.os.tag);
     const run_store_tests = b.addRunArtifact(store_tests);
 
     const config_test_module = b.createModule(.{
@@ -84,6 +88,7 @@ pub fn build(b: *std.Build) void {
     const config_tests = b.addTest(.{
         .root_module = config_test_module,
     });
+    configureLinkerPolicy(config_tests, target.result.os.tag);
     const run_config_tests = b.addRunArtifact(config_tests);
 
     const enrollment_test_module = b.createModule(.{
@@ -95,6 +100,7 @@ pub fn build(b: *std.Build) void {
     const enrollment_tests = b.addTest(.{
         .root_module = enrollment_test_module,
     });
+    configureLinkerPolicy(enrollment_tests, target.result.os.tag);
     const run_enrollment_tests = b.addRunArtifact(enrollment_tests);
 
     const agent_test_module = b.createModule(.{
@@ -108,6 +114,7 @@ pub fn build(b: *std.Build) void {
     const agent_tests = b.addTest(.{
         .root_module = agent_test_module,
     });
+    configureLinkerPolicy(agent_tests, target.result.os.tag);
     const run_agent_tests = b.addRunArtifact(agent_tests);
 
     const test_step = b.step("test", "Run core integration and unit tests");
@@ -137,4 +144,10 @@ fn configureFuseInterop(
         .flags = &.{ "-std=c11", "-D_FILE_OFFSET_BITS=64" },
     });
     fuse_support.configureModule(b, module, os_tag);
+}
+
+fn configureLinkerPolicy(compile: *std.Build.Step.Compile, os_tag: std.Target.Os.Tag) void {
+    if (os_tag == .linux) {
+        compile.linker_allow_shlib_undefined = true;
+    }
 }
