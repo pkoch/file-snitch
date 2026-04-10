@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_meta = @import("app_meta.zig");
 const builtin = @import("builtin");
 const config = @import("config.zig");
 const enrollment = @import("enrollment.zig");
@@ -345,6 +346,7 @@ fn writeDebugDossier(
     try writer.writeAll("# File Snitch Debug Dossier\n\n");
     try writer.print("- generated_at_unix: {d}\n", .{generated_at});
     try writer.print("- executable: `{s}`\n", .{executable_path});
+    try writer.print("- file_snitch: `{s}`\n", .{app_meta.version});
     try writer.print("- os: `{s}`\n", .{@tagName(builtin.os.tag)});
     try writer.print("- arch: `{s}`\n", .{@tagName(builtin.cpu.arch)});
     try writer.print("- zig: `{s}`\n", .{builtin.zig_version_string});

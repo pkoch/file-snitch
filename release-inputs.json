@@ -1,0 +1,8 @@
+{
+  "macfuse": {
+    "version": "5.1.1",
+    "dmg_url": "https://github.com/macfuse/macfuse/releases/download/macfuse-5.1.1/macfuse-5.1.1.dmg",
+    "sha256": "cdd60135ba49467e6f17cbf97d843d7d9e0ab0eda022861d39deaa3cee53e359",
+    "pkg_path": "Extras/macFUSE 5.1.1.pkg"
+  }
+}

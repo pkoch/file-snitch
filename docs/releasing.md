@@ -1,60 +1,112 @@
 # Releasing
 
-This repo is still early and `HEAD`-oriented, but release hygiene still
-matters.
+Formal releases are owned by:
+- [scripts/do-release.sh](../scripts/do-release.sh)
+- [scripts/build-release-source-tarball.py](../scripts/build-release-source-tarball.py)
+- [scripts/build-release-artifact.sh](../scripts/build-release-artifact.sh)
+- [scripts/extract-macfuse-sdk.sh](../scripts/extract-macfuse-sdk.sh)
+- [.github/workflows/release.yml](../.github/workflows/release.yml)
+- [zig-toolchain.json](../zig-toolchain.json)
+- [release-inputs.json](../release-inputs.json)
 
-## Before A Release Or Packaging Refresh
+The intended release shape is:
+- one version source in [VERSION](../VERSION)
+- one release commit that bumps versioned metadata
+- one annotated tag
+- one GitHub Actions workflow that rebuilds and publishes the release artifacts
 
-Run:
+## Canonical release artifacts
+
+Tagged releases are meant to publish:
+- `file-snitch-<version>-source.tar.gz`
+- `file-snitch-<version>-linux-x86_64.tar.gz`
+- `file-snitch-<version>-macos-arm64.tar.gz`
+- `SHA256SUMS`
+- `release-manifest.json`
+
+Those GitHub Release assets are the canonical release artifacts.
+
+Homebrew should consume the tagged source tarball, not a branch tarball.
+Other package managers should prefer the published release artifacts or
+`release-manifest.json` over ad hoc branch snapshots.
+
+## Deterministic release inputs
+
+The release flow is built around deterministic inputs:
+- the release source tarball is generated from tracked files only
+- the release source tarball intentionally excludes `Formula/` to avoid a
+  checksum self-reference loop
+- Zig is pinned in [zig-toolchain.json](../zig-toolchain.json)
+- macOS release builds extract a pinned macFUSE SDK from the checksum-verified
+  DMG declared in [release-inputs.json](../release-inputs.json)
+- tarballs are written with stable ordering and zeroed mtimes/owners
+- binary builds set `SOURCE_DATE_EPOCH` and package the installed binary into a
+  deterministic tarball
+
+The release workflow rebuilds each binary artifact twice from the same source
+bundle, with the same pinned toolchain and SDK inputs, and compares the outputs
+byte-for-byte before publishing them.
+
+This is intentionally a pinned native-runner release flow, not a hermetic Nix
+build. The current guarantee is: same source tarball, same declared toolchain
+and SDK inputs, same native runner class, same bytes out.
+
+## Running a release
+
+From a clean worktree:
 
 ```bash
-zig build
-zig build test
-./tests/smoke/run-empty-policy.sh
-./tests/smoke/policy-lifecycle.sh
-./tests/smoke/doctor-debug-dossier.sh
-./tests/smoke/run-policy-reload.sh
-./tests/smoke/run-daemon-policy-reload.sh
-./tests/smoke/run-expired-decision-cleanup.sh
-./tests/smoke/run-single-enrollment.sh
-./tests/smoke/run-multi-mount.sh
-./tests/smoke/run-prompt-single.sh
+./scripts/do-release.sh patch
 ```
 
-## Refresh Public Artifacts
-
-Regenerate the demo embed:
+Or:
 
 ```bash
-./scripts/regenerate-demo-artifacts.sh
+./scripts/do-release.sh minor
+./scripts/do-release.sh major
 ```
 
-That updates:
-- `docs/assets/demo.cast`
-- `docs/assets/demo.gif`
+That script:
+1. bumps [VERSION](../VERSION)
+2. rolls [CHANGELOG.md](../CHANGELOG.md)
+3. regenerates the stable Homebrew source block in [Formula/file-snitch.rb](../Formula/file-snitch.rb)
+4. runs `zig build test`
+5. creates one release commit
+6. creates an annotated tag
+7. pushes the branch and tag to trigger the release workflow
 
-If the demo changed materially, make sure:
-- `README.md` still describes it honestly
-- `docs/demo.md` still describes how to regenerate it
+## What the script assumes
 
-## Packaging Checks
+- the worktree is clean
+- the current branch is the branch you actually want to release from
+- `origin` is the correct push target
+- GitHub push access is configured already
 
-Current packaging is centered on:
-- `Formula/file-snitch.rb`
-- `docs/install.md`
+It does not try to be clever about branch selection or interactive review.
 
-Before publishing packaging-related changes:
-- make sure the install docs still match reality
-- avoid implying FUSE is installed by the formula
-- avoid implying the current terminal agent frontend is already the final UX
+## Release provenance
 
-## Release Notes Discipline
+Every release publishes:
+- `SHA256SUMS`
+- `release-manifest.json`
 
-Even before formal tagged releases, keep public-facing changes easy to
-understand:
-- mention new commands or flags
-- mention behavior changes that affect operators
-- mention packaging or prerequisite changes
-- mention new required tools for regenerating artifacts
+`release-manifest.json` includes the pinned Zig and macFUSE input metadata that
+the workflow used to produce the published artifacts.
 
-If a change is only internal cleanup, say so plainly.
+## Changelog discipline
+
+[CHANGELOG.md](../CHANGELOG.md) follows Keep a Changelog.
+
+The release script moves whatever is under `## [Unreleased]` into the new
+versioned section. If `Unreleased` is empty, the release notes will be sparse.
+
+That means public-facing changes should be added to `Unreleased` as they land.
+
+## Packaging follow-through
+
+The source release tarball is the stable input for:
+- Homebrew/Linuxbrew
+- future `.deb` packaging
+- any other downstream packaging that wants a fixed release source
+
+The binary release tarballs are for direct download and manual installation.

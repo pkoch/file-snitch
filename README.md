@@ -27,7 +27,7 @@ The product brief lives in
   - `terminal-pinentry`
   - `macos-ui` on macOS via `osascript`
   - `linux-ui` on Linux via `zenity`
-- Homebrew/Linuxbrew packaging from `HEAD`
+- formal release artifacts on GitHub Releases plus Homebrew/Linuxbrew packaging
 - per-user service install helpers for `launchd` and `systemd --user`
 
 ## What It Explicitly Does Not Do
@@ -192,14 +192,17 @@ FUSE discovery:
 
 ## Install notes
 
-The first packaging slice now lives at:
+Current packaging and release notes live at:
 - [Formula/file-snitch.rb](./Formula/file-snitch.rb)
 - [docs/install.md](./docs/install.md)
+- [docs/releasing.md](./docs/releasing.md)
 
-This is intentionally a `HEAD`-oriented Homebrew formula plus manual runtime
-setup. The current agent now has `terminal-pinentry`, `macos-ui`, and
-`linux-ui`, and the repo now ships per-user service install helpers. Richer
-agent UX and broader packaging are still in progress.
+Formal tagged releases are meant to publish the canonical source and binary
+artifacts on GitHub Releases, with Homebrew consuming the tagged source
+tarball. Those releases also publish `SHA256SUMS` and `release-manifest.json`
+so downstream packaging can follow the same pinned source, toolchain, and SDK
+inputs. Until the first tagged release exists, the repo still supports the
+current `HEAD`-oriented path too.
 
 ## Verification
 

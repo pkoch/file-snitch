@@ -1,5 +1,6 @@
 const std = @import("std");
 const agent = @import("agent.zig");
+const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
 const daemon = @import("daemon.zig");
 const enrollment_ops = @import("enrollment.zig");
@@ -66,6 +67,7 @@ pub fn main() !void {
 pub fn run(args: []const []const u8) !void {
     switch (try parseCommand(args)) {
         .help => printUsage(),
+        .version => printVersion(),
         .agent => |command| {
             defer command.deinit(allocator);
             try runAgent(command);
@@ -98,6 +100,7 @@ pub fn run(args: []const []const u8) !void {
 
 const Command = union(enum) {
     help,
+    version,
     agent: AgentCommand,
     run: RunCommand,
     enroll: PathCommand,
@@ -192,6 +195,9 @@ fn parseCommand(args: []const []const u8) !Command {
     }
     if (std.mem.eql(u8, args[0], "doctor")) {
         return .{ .doctor = try parseDoctorCommand(args[1..]) };
+    }
+    if (std.mem.eql(u8, args[0], "version") or std.mem.eql(u8, args[0], "--version")) {
+        return .version;
     }
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {
         return .help;
@@ -1552,6 +1558,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
+        \\  file-snitch version
         \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--frontend <terminal-pinentry|macos-ui|linux-ui>] [--tty <path>]
         \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
@@ -1575,4 +1582,10 @@ fn printUsage() void {
         \\  - `status` inspects `policy.yml`; `doctor` also exits non-zero on actionable problems and can export a shareable debug dossier
         \\
     , .{});
+}
+
+fn printVersion() void {
+    var buffer: [64]u8 = undefined;
+    const line = std.fmt.bufPrint(&buffer, "file-snitch {s}\n", .{app_meta.version}) catch @panic("failed to format version");
+    std.fs.File.stdout().writeAll(line) catch @panic("failed to write version");
 }

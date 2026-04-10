@@ -1,6 +1,8 @@
 # Install
 
-This is the first packaging slice, not the final installer story.
+Formal releases are moving toward GitHub Release assets as the canonical
+source of installable artifacts. Until the first tagged release exists, the
+repo still supports the current `HEAD`-oriented path too.
 
 Current assumptions:
 - single-user, user-space tool
@@ -13,15 +15,18 @@ Current assumptions:
 
 ## Homebrew
 
-This formula is intentionally `HEAD`-only for now and lives in this repo's
-tap-style [Formula/](../Formula) directory.
+This repo's [Formula/](../Formula) directory is the Homebrew/Linuxbrew entry
+point.
 
-Tap the repo, then install from `HEAD`:
+Before the first formal release lands, install from `HEAD`:
 
 ```bash
 brew tap pkoch/file-snitch https://github.com/pkoch/file-snitch
 brew install --HEAD --build-from-source pkoch/file-snitch/file-snitch
 ```
+
+After formal releases start, the same tap will grow a stable release block
+that points at the tagged source tarball published on GitHub Releases.
 
 The formula installs:
 - `file-snitch`

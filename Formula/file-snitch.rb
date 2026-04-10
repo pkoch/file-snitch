@@ -1,6 +1,8 @@
 class FileSnitch < Formula
   desc "Guarded FUSE mounts for a user's secret-bearing files"
   homepage "https://github.com/pkoch/file-snitch"
+  # stable-release-start
+  # stable-release-end
   head "https://github.com/pkoch/file-snitch.git", branch: "master"
 
   depends_on "pkgconf" => :build
@@ -18,23 +20,21 @@ class FileSnitch < Formula
         * a usable GPG environment for `pass`
         * FUSE support installed outside Homebrew
 
-      On macOS, install macFUSE separately before building or running
-      file-snitch.
+      On macOS, install macFUSE separately before building or running.
 
-      The current authorization frontend is still a TTY agent. For a
-      real prompt flow, run these in separate terminals:
+      Prompting is handled by the local agent service. Bootstrap it
+      manually with:
 
         file-snitch agent --foreground
         file-snitch run prompt --foreground
 
-      Background user services are intentionally deferred until the
-      agent has a non-interactive frontend.
+      The repo also ships per-user service helpers under `scripts/`
+      for `launchd` and `systemd --user`.
     EOS
   end
 
   test do
-    output = shell_output("#{bin}/file-snitch help 2>&1")
-    assert_match "file-snitch run", output
-    assert_match "file-snitch agent", output
+    output = shell_output("#{bin}/file-snitch version 2>&1")
+    assert_match "file-snitch", output
   end
 end

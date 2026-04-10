@@ -43,6 +43,13 @@ fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
 }
 
 fn configureMacFuse(b: *std.Build, module: *std.Build.Module) void {
+    addAppleSdkIncludesIfPresent(b, module);
+
+    if (configureMacFuseFromEnvironment(b, module)) {
+        module.linkSystemLibrary("fuse", .{ .use_pkg_config = .no });
+        return;
+    }
+
     if (hasPkgConfig(b)) {
         module.linkSystemLibrary("fuse", .{ .use_pkg_config = .force });
         return;
@@ -57,6 +64,22 @@ fn configureMacFuse(b: *std.Build, module: *std.Build.Module) void {
     }
 
     module.linkSystemLibrary("fuse", .{ .use_pkg_config = .no });
+}
+
+fn configureMacFuseFromEnvironment(b: *std.Build, module: *std.Build.Module) bool {
+    var configured = false;
+
+    if (getEnvironmentPath(b, "FILE_SNITCH_FUSE_INCLUDE_DIR")) |include_dir| {
+        addSystemIncludeIfPresent(module, include_dir);
+        configured = true;
+    }
+
+    if (getEnvironmentPath(b, "FILE_SNITCH_FUSE_LIB_DIR")) |library_dir| {
+        addLibraryPathOnlyIfPresent(module, library_dir);
+        configured = true;
+    }
+
+    return configured;
 }
 
 fn hasPkgConfig(b: *std.Build) bool {
@@ -78,6 +101,12 @@ fn addSystemIncludeIfPresent(module: *std.Build.Module, path: []const u8) void {
     module.addSystemIncludePath(.{ .cwd_relative = path });
 }
 
+fn addAppleSdkIncludesIfPresent(b: *std.Build, module: *std.Build.Module) void {
+    const sdkroot = getEnvironmentPath(b, "SDKROOT") orelse return;
+    const include_dir = std.fs.path.join(b.allocator, &.{ sdkroot, "usr", "include" }) catch @panic("OOM");
+    addSystemIncludeIfPresent(module, include_dir);
+}
+
 fn addLibraryPathIfPresent(module: *std.Build.Module, path: []const u8) void {
     if (!directoryExists(path)) {
         return;
@@ -85,6 +114,14 @@ fn addLibraryPathIfPresent(module: *std.Build.Module, path: []const u8) void {
 
     module.addLibraryPath(.{ .cwd_relative = path });
     module.addRPath(.{ .cwd_relative = path });
+}
+
+fn addLibraryPathOnlyIfPresent(module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(path)) {
+        return;
+    }
+
+    module.addLibraryPath(.{ .cwd_relative = path });
 }
 
 fn directoryExists(path: []const u8) bool {
@@ -139,6 +176,16 @@ fn appendFuseCompileArgs(
             appendIncludeDirIfPresent(b, arguments, "/usr/include/fuse3");
         },
         .macos => {
+            if (getEnvironmentPath(b, "SDKROOT")) |sdkroot| {
+                const include_dir = std.fs.path.join(b.allocator, &.{ sdkroot, "usr", "include" }) catch @panic("OOM");
+                appendIncludeDirIfPresent(b, arguments, include_dir);
+            }
+
+            if (getEnvironmentPath(b, "FILE_SNITCH_FUSE_INCLUDE_DIR")) |include_dir| {
+                appendIncludeDirIfPresent(b, arguments, include_dir);
+                return;
+            }
+
             if (appendPkgConfigCflags(b, arguments, "fuse")) {
                 return;
             }
@@ -149,6 +196,10 @@ fn appendFuseCompileArgs(
         },
         else => {},
     }
+}
+
+fn getEnvironmentPath(b: *std.Build, name: []const u8) ?[]const u8 {
+    return b.graph.env_map.get(name);
 }
 
 fn appendPkgConfigCflags(

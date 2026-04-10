@@ -4,6 +4,9 @@ const fuse_support = @import("build/fuse_support.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const app_version = readAppVersion(b);
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "app_version", app_version);
     const yaml_module = b.createModule(.{
         .root_source_file = b.path("vendor/zig-yaml/src/lib.zig"),
         .target = target,
@@ -16,6 +19,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     executable_module.addImport("yaml", yaml_module);
+    executable_module.addOptions("build_options", build_options);
     configureFuseInterop(b, executable_module, target.result.os.tag);
 
     const exe = b.addExecutable(.{
@@ -38,6 +42,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     app_src_module.addImport("yaml", yaml_module);
+    app_src_module.addOptions("build_options", build_options);
     test_module.addImport("app_src", app_src_module);
     configureFuseInterop(b, test_module, target.result.os.tag);
 
@@ -52,6 +57,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    prompt_test_module.addOptions("build_options", build_options);
     const prompt_tests = b.addTest(.{
         .root_module = prompt_test_module,
     });
@@ -62,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    store_test_module.addOptions("build_options", build_options);
     const store_tests = b.addTest(.{
         .root_module = store_test_module,
     });
@@ -73,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     config_test_module.addImport("yaml", yaml_module);
+    config_test_module.addOptions("build_options", build_options);
     const config_tests = b.addTest(.{
         .root_module = config_test_module,
     });
@@ -83,6 +91,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    enrollment_test_module.addOptions("build_options", build_options);
     const enrollment_tests = b.addTest(.{
         .root_module = enrollment_test_module,
     });
@@ -95,6 +104,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     agent_test_module.addImport("yaml", yaml_module);
+    agent_test_module.addOptions("build_options", build_options);
     const agent_tests = b.addTest(.{
         .root_module = agent_test_module,
     });
@@ -107,6 +117,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_enrollment_tests.step);
     test_step.dependOn(&run_agent_tests.step);
+}
+
+fn readAppVersion(b: *std.Build) []const u8 {
+    const raw = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 64) catch |err| {
+        std.debug.panic("failed to read VERSION: {}", .{err});
+    };
+    return std.mem.trim(u8, raw, " \t\r\n");
 }
 
 fn configureFuseInterop(

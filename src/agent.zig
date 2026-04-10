@@ -1,5 +1,6 @@
 const std = @import("std");
 const net = std.net;
+const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
@@ -368,7 +369,7 @@ fn sendHello(stream: net.Stream, request_id: []const u8) !void {
         .request_id = request_id,
         .role = "agent",
         .agent_name = "file-snitch-agent",
-        .agent_version = "0.1.0",
+        .agent_version = app_meta.version,
         .capabilities = &.{ "decide", "query" },
     });
 }
@@ -381,7 +382,7 @@ fn sendWelcome(stream: net.Stream, request_id: []const u8) !void {
         .request_id = request_id,
         .role = "requester",
         .requester_name = "file-snitch-run",
-        .requester_version = "0.1.0",
+        .requester_version = app_meta.version,
         .capabilities = &.{ "decide", "query" },
     });
 }

@@ -23,8 +23,26 @@ runs:
       shell: bash
       run: |
         manifest="${{ inputs.toolchain-manifest }}"
-        echo "ZIG_VERSION=$(jq -r '.version' "$manifest")" >> "$GITHUB_ENV"
-        echo "ZIG_LINUX_X86_64_SHA256=$(jq -r '.platforms.linux_x86_64.sha256' "$manifest")" >> "$GITHUB_ENV"
+        zig_version="$(jq -r '.version' "$manifest")"
+        echo "ZIG_VERSION=$zig_version" >> "$GITHUB_ENV"
+
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)
+            platform_key="linux_x86_64"
+            archive_name="zig-x86_64-linux-${zig_version}.tar.xz"
+            ;;
+          macOS-ARM64)
+            platform_key="macos_aarch64"
+            archive_name="zig-aarch64-macos-${zig_version}.tar.xz"
+            ;;
+          *)
+            echo "unsupported Zig host platform: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "ZIG_ARCHIVE_NAME=$archive_name" >> "$GITHUB_ENV"
+        echo "ZIG_SHA256=$(jq -r ".platforms.${platform_key}.sha256" "$manifest")" >> "$GITHUB_ENV"
 
     - name: Restore Zig toolchain cache
       uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -37,9 +55,22 @@ runs:
       run: |
         if [[ ! -x "${{ inputs.zig-install-dir }}/zig" ]]; then
           curl -L \
-            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE_NAME}" \
             -o "$RUNNER_TEMP/zig.tar.xz"
-          echo "${ZIG_LINUX_X86_64_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          actual="$(python3 - "$RUNNER_TEMP/zig.tar.xz" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+with path.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+)"
+          test "$actual" = "$ZIG_SHA256"
           rm -rf "${{ inputs.zig-install-dir }}"
           mkdir -p "${{ inputs.zig-install-dir }}"
           tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "${{ inputs.zig-install-dir }}" --strip-components=1
