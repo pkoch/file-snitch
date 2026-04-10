@@ -192,42 +192,42 @@ jobs:
           )
 
           python3 - <<'PY'
-import json
-import os
-import pathlib
+          import json
+          import os
+          import pathlib
 
-version = os.environ["VERSION"]
-tag = os.environ["TAG"]
-release_dir = pathlib.Path(os.environ["RELEASE_DIR"])
-zig_inputs = json.loads(pathlib.Path("zig-toolchain.json").read_text(encoding="utf-8"))
-release_inputs = json.loads(pathlib.Path("release-inputs.json").read_text(encoding="utf-8"))
-manifest = {
-    "version": version,
-    "tag": tag,
-    "build_inputs": {
-        "zig": zig_inputs,
-        "release_inputs": release_inputs,
-    },
-    "assets": [],
-}
-for asset in sorted(release_dir.iterdir()):
-    if asset.name == "release-manifest.json":
-        continue
-    if asset.is_file():
-        manifest["assets"].append({
-            "name": asset.name,
-            "sha256": next(
-                line.split()[0]
-                for line in (release_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
-                if line.endswith(asset.name)
-            ) if asset.name != "SHA256SUMS" else None,
-        })
+          version = os.environ["VERSION"]
+          tag = os.environ["TAG"]
+          release_dir = pathlib.Path(os.environ["RELEASE_DIR"])
+          zig_inputs = json.loads(pathlib.Path("zig-toolchain.json").read_text(encoding="utf-8"))
+          release_inputs = json.loads(pathlib.Path("release-inputs.json").read_text(encoding="utf-8"))
+          manifest = {
+              "version": version,
+              "tag": tag,
+              "build_inputs": {
+                  "zig": zig_inputs,
+                  "release_inputs": release_inputs,
+              },
+              "assets": [],
+          }
+          for asset in sorted(release_dir.iterdir()):
+              if asset.name == "release-manifest.json":
+                  continue
+              if asset.is_file():
+                  manifest["assets"].append({
+                      "name": asset.name,
+                      "sha256": next(
+                          line.split()[0]
+                          for line in (release_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+                          if line.endswith(asset.name)
+                      ) if asset.name != "SHA256SUMS" else None,
+                  })
 
-(release_dir / "release-manifest.json").write_text(
-    json.dumps(manifest, indent=2) + "\n",
-    encoding="utf-8",
-)
-PY
+          (release_dir / "release-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
         env:
           VERSION: ${{ needs.source.outputs.version }}
           TAG: ${{ github.ref_name }}
