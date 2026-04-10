@@ -955,6 +955,205 @@ const PolicyMarker = struct {
     }
 };
 
+const PolicyWatchOutcome = enum {
+    timeout,
+    changed,
+};
+
+const LinuxPolicyWatcher = struct {
+    fd: std.posix.fd_t,
+    watch_descriptor: i32,
+    filename: []u8,
+
+    fn deinit(self: *LinuxPolicyWatcher) void {
+        std.posix.inotify_rm_watch(self.fd, self.watch_descriptor);
+        std.posix.close(self.fd);
+        allocator.free(self.filename);
+        self.* = undefined;
+    }
+
+    fn wait(self: *LinuxPolicyWatcher, timeout_ns: u64) !PolicyWatchOutcome {
+        var poll_fds = [_]std.posix.pollfd{.{
+            .fd = self.fd,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = try std.posix.poll(&poll_fds, nanosToPollTimeoutMs(timeout_ns));
+        if (ready == 0) return .timeout;
+
+        var buffer: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
+        const bytes_read = try std.posix.read(self.fd, &buffer);
+        if (bytes_read == 0) return .timeout;
+
+        var offset: usize = 0;
+        while (offset + @sizeOf(std.os.linux.inotify_event) <= bytes_read) {
+            const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(buffer[offset .. offset + @sizeOf(std.os.linux.inotify_event)]));
+            const event_size = @sizeOf(std.os.linux.inotify_event) + event.len;
+            if (offset + event_size > bytes_read) break;
+            offset += event_size;
+
+            const event_name = event.getName() orelse continue;
+            if (!std.mem.eql(u8, std.mem.sliceTo(event_name, 0), self.filename)) continue;
+            return .changed;
+        }
+
+        return .timeout;
+    }
+};
+
+const DarwinPolicyWatcher = struct {
+    kqueue_fd: std.posix.fd_t,
+    directory_fd: std.posix.fd_t,
+
+    fn deinit(self: *DarwinPolicyWatcher) void {
+        std.posix.close(self.directory_fd);
+        std.posix.close(self.kqueue_fd);
+        self.* = undefined;
+    }
+
+    fn wait(self: *DarwinPolicyWatcher, timeout_ns: u64) !PolicyWatchOutcome {
+        var timespec = nanosToTimespec(timeout_ns);
+        var event_buffer: [1]std.posix.Kevent = undefined;
+        const count = try std.posix.kevent(self.kqueue_fd, &.{}, &event_buffer, &timespec);
+        if (count == 0) return .timeout;
+        return .changed;
+    }
+};
+
+const PolicyChangeSource = union(enum) {
+    polling,
+    linux_inotify: LinuxPolicyWatcher,
+    darwin_kqueue: DarwinPolicyWatcher,
+
+    fn init(policy_path: []const u8) PolicyChangeSource {
+        return switch (builtin.os.tag) {
+            .linux => initLinuxPolicyWatcher(policy_path) catch |err| {
+                std.log.warn("falling back to polling for policy changes at {s}: {}", .{ policy_path, err });
+                return .polling;
+            },
+            .macos => initDarwinPolicyWatcher(policy_path) catch |err| {
+                std.log.warn("falling back to polling for policy changes at {s}: {}", .{ policy_path, err });
+                return .polling;
+            },
+            else => .polling,
+        };
+    }
+
+    fn deinit(self: *PolicyChangeSource) void {
+        switch (self.*) {
+            .polling => {},
+            .linux_inotify => |*watcher| watcher.deinit(),
+            .darwin_kqueue => |*watcher| watcher.deinit(),
+        }
+    }
+
+    fn wait(self: *PolicyChangeSource, timeout_ns: u64) PolicyWatchOutcome {
+        return switch (self.*) {
+            .polling => {
+                std.Thread.sleep(timeout_ns);
+                return .timeout;
+            },
+            .linux_inotify => |*watcher| watcher.wait(timeout_ns) catch |err| {
+                std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
+                watcher.deinit();
+                self.* = .polling;
+                std.Thread.sleep(timeout_ns);
+                return .timeout;
+            },
+            .darwin_kqueue => |*watcher| watcher.wait(timeout_ns) catch |err| {
+                std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
+                watcher.deinit();
+                self.* = .polling;
+                std.Thread.sleep(timeout_ns);
+                return .timeout;
+            },
+        };
+    }
+};
+
+fn initLinuxPolicyWatcher(policy_path: []const u8) !PolicyChangeSource {
+    const watch_path = try splitPolicyWatchPath(policy_path);
+    defer allocator.free(watch_path.directory_path);
+
+    const fd = try std.posix.inotify_init1(std.os.linux.IN.CLOEXEC);
+    errdefer std.posix.close(fd);
+
+    const watch_mask =
+        std.os.linux.IN.CLOSE_WRITE |
+        std.os.linux.IN.CREATE |
+        std.os.linux.IN.DELETE |
+        std.os.linux.IN.MOVED_TO |
+        std.os.linux.IN.MOVE_SELF |
+        std.os.linux.IN.DELETE_SELF;
+    const watch_descriptor = try std.posix.inotify_add_watch(fd, watch_path.directory_path, watch_mask);
+    errdefer std.posix.inotify_rm_watch(fd, watch_descriptor);
+
+    return .{ .linux_inotify = .{
+        .fd = fd,
+        .watch_descriptor = watch_descriptor,
+        .filename = try allocator.dupe(u8, watch_path.basename),
+    } };
+}
+
+fn initDarwinPolicyWatcher(policy_path: []const u8) !PolicyChangeSource {
+    const watch_path = try splitPolicyWatchPath(policy_path);
+    defer allocator.free(watch_path.directory_path);
+
+    const kqueue_fd = try std.posix.kqueue();
+    errdefer std.posix.close(kqueue_fd);
+
+    const directory_flags = comptime flags: {
+        var open_flags = std.posix.O{
+            .ACCMODE = .RDONLY,
+            .CLOEXEC = true,
+            .DIRECTORY = true,
+        };
+        if (@hasField(std.posix.O, "EVTONLY")) open_flags.EVTONLY = true;
+        if (@hasField(std.posix.O, "PATH")) open_flags.PATH = true;
+        break :flags open_flags;
+    };
+    const directory_fd = try std.posix.open(watch_path.directory_path, directory_flags, 0);
+    errdefer std.posix.close(directory_fd);
+
+    const changes = [_]std.posix.Kevent{.{
+        .ident = @bitCast(@as(isize, directory_fd)),
+        .filter = std.c.EVFILT.VNODE,
+        .flags = std.c.EV.ADD | std.c.EV.ENABLE | std.c.EV.CLEAR,
+        .fflags = std.c.NOTE.WRITE | std.c.NOTE.RENAME | std.c.NOTE.DELETE | std.c.NOTE.EXTEND | std.c.NOTE.ATTRIB | std.c.NOTE.REVOKE,
+        .data = 0,
+        .udata = 0,
+    }};
+    _ = try std.posix.kevent(kqueue_fd, &changes, &.{}, null);
+
+    return .{ .darwin_kqueue = .{
+        .kqueue_fd = kqueue_fd,
+        .directory_fd = directory_fd,
+    } };
+}
+
+fn splitPolicyWatchPath(policy_path: []const u8) !struct {
+    directory_path: []u8,
+    basename: []const u8,
+} {
+    return .{
+        .directory_path = try allocator.dupe(u8, std.fs.path.dirname(policy_path) orelse "."),
+        .basename = std.fs.path.basename(policy_path),
+    };
+}
+
+fn nanosToPollTimeoutMs(timeout_ns: u64) i32 {
+    const timeout_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch unreachable;
+    if (timeout_ms > std.math.maxInt(i32)) return std.math.maxInt(i32);
+    return @intCast(timeout_ms);
+}
+
+fn nanosToTimespec(timeout_ns: u64) std.posix.timespec {
+    return .{
+        .sec = @intCast(timeout_ns / std.time.ns_per_s),
+        .nsec = @intCast(timeout_ns % std.time.ns_per_s),
+    };
+}
+
 const ManagedMountChild = struct {
     child: std.process.Child,
     argv: []const []const u8,
@@ -975,6 +1174,9 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
 
     var children: std.ArrayListUnmanaged(ManagedMountChild) = .{};
     defer stopManagedMountChildren(&children);
+
+    var change_source = PolicyChangeSource.init(command.policy_path);
+    defer change_source.deinit();
 
     var last_marker: ?PolicyMarker = null;
     var needs_reconcile = true;
@@ -1003,7 +1205,12 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             needs_reconcile = true;
         }
 
-        std.Thread.sleep(reconcileSleepNanos(next_expiration_unix_seconds));
+        if (!needs_reconcile) {
+            switch (change_source.wait(reconcileSleepNanos(next_expiration_unix_seconds))) {
+                .changed => needs_reconcile = true,
+                .timeout => {},
+            }
+        }
     }
 }
 
