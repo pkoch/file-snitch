@@ -14,8 +14,8 @@ The intended release shape is:
 - one release commit that bumps versioned metadata
 - one annotated tag
 - one GitHub Actions workflow that rebuilds and publishes the release artifacts
-- one follow-up tap commit in `pkoch/homebrew-tap` that advances the formula to
-  the new tagged source tarball
+- one follow-up tap PR in `pkoch/homebrew-tap` that advances the formula to the
+  new tagged source tarball and lets Homebrew bottle it
 
 ## Canonical release artifacts
 
@@ -39,9 +39,11 @@ The Homebrew formula itself now lives in:
 This coupling is intentional for now.
 
 The release flow updates the tap as part of a normal release so packaging drift
-fails loudly instead of silently. That is an operational choice for visibility,
-not an architectural claim that the tap is the only valid downstream packaging
-home forever.
+fails loudly instead of silently. The app release script also tails the tap PR
+checks and bottle publish workflow so the process stays visible instead of
+quietly drifting in a separate repo. That is an operational choice for
+visibility, not an architectural claim that the tap is the only valid
+downstream packaging home forever.
 
 If `file-snitch` later moves into `homebrew/core`, revisit this and decouple the
 tap update from the main release script then.
@@ -90,7 +92,9 @@ That script:
 5. pushes that commit and waits for `CI`
 6. creates an annotated tag
 7. pushes the tag and waits for the `Release` workflow
-8. updates and pushes the formula in `pkoch/homebrew-tap`
+8. updates the formula in `pkoch/homebrew-tap`
+9. opens a tap PR and waits for `brew test-bot`
+10. applies the `pr-pull` label and waits for bottle publication
 
 ## What the script assumes
 
@@ -99,6 +103,7 @@ That script:
 - the current branch is the branch you actually want to release from
 - `origin` is the correct push target
 - GitHub push access is configured already
+- the tap repo Actions workflows are enabled
 
 It does not try to be clever about branch selection or interactive review.
 
@@ -128,3 +133,5 @@ The source release tarball is the stable input for:
 - any other downstream packaging that wants a fixed release source
 
 The binary release tarballs are for direct download and manual installation.
+Homebrew bottles are published from the tap repo's PR flow, not from this
+repo's release workflow.

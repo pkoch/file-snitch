@@ -15,7 +15,7 @@ This script:
   - creates one release commit
   - creates an annotated tag
   - pushes the branch and tag to trigger the release workflow
-  - updates the Homebrew tap formula after the release succeeds
+  - opens and watches a Homebrew tap PR after the release succeeds
 EOF
 }
 
@@ -52,6 +52,33 @@ resolve_tap_repo() {
   brew --repository pkoch/homebrew-tap
 }
 
+resolve_tap_repo_slug() {
+  if [[ -n "${FILE_SNITCH_HOMEBREW_TAP_SLUG:-}" ]]; then
+    printf '%s\n' "$FILE_SNITCH_HOMEBREW_TAP_SLUG"
+    return 0
+  fi
+
+  printf '%s\n' "pkoch/homebrew-tap"
+}
+
+ensure_tap_publish_label() {
+  local repo="$1"
+  local exists
+
+  exists="$(
+    gh label list --repo "$repo" --json name --jq 'map(select(.name == "pr-pull")) | length'
+  )"
+  if [[ "$exists" == "1" ]]; then
+    return 0
+  fi
+
+  gh label create \
+    "pr-pull" \
+    --repo "$repo" \
+    --color "2da44e" \
+    --description "Publish bottles from this PR" >/dev/null
+}
+
 if [[ $# -ne 1 ]]; then
   usage
   exit 1
@@ -73,6 +100,7 @@ fi
 
 require_release_tools
 tap_repo="$(resolve_tap_repo)"
+tap_repo_slug="$(resolve_tap_repo_slug)"
 tap_formula="$tap_repo/Formula/file-snitch.rb"
 
 if [[ ! -f "$tap_formula" ]]; then
@@ -85,6 +113,9 @@ if [[ -n "$(git -C "$tap_repo" status --porcelain)" ]]; then
   echo "error: tap worktree must be clean before releasing: $tap_repo" >&2
   exit 1
 fi
+
+git -C "$tap_repo" switch main >/dev/null 2>&1 || git -C "$tap_repo" checkout main >/dev/null
+git -C "$tap_repo" pull --ff-only origin main >/dev/null
 
 current_version="$(tr -d '\n' < VERSION)"
 new_version="$(python3 - "$current_version" "$part" <<'PY'
@@ -192,6 +223,36 @@ wait_for_release_run() {
   return 1
 }
 
+wait_for_repo_workflow_run_by_branch() {
+  local repo="$1"
+  local workflow_name="$2"
+  local branch="$3"
+  local event="$4"
+  local run_id=""
+  local attempts=0
+
+  while [[ $attempts -lt 40 ]]; do
+    run_id="$(gh run list \
+      --repo "$repo" \
+      --workflow "$workflow_name" \
+      --branch "$branch" \
+      --event "$event" \
+      --json databaseId,status,createdAt \
+      --jq 'map(select(.status != "")) | sort_by(.createdAt) | last | .databaseId // ""')"
+
+    if [[ -n "$run_id" ]]; then
+      printf '%s\n' "$run_id"
+      return 0
+    fi
+
+    attempts=$((attempts + 1))
+    sleep 3
+  done
+
+  echo "error: workflow $workflow_name did not appear for $repo branch $branch" >&2
+  return 1
+}
+
 printf '%s\n' "$new_version" > VERSION
 python3 scripts/roll-changelog-release.py \
   --changelog CHANGELOG.md \
@@ -240,8 +301,55 @@ python3 scripts/update-formula-release.py \
   --sha256 "$source_sha" \
   --source-url "$source_url"
 
+tap_branch="file-snitch-$new_version"
+tap_pr_title="file-snitch $new_version"
+tap_pr_body=$(
+  cat <<EOF
+Update \`file-snitch\` to \`$new_version\`.
+
+Upstream release:
+- $source_url
+EOF
+)
+
+git -C "$tap_repo" switch -c "$tap_branch"
 git -C "$tap_repo" add Formula/file-snitch.rb
 git -C "$tap_repo" commit -m "file-snitch $new_version"
-git -C "$tap_repo" push origin HEAD:main
-echo "updated Homebrew tap formula:"
-echo "  $tap_repo/Formula/file-snitch.rb"
+git -C "$tap_repo" push -u origin "$tap_branch"
+
+tap_pr_url="$(
+  gh pr create \
+    --repo "$tap_repo_slug" \
+    --base main \
+    --head "$tap_branch" \
+    --title "$tap_pr_title" \
+    --body "$tap_pr_body"
+)"
+tap_pr_number="$(gh pr view "$tap_pr_url" --repo "$tap_repo_slug" --json number --jq '.number')"
+
+run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_branch" pull_request)"
+echo "watching tap test workflow run $run_id"
+if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
+  echo "error: tap test workflow failed for $tap_pr_url" >&2
+  echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
+  exit 1
+fi
+
+ensure_tap_publish_label "$tap_repo_slug"
+gh pr edit "$tap_pr_number" --repo "$tap_repo_slug" --add-label pr-pull >/dev/null
+
+run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" publish.yml "$tap_branch" pull_request)"
+echo "watching tap publish workflow run $run_id"
+if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
+  echo "error: tap publish workflow failed for $tap_pr_url" >&2
+  echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
+  exit 1
+fi
+
+git -C "$tap_repo" fetch origin main >/dev/null
+git -C "$tap_repo" switch main >/dev/null
+git -C "$tap_repo" pull --ff-only origin main >/dev/null
+git -C "$tap_repo" branch -D "$tap_branch" >/dev/null 2>&1 || true
+
+echo "updated Homebrew tap through PR:"
+echo "  $tap_pr_url"
