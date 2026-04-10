@@ -57,19 +57,7 @@ runs:
           curl -L \
             "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE_NAME}" \
             -o "$RUNNER_TEMP/zig.tar.xz"
-          actual="$(python3 - "$RUNNER_TEMP/zig.tar.xz" <<'PY'
-import hashlib
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-digest = hashlib.sha256()
-with path.open("rb") as handle:
-    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-PY
-)"
+          actual="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$RUNNER_TEMP/zig.tar.xz")"
           test "$actual" = "$ZIG_SHA256"
           rm -rf "${{ inputs.zig-install-dir }}"
           mkdir -p "${{ inputs.zig-install-dir }}"
