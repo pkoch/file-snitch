@@ -57,3 +57,11 @@ assert_log_contains() {
     fail "expected log entry missing: $needle"
   fi
 }
+
+assert_log_matches() {
+  local pattern="$1"
+
+  if ! grep -E "$pattern" "$log_file" >/dev/null 2>&1; then
+    fail "expected log entry missing for pattern: $pattern"
+  fi
+}

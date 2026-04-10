@@ -77,7 +77,7 @@ verify_deny_write() {
   if bash -c 'printf "denied write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected macos-ui deny to block a write"
   fi
-  assert_log_contains '"action":"prompt","path":"open O_WRONLY /config","result":2'
+  assert_log_matches '"action":"prompt","path":"open O_WRONLY(\|O_TRUNC)? /config","result":2'
 
   cleanup_run_fixture
   trap - EXIT
@@ -99,7 +99,7 @@ verify_timeout_write() {
   if bash -c 'printf "timed out write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected macos-ui timeout to block a write"
   fi
-  assert_log_contains '"action":"prompt","path":"open O_WRONLY /config","result":3'
+  assert_log_matches '"action":"prompt","path":"open O_WRONLY(\|O_TRUNC)? /config","result":3'
 
   cleanup_run_fixture
   trap - EXIT
