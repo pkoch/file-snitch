@@ -32,7 +32,7 @@ Status:
   - the polling fallback now compares file content as well as metadata, so same-size rewrites still trigger reconciliation
   - foreground `run` now stays alive even when policy is empty
   - daemonized `run` now uses the same reconciler model
-  - reload durable decisions currently happens by restarting affected mount workers on policy change
+  - mount planning still reconciles through worker restarts, but remembered decisions now also take effect inside the live worker on the next access
   - expiring durable decisions now age out at evaluation time without waiting for a policy reload
   - the reconciler rewrites `policy.yml` after pruning expired durable decisions
   - current policy writers now serialize `policy.yml` updates with a sidecar lock to avoid lost updates across requester, daemon, and CLI mutation paths

@@ -51,24 +51,6 @@ wait_for_policy_allow_rule() {
   fail "expected remembered allow rule to be written to policy"
 }
 
-count_mount_events() {
-  grep -F -c "mounting file-snitch: mount=$home_dir/.kube " "$log_file" || true
-}
-
-wait_for_remount_after_policy_write() {
-  local previous_mount_count="$1"
-  local attempts="${2:-50}"
-
-  for _ in $(seq 1 "$attempts"); do
-    if [[ "$(count_mount_events)" -gt "$previous_mount_count" ]]; then
-      return
-    fi
-    sleep 0.1
-  done
-
-  fail "expected policy reload to remount the enrolled parent directory"
-}
-
 wait_for_stable_read_without_prompt() {
   local target_path="$1"
   local attempts="${2:-50}"
@@ -111,10 +93,7 @@ verify_durable_allow_read() {
     "guarded seeded kube" \
     "expected durable allow to permit the first read"
 
-  local mount_count_before=0
-  mount_count_before="$(count_mount_events)"
   wait_for_policy_allow_rule
-  wait_for_remount_after_policy_write "$mount_count_before"
 
   local prompt_count_before=0
   prompt_count_before="$(grep -c '"action":"prompt","path":"open O_RDONLY /config"' "$log_file" || true)"

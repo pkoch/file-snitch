@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const config = @import("config.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const store = @import("store.zig");
@@ -262,6 +263,7 @@ pub const EnrolledParentConfig = struct {
     guarded_entries: []const GuardedEntryConfig,
     guarded_store: store.Backend,
     default_mutation_outcome: policy.Outcome = .deny,
+    policy_path: ?[]const u8 = null,
     policy_rules: []const policy.Rule = &.{},
     prompt_broker: ?prompt.Broker = null,
     status_output_file: ?std.fs.File = null,
@@ -273,7 +275,10 @@ pub const Model = struct {
     mount_path: []u8,
     source_dir: ?std.fs.Dir = null,
     guarded_store: ?store.Backend = null,
+    live_policy_path: ?[]u8 = null,
+    last_policy_marker: ?config.PolicyMarker = null,
     policy_engine: policy.Engine,
+    policy_mutex: std.Thread.Mutex = .{},
     prompt_broker: ?prompt.Broker,
     status_output_file: ?std.fs.File,
     audit_output_file: ?std.fs.File,
@@ -285,28 +290,32 @@ pub const Model = struct {
     root_timestamp: Timestamp,
     output_mutex: std.Thread.Mutex = .{},
 
-    pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Model {
-        var source_dir = try std.fs.openDirAbsolute(config.mount_path, .{ .iterate = true });
+    pub fn initEnrolledParent(allocator: std.mem.Allocator, init_config: EnrolledParentConfig) !Model {
+        var source_dir = try std.fs.openDirAbsolute(init_config.mount_path, .{ .iterate = true });
         errdefer source_dir.close();
 
         var model = Model{
             .allocator = allocator,
-            .mount_path = try allocator.dupe(u8, config.mount_path),
+            .mount_path = try allocator.dupe(u8, init_config.mount_path),
             .source_dir = source_dir,
-            .guarded_store = config.guarded_store,
+            .guarded_store = init_config.guarded_store,
+            .live_policy_path = if (init_config.policy_path) |policy_path|
+                try allocator.dupe(u8, policy_path)
+            else
+                null,
             .policy_engine = try policy.Engine.init(
                 allocator,
-                config.default_mutation_outcome,
-                config.policy_rules,
+                init_config.default_mutation_outcome,
+                init_config.policy_rules,
             ),
-            .prompt_broker = config.prompt_broker,
-            .status_output_file = config.status_output_file,
-            .audit_output_file = config.audit_output_file,
+            .prompt_broker = init_config.prompt_broker,
+            .status_output_file = init_config.status_output_file,
+            .audit_output_file = init_config.audit_output_file,
             .root_timestamp = currentTimestamp(),
         };
         errdefer model.deinit();
 
-        try model.loadGuardedBackingFiles(config.guarded_entries);
+        try model.loadGuardedBackingFiles(init_config.guarded_entries);
         return model;
     }
 
@@ -359,6 +368,9 @@ pub const Model = struct {
         self.policy_engine.deinit();
         if (self.guarded_store) |*guarded_store| {
             guarded_store.deinit(self.allocator);
+        }
+        if (self.live_policy_path) |path| {
+            self.allocator.free(path);
         }
         if (self.source_dir) |*dir| {
             dir.close();
@@ -639,7 +651,14 @@ pub const Model = struct {
             .executable_path = context.executable_path,
         };
 
-        return switch (self.policy_engine.evaluate(request)) {
+        const outcome = blk: {
+            self.policy_mutex.lock();
+            defer self.policy_mutex.unlock();
+            self.refreshPolicyEngineIfNeeded();
+            break :blk self.policy_engine.evaluate(request);
+        };
+
+        return switch (outcome) {
             .allow => 0,
             .deny => blk: {
                 self.recordPolicyAudit(access_class, path, .deny, context, label);
@@ -1877,6 +1896,42 @@ pub const Model = struct {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
         };
+    }
+
+    fn refreshPolicyEngineIfNeeded(self: *Model) void {
+        const policy_path = self.live_policy_path orelse return;
+        const marker = config.currentPolicyMarker(self.allocator, policy_path) catch |err| {
+            std.log.warn("failed to inspect live policy at {s}: {}", .{ policy_path, err });
+            return;
+        };
+        if (self.last_policy_marker) |last_marker| {
+            if (last_marker.eql(marker)) return;
+        }
+
+        var loaded_policy = config.loadFromFile(self.allocator, policy_path) catch |err| {
+            std.log.warn("failed to reload live policy at {s}: {}", .{ policy_path, err });
+            return;
+        };
+        defer loaded_policy.deinit();
+
+        var compiled_rules = loaded_policy.compilePolicyRules(self.allocator) catch |err| {
+            std.log.warn("failed to compile live policy at {s}: {}", .{ policy_path, err });
+            return;
+        };
+        defer compiled_rules.deinit();
+
+        const next_engine = policy.Engine.init(
+            self.allocator,
+            self.policy_engine.default_mutation_outcome,
+            compiled_rules.items,
+        ) catch |err| {
+            std.log.warn("failed to build live policy engine for {s}: {}", .{ policy_path, err });
+            return;
+        };
+
+        self.policy_engine.deinit();
+        self.policy_engine = next_engine;
+        self.last_policy_marker = marker;
     }
 
     fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32, context: AccessContext) void {

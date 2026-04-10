@@ -683,6 +683,7 @@ fn runStaticPolicy(command: RunCommand) !void {
             .guarded_store = guarded_store,
             .run_in_foreground = command.run_in_foreground,
             .default_mutation_outcome = command.default_mutation_outcome,
+            .policy_path = command.policy_path,
             .policy_rules = compiled_rules.items,
             .prompt_broker = if (command.default_mutation_outcome == .prompt)
                 agent.socketBroker(@constCast(&prompt_requester.?))
@@ -953,19 +954,7 @@ fn superviseMountChildren(command: RunCommand, mount_paths: []const []const u8) 
     }
 }
 
-const PolicyMarker = struct {
-    exists: bool,
-    size: u64 = 0,
-    mtime: i128 = 0,
-    content_hash: u64 = 0,
-
-    fn eql(a: PolicyMarker, b: PolicyMarker) bool {
-        return a.exists == b.exists and
-            a.size == b.size and
-            a.mtime == b.mtime and
-            a.content_hash == b.content_hash;
-    }
-};
+const PolicyMarker = config.PolicyMarker;
 
 const PolicyWatchOutcome = enum {
     timeout,
@@ -978,13 +967,17 @@ const LinuxPolicyWatcher = struct {
     filename: []u8,
 
     fn deinit(self: *LinuxPolicyWatcher) void {
-        std.posix.inotify_rm_watch(self.fd, self.watch_descriptor);
-        std.posix.close(self.fd);
+        if (builtin.os.tag == .linux) {
+            std.posix.inotify_rm_watch(self.fd, self.watch_descriptor);
+            std.posix.close(self.fd);
+        }
         allocator.free(self.filename);
         self.* = undefined;
     }
 
     fn wait(self: *LinuxPolicyWatcher, timeout_ns: u64) !PolicyWatchOutcome {
+        if (builtin.os.tag != .linux) unreachable;
+
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = self.fd,
             .events = std.posix.POLL.IN,
@@ -1084,6 +1077,8 @@ const PolicyChangeSource = union(enum) {
 };
 
 fn initLinuxPolicyWatcher(policy_path: []const u8) !PolicyChangeSource {
+    if (builtin.os.tag != .linux) unreachable;
+
     const watch_path = try splitPolicyWatchPath(policy_path);
     defer allocator.free(watch_path.directory_path);
 
@@ -1206,7 +1201,7 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             }
         }
 
-        const marker = currentPolicyMarker(command.policy_path) catch |err| {
+        const marker = config.currentPolicyMarker(allocator, command.policy_path) catch |err| {
             std.log.warn("failed to inspect policy marker at {s}: {}", .{ command.policy_path, err });
             change_sourceWait(&change_source, next_expiration_unix_seconds, &needs_reconcile);
             continue;
@@ -1232,35 +1227,6 @@ fn change_sourceWait(change_source: *PolicyChangeSource, next_expiration_unix_se
             .timeout => {},
         }
     }
-}
-
-pub fn currentPolicyMarker(policy_path: []const u8) !PolicyMarker {
-    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch |err| switch (err) {
-        error.FileNotFound => return .{ .exists = false },
-        else => return err,
-    };
-    defer file.close();
-
-    const stat = try file.stat();
-
-    return .{
-        .exists = true,
-        .size = stat.size,
-        .mtime = stat.mtime,
-        .content_hash = try hashPolicyContents(&file),
-    };
-}
-
-fn hashPolicyContents(file: *std.fs.File) !u64 {
-    try file.seekTo(0);
-    var hasher = std.hash.Wyhash.init(0);
-    var buffer: [4096]u8 = undefined;
-    while (true) {
-        const bytes_read = try file.read(&buffer);
-        if (bytes_read == 0) break;
-        hasher.update(buffer[0..bytes_read]);
-    }
-    return hasher.final();
 }
 
 fn reconcileManagedMountChildren(

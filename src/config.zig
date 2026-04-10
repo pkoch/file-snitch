@@ -69,6 +69,20 @@ pub const PolicyLock = struct {
     }
 };
 
+pub const PolicyMarker = struct {
+    exists: bool,
+    size: u64 = 0,
+    mtime: i128 = 0,
+    content_hash: u64 = 0,
+
+    pub fn eql(a: PolicyMarker, b: PolicyMarker) bool {
+        return a.exists == b.exists and
+            a.size == b.size and
+            a.mtime == b.mtime and
+            a.content_hash == b.content_hash;
+    }
+};
+
 pub const PolicyFile = struct {
     allocator: std.mem.Allocator,
     source_path: []u8,
@@ -380,6 +394,36 @@ pub const PolicyFile = struct {
         }
     }
 };
+
+pub fn currentPolicyMarker(allocator: std.mem.Allocator, policy_path: []const u8) !PolicyMarker {
+    _ = allocator;
+    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch |err| switch (err) {
+        error.FileNotFound => return .{ .exists = false },
+        else => return err,
+    };
+    defer file.close();
+
+    const stat = try file.stat();
+
+    return .{
+        .exists = true,
+        .size = stat.size,
+        .mtime = stat.mtime,
+        .content_hash = try hashPolicyContents(&file),
+    };
+}
+
+fn hashPolicyContents(file: *std.fs.File) !u64 {
+    try file.seekTo(0);
+    var hasher = std.hash.Wyhash.init(0);
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        const bytes_read = try file.read(&buffer);
+        if (bytes_read == 0) break;
+        hasher.update(buffer[0..bytes_read]);
+    }
+    return hasher.final();
+}
 
 const RawEnrollment = struct {
     path: []const u8,

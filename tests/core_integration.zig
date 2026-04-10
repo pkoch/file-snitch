@@ -2,7 +2,6 @@ const std = @import("std");
 const app_src = @import("app_src");
 const builtin = @import("builtin");
 const config = app_src.config;
-const cli = app_src.cli;
 const daemon = app_src.daemon;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
@@ -20,6 +19,11 @@ const note_path = "/renamed-note.txt";
 const blocked_note_path = "/blocked-note.txt";
 const prompted_note_path = "/prompted-note.txt";
 const allowed_prompt_note_path = "/allowed-prompt-note.txt";
+
+const CountingPromptContext = struct {
+    count: usize = 0,
+    response: prompt.Response,
+};
 
 const Fixture = struct {
     allocator: std.mem.Allocator,
@@ -72,9 +76,25 @@ fn initSession(
         .guarded_store = fixture.guardedStore(),
         .run_in_foreground = true,
         .default_mutation_outcome = default_mutation_outcome,
+        .policy_path = null,
         .policy_rules = policy_rules,
         .prompt_broker = prompt_broker,
     });
+}
+
+fn countingPromptBroker(context: *CountingPromptContext) prompt.Broker {
+    return .{
+        .context = context,
+        .resolve_fn = resolveCountingPrompt,
+    };
+}
+
+fn resolveCountingPrompt(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    _ = request;
+    const context = raw_context orelse return .{ .decision = .unavailable };
+    const counting_context: *CountingPromptContext = @ptrCast(@alignCast(context));
+    counting_context.count += 1;
+    return counting_context.response;
 }
 
 fn expectEntriesContain(entries: []const []const u8, expected: []const []const u8) !void {
@@ -723,7 +743,7 @@ test "current policy marker treats missing file as absent" {
     const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-missing-{d}.yml", .{std.time.nanoTimestamp()});
     defer allocator.free(policy_path);
 
-    const marker = try cli.currentPolicyMarker(policy_path);
+    const marker = try config.currentPolicyMarker(allocator, policy_path);
     try std.testing.expect(!marker.exists);
 }
 
@@ -742,7 +762,7 @@ test "current policy marker preserves access errors" {
     try file.chmod(0);
     defer file.chmod(0o600) catch {};
 
-    try std.testing.expectError(error.AccessDenied, cli.currentPolicyMarker(policy_path));
+    try std.testing.expectError(error.AccessDenied, config.currentPolicyMarker(allocator, policy_path));
 }
 
 test "current policy marker hashes policy contents beyond one megabyte" {
@@ -760,7 +780,7 @@ test "current policy marker hashes policy contents beyond one megabyte" {
         @memset(filler, 'a');
         try file.writeAll(filler);
     }
-    const first_marker = try cli.currentPolicyMarker(policy_path);
+    const first_marker = try config.currentPolicyMarker(allocator, policy_path);
 
     {
         var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
@@ -772,12 +792,108 @@ test "current policy marker hashes policy contents beyond one megabyte" {
         filler[filler.len - 1] = 'b';
         try file.writeAll(filler);
     }
-    const second_marker = try cli.currentPolicyMarker(policy_path);
+    const second_marker = try config.currentPolicyMarker(allocator, policy_path);
 
     try std.testing.expect(first_marker.exists);
     try std.testing.expect(second_marker.exists);
     try std.testing.expectEqual(first_marker.size, second_marker.size);
     try std.testing.expect(first_marker.content_hash != second_marker.content_hash);
+}
+
+test "live policy reload suppresses repeated prompt without remount" {
+    const allocator = std.testing.allocator;
+    const run_id = std.time.nanoTimestamp();
+    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-reload-{d}", .{run_id});
+    defer allocator.free(source_parent);
+    const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
+    defer allocator.free(source_guarded_path);
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-{d}.yml", .{run_id});
+    defer allocator.free(policy_path);
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-lock-{d}", .{run_id});
+    defer allocator.free(lock_anchor_path);
+
+    try std.fs.makeDirAbsolute(source_parent);
+    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    defer std.fs.cwd().deleteFile(policy_path) catch {};
+
+    {
+        var file = try std.fs.createFileAbsolute(source_guarded_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("host kubeconfig\n");
+    }
+
+    var policy_file = try config.loadFromFile(allocator, policy_path);
+    defer policy_file.deinit();
+    try policy_file.saveToFile();
+
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "kube-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded kubeconfig\n",
+    });
+
+    var prompt_context = CountingPromptContext{
+        .response = .{
+            .decision = .allow,
+            .remember_kind = .once,
+        },
+    };
+
+    var session = try daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = source_parent,
+        .guarded_entries = &.{.{
+            .relative_path = "config",
+            .object_id = "kube-config",
+            .lock_anchor_path = lock_anchor_path,
+        }},
+        .guarded_store = guarded_store,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .prompt,
+        .policy_path = policy_path,
+        .policy_rules = &.{},
+        .prompt_broker = countingPromptBroker(&prompt_context),
+    });
+    defer session.deinit();
+
+    var buffer: [64]u8 = undefined;
+    const access_context: filesystem.AccessContext = .{
+        .pid = 1234,
+        .uid = 1000,
+        .gid = 1000,
+        .executable_path = "/usr/bin/demo",
+    };
+
+    const first_len = session.state.filesystem.readInto("/config", 0, &buffer, access_context, null);
+    try std.testing.expect(first_len > 0);
+    try std.testing.expectEqualStrings("guarded kubeconfig\n", buffer[0..@intCast(first_len)]);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+
+    {
+        var writable_policy = try config.loadFromFile(allocator, policy_path);
+        defer writable_policy.deinit();
+        try writable_policy.upsertDecision(
+            "/usr/bin/demo",
+            1000,
+            "/config",
+            "read_like",
+            "allow",
+            null,
+        );
+        try writable_policy.saveToFile();
+    }
+
+    const second_len = session.state.filesystem.readInto("/config", 0, &buffer, access_context, null);
+    try std.testing.expect(second_len > 0);
+    try std.testing.expectEqualStrings("guarded kubeconfig\n", buffer[0..@intCast(second_len)]);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
 }
 
 test "enrolled parent shadows the guarded file and passes through siblings" {
@@ -827,6 +943,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
         .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
+        .policy_path = null,
     });
     defer session.deinit();
 
@@ -937,6 +1054,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
+        .policy_path = null,
     });
     defer session.deinit();
 
@@ -1029,6 +1147,7 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
         .guarded_store = guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
+        .policy_path = null,
     });
     defer session.deinit();
 
