@@ -12,10 +12,10 @@ This script:
   - verifies the worktree is clean
   - bumps VERSION
   - rolls CHANGELOG.md
-  - regenerates the stable Homebrew source block for the new release
   - creates one release commit
   - creates an annotated tag
   - pushes the branch and tag to trigger the release workflow
+  - updates the Homebrew tap formula after the release succeeds
 EOF
 }
 
@@ -32,11 +32,24 @@ require_release_tools() {
     echo "error: zig is required" >&2
     exit 1
   }
+  command -v brew >/dev/null 2>&1 || {
+    echo "error: brew is required to locate the Homebrew tap checkout" >&2
+    exit 1
+  }
 
   gh auth status >/dev/null 2>&1 || {
     echo "error: gh must be authenticated before releasing" >&2
     exit 1
   }
+}
+
+resolve_tap_repo() {
+  if [[ -n "${FILE_SNITCH_HOMEBREW_TAP_REPO:-}" ]]; then
+    printf '%s\n' "$FILE_SNITCH_HOMEBREW_TAP_REPO"
+    return 0
+  fi
+
+  brew --repository pkoch/homebrew-tap
 }
 
 if [[ $# -ne 1 ]]; then
@@ -59,6 +72,19 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 require_release_tools
+tap_repo="$(resolve_tap_repo)"
+tap_formula="$tap_repo/Formula/file-snitch.rb"
+
+if [[ ! -f "$tap_formula" ]]; then
+  echo "error: tap formula not found: $tap_formula" >&2
+  echo "hint: clone or create pkoch/homebrew-tap locally, or set FILE_SNITCH_HOMEBREW_TAP_REPO" >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$tap_repo" status --porcelain)" ]]; then
+  echo "error: tap worktree must be clean before releasing: $tap_repo" >&2
+  exit 1
+fi
 
 current_version="$(tr -d '\n' < VERSION)"
 new_version="$(python3 - "$current_version" "$part" <<'PY'
@@ -177,16 +203,10 @@ python3 scripts/build-release-source-tarball.py \
   --output "$tmp_dir/$source_asset"
 source_sha="$(python3 scripts/sha256-file.py "$tmp_dir/$source_asset")"
 
-python3 scripts/update-formula-release.py \
-  --formula Formula/file-snitch.rb \
-  --version "$new_version" \
-  --sha256 "$source_sha" \
-  --source-url "$source_url"
-
 zig build test
 run_host_release_sanity
 
-git add VERSION CHANGELOG.md Formula/file-snitch.rb
+git add VERSION CHANGELOG.md
 git commit -m "Release $new_version"
 release_commit="$(git rev-parse HEAD)"
 git push origin HEAD
@@ -213,3 +233,15 @@ fi
 echo "pushed release commit and tag for $new_version"
 echo "release workflow should publish:"
 echo "  $source_url"
+
+python3 scripts/update-formula-release.py \
+  --formula "$tap_formula" \
+  --version "$new_version" \
+  --sha256 "$source_sha" \
+  --source-url "$source_url"
+
+git -C "$tap_repo" add Formula/file-snitch.rb
+git -C "$tap_repo" commit -m "file-snitch $new_version"
+git -C "$tap_repo" push origin HEAD:main
+echo "updated Homebrew tap formula:"
+echo "  $tap_repo/Formula/file-snitch.rb"

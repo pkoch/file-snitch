@@ -25,7 +25,6 @@ def main() -> None:
         f"{start_marker}"
         f"  url \"{args.source_url}\"\n"
         f"  sha256 \"{args.sha256}\"\n"
-        f"  version \"{args.version}\"\n"
         f"{end_marker}"
     )
     updated = text[:start] + replacement + text[end + len(end_marker) :]

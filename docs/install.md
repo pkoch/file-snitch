@@ -13,21 +13,21 @@ Current assumptions:
 
 ## Homebrew
 
-This repo's [Formula/](../Formula) directory is the Homebrew/Linuxbrew entry
-point.
-
 Install the current tagged release with:
 
 ```bash
-brew tap pkoch/file-snitch https://github.com/pkoch/file-snitch
-brew install pkoch/file-snitch/file-snitch
+brew install pkoch/tap/file-snitch
 ```
 
 If you explicitly want unreleased `master` changes instead, use:
 
 ```bash
-brew install --HEAD --build-from-source pkoch/file-snitch/file-snitch
+brew install --HEAD --build-from-source pkoch/tap/file-snitch
 ```
+
+The Homebrew formula now lives in:
+- `pkoch/homebrew-tap`
+- https://github.com/pkoch/homebrew-tap
 
 The formula installs:
 - `file-snitch`

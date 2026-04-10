@@ -98,11 +98,12 @@ Use the templates in `.github/ISSUE_TEMPLATE/`.
 
 ## Packaging Reality
 
-The current packaging story is still `HEAD`-shaped:
-- Homebrew/Linuxbrew formula in `Formula/`
+The current packaging story is:
+- tagged release artifacts from this repo
+- Homebrew/Linuxbrew formula in `pkoch/homebrew-tap`
 - per-user service helpers in `scripts/`
 - FUSE remains an external system prerequisite
 - `pass` is the only guarded-object backend today
 
-Do not document or imply a stronger packaging story than the repo actually
-provides.
+Do not document or imply bottles or package-manager integrations that do not
+exist yet.

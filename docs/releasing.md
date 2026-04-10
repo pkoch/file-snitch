@@ -14,6 +14,8 @@ The intended release shape is:
 - one release commit that bumps versioned metadata
 - one annotated tag
 - one GitHub Actions workflow that rebuilds and publishes the release artifacts
+- one follow-up tap commit in `pkoch/homebrew-tap` that advances the formula to
+  the new tagged source tarball
 
 ## Canonical release artifacts
 
@@ -29,6 +31,10 @@ Those GitHub Release assets are the canonical release artifacts.
 Homebrew should consume the tagged source tarball, not a branch tarball.
 Other package managers should prefer the published release artifacts or
 `release-manifest.json` over ad hoc branch snapshots.
+
+The Homebrew formula itself now lives in:
+- `pkoch/homebrew-tap`
+- https://github.com/pkoch/homebrew-tap
 
 ## Deterministic release inputs
 
@@ -69,15 +75,17 @@ Or:
 That script:
 1. bumps [VERSION](../VERSION)
 2. rolls [CHANGELOG.md](../CHANGELOG.md)
-3. regenerates the stable Homebrew source block in [Formula/file-snitch.rb](../Formula/file-snitch.rb)
-4. runs `zig build test`
-5. creates one release commit
+3. runs `zig build test`
+4. creates one release commit
+5. pushes that commit and waits for `CI`
 6. creates an annotated tag
-7. pushes the branch and tag to trigger the release workflow
+7. pushes the tag and waits for the `Release` workflow
+8. updates and pushes the formula in `pkoch/homebrew-tap`
 
 ## What the script assumes
 
 - the worktree is clean
+- the local `pkoch/homebrew-tap` checkout exists and is clean
 - the current branch is the branch you actually want to release from
 - `origin` is the correct push target
 - GitHub push access is configured already
@@ -105,7 +113,7 @@ That means public-facing changes should be added to `Unreleased` as they land.
 ## Packaging follow-through
 
 The source release tarball is the stable input for:
-- Homebrew/Linuxbrew
+- Homebrew/Linuxbrew via `pkoch/homebrew-tap`
 - future `.deb` packaging
 - any other downstream packaging that wants a fixed release source
 

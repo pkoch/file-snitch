@@ -193,7 +193,7 @@ FUSE discovery:
 ## Install notes
 
 Current packaging and release notes live at:
-- [Formula/file-snitch.rb](./Formula/file-snitch.rb)
+- [pkoch/homebrew-tap](https://github.com/pkoch/homebrew-tap)
 - [docs/install.md](./docs/install.md)
 - [docs/releasing.md](./docs/releasing.md)
 
@@ -201,8 +201,8 @@ Formal tagged releases publish the canonical source and binary artifacts on
 GitHub Releases, with Homebrew consuming the tagged source tarball. Those
 releases also publish `SHA256SUMS` and `release-manifest.json` so downstream
 packaging can follow the same pinned source, toolchain, and SDK inputs.
-Installing unreleased `master` builds remains available through the formula's
-`--HEAD` path when needed.
+Installing unreleased `master` builds remains available through the tap
+formula's `--HEAD` path when needed.
 
 ## Verification
 
