@@ -66,6 +66,12 @@ pub const SocketPathError = error{
     InvalidSocketPath,
 };
 
+const ConnectionWorkerContext = struct {
+    allocator: std.mem.Allocator,
+    service_context: *AgentServiceContext,
+    stream: net.Stream,
+};
+
 pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_SOCKET")) |value| {
         return value;
@@ -166,13 +172,26 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
             error.ConnectionAborted, error.WouldBlock => continue,
             else => return err,
         };
-        var stream = net.Stream{ .handle = accepted };
-        defer stream.close();
-
-        handleConnection(context, stream) catch |err| {
-            std.log.warn("agent connection failed: {}", .{err});
+        const worker_context = try context.allocator.create(ConnectionWorkerContext);
+        errdefer context.allocator.destroy(worker_context);
+        worker_context.* = .{
+            .allocator = context.allocator,
+            .service_context = context,
+            .stream = .{ .handle = accepted },
         };
+
+        const thread = try std.Thread.spawn(.{}, runConnectionWorker, .{worker_context});
+        thread.detach();
     }
+}
+
+fn runConnectionWorker(worker_context: *ConnectionWorkerContext) void {
+    defer worker_context.stream.close();
+    defer worker_context.allocator.destroy(worker_context);
+
+    handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
+        std.log.warn("agent connection failed: {}", .{err});
+    };
 }
 
 fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
@@ -1247,6 +1266,117 @@ test "stale socket cleanup preserves live sockets" {
 
     try std.testing.expectError(error.SocketPathInUse, removeSocketFileIfStale(path));
     _ = try std.fs.cwd().statFile(path);
+}
+
+const BlockingFrontendContext = struct {
+    first_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    release_first: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    call_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+};
+
+fn resolveBlockingFrontend(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    _ = request;
+    const context = raw_context orelse return .{ .decision = .unavailable };
+    const blocking_context: *BlockingFrontendContext = @ptrCast(@alignCast(context));
+    const call_index = blocking_context.call_count.fetchAdd(1, .acq_rel);
+    if (call_index == 0) {
+        blocking_context.first_started.store(true, .release);
+        while (!blocking_context.release_first.load(.acquire)) {
+            std.Thread.sleep(5 * std.time.ns_per_ms);
+        }
+    }
+    return .{ .decision = .allow, .remember_kind = .once };
+}
+
+fn runRequesterThread(done: *std.atomic.Value(bool), context: *RequesterContext, request: prompt.Request) void {
+    _ = resolveViaAgent(context, request) catch {};
+    done.store(true, .release);
+}
+
+fn runAgentServiceThread(context: *AgentServiceContext) void {
+    runAgentService(context) catch {};
+}
+
+fn waitForPathToExist(path: []const u8) !void {
+    var attempts: usize = 0;
+    while (attempts < 200) : (attempts += 1) {
+        if (std.fs.cwd().statFile(path)) |_| return else |_| {}
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+    return error.FileNotFound;
+}
+
+test "agent accepts later connections while one prompt is blocked" {
+    const page_allocator = std.heap.page_allocator;
+    const socket_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-concurrency-{d}.sock", .{std.time.nanoTimestamp()});
+
+    const blocking_context = try page_allocator.create(BlockingFrontendContext);
+    blocking_context.* = .{};
+
+    const service_context = try page_allocator.create(AgentServiceContext);
+    service_context.* = .{
+        .allocator = page_allocator,
+        .socket_path = socket_path,
+        .frontend = .{
+            .context = blocking_context,
+            .resolve_fn = resolveBlockingFrontend,
+        },
+    };
+
+    const service_thread = try std.Thread.spawn(.{}, runAgentServiceThread, .{service_context});
+    service_thread.detach();
+    try waitForPathToExist(socket_path);
+
+    const request = prompt.Request{
+        .path = "/tmp/demo-secret",
+        .access_class = .read,
+        .can_remember = false,
+        .pid = 1234,
+        .uid = 1000,
+        .gid = 1000,
+        .executable_path = "/usr/bin/demo",
+    };
+
+    const policy_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{std.time.nanoTimestamp()});
+    const first_done = try page_allocator.create(std.atomic.Value(bool));
+    first_done.* = std.atomic.Value(bool).init(false);
+    const second_done = try page_allocator.create(std.atomic.Value(bool));
+    second_done.* = std.atomic.Value(bool).init(false);
+
+    const first_requester = try page_allocator.create(RequesterContext);
+    first_requester.* = .{
+        .allocator = page_allocator,
+        .socket_path = socket_path,
+        .policy_path = policy_path,
+        .timeout_ms = 1_000,
+    };
+    const second_requester = try page_allocator.create(RequesterContext);
+    second_requester.* = first_requester.*;
+
+    const first_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ first_done, first_requester, request });
+    defer first_thread.join();
+
+    var wait_attempts: usize = 0;
+    while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(blocking_context.first_started.load(.acquire));
+
+    const second_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ second_done, second_requester, request });
+    defer second_thread.join();
+
+    var second_completed = false;
+    wait_attempts = 0;
+    while (wait_attempts < 200) : (wait_attempts += 1) {
+        if (second_done.load(.acquire)) {
+            second_completed = true;
+            break;
+        }
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(second_completed);
+
+    blocking_context.release_first.store(true, .release);
 }
 
 test "apple script escaping covers control characters" {

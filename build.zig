@@ -94,6 +94,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    agent_test_module.addImport("yaml", yaml_module);
     const agent_tests = b.addTest(.{
         .root_module = agent_test_module,
     });

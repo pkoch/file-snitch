@@ -257,6 +257,7 @@ Prompt notes:
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
 - `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
 - the agent now refuses to unlink an active socket or any non-socket file at the configured socket path
+- the agent now handles accepted socket connections independently, so one blocked prompt no longer head-of-line blocks later requests at the socket boundary
 - the default frontend is `terminal-pinentry`
 - `--frontend terminal-pinentry` keeps the existing terminal behavior
 - `--frontend macos-ui` uses `osascript` to show a native macOS dialog
