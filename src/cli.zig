@@ -49,6 +49,16 @@ pub fn main() !void {
             std.debug.print("hint: run `file-snitch doctor` and inspect the affected `pass:file-snitch/...` entry before reenrolling\n", .{});
             std.process.exit(1);
         },
+        error.SocketPathInUse => {
+            std.debug.print("error: another file-snitch agent is already using the configured socket path\n", .{});
+            std.debug.print("hint: stop the existing agent or choose a different `--socket` path\n", .{});
+            std.process.exit(1);
+        },
+        error.InvalidSocketPath => {
+            std.debug.print("error: the configured agent socket path points at a non-socket file\n", .{});
+            std.debug.print("hint: remove or rename that file, or choose a different `--socket` path\n", .{});
+            std.process.exit(1);
+        },
         else => return err,
     };
 }

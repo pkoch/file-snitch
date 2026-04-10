@@ -61,6 +61,11 @@ pub const AgentServiceContext = struct {
     frontend: Frontend,
 };
 
+pub const SocketPathError = error{
+    SocketPathInUse,
+    InvalidSocketPath,
+};
+
 pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_SOCKET")) |value| {
         return value;
@@ -146,10 +151,7 @@ pub fn defaultZenityPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 
 pub fn runAgentService(context: *AgentServiceContext) !void {
     try ensureParentDirectory(context.socket_path);
-    removeStaleSocketFile(context.socket_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
+    try removeSocketFileIfStale(context.socket_path);
 
     const address = try net.Address.initUnix(context.socket_path);
     const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
@@ -900,6 +902,36 @@ fn ensureParentDirectory(path: []const u8) !void {
     try std.fs.cwd().makePath(parent_dir);
 }
 
+fn removeSocketFileIfStale(path: []const u8) !void {
+    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    if (stat.kind != .unix_domain_socket) return error.InvalidSocketPath;
+
+    var stream = net.connectUnixSocket(path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.ConnectionRefused, error.ConnectionResetByPeer => {
+            try removeStaleSocketFile(path);
+            return;
+        },
+        error.AddressInUse,
+        error.AccessDenied,
+        error.PermissionDenied,
+        error.ConnectionTimedOut,
+        error.WouldBlock,
+        error.NetworkUnreachable,
+        error.AddressNotAvailable,
+        error.AddressFamilyNotSupported,
+        error.SystemResources,
+        error.ConnectionPending,
+        => return error.SocketPathInUse,
+        else => return err,
+    };
+    stream.close();
+    return error.SocketPathInUse;
+}
+
 fn removeStaleSocketFile(path: []const u8) !void {
     try std.fs.cwd().deleteFile(path);
 }
@@ -1187,6 +1219,34 @@ test "parse linux ui response accepts known exit codes" {
     const remembered = try parseLinuxUiResponse(.{ .Exited = 0 }, "Always deny");
     try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
     try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
+}
+
+test "stale socket cleanup rejects regular files" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(path);
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    file.close();
+
+    try std.testing.expectError(error.InvalidSocketPath, removeSocketFileIfStale(path));
+}
+
+test "stale socket cleanup preserves live sockets" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{std.time.nanoTimestamp()});
+    defer allocator.free(path);
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const address = try net.Address.initUnix(path);
+    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+    defer std.posix.close(listener);
+    try std.posix.bind(listener, &address.any, address.getOsSockLen());
+    try std.posix.listen(listener, 1);
+
+    try std.testing.expectError(error.SocketPathInUse, removeSocketFileIfStale(path));
+    _ = try std.fs.cwd().statFile(path);
 }
 
 test "apple script escaping covers control characters" {

@@ -255,6 +255,7 @@ Prompt notes:
 - the polling fallback now compares `policy.yml` content as well as file metadata, so same-size rewrites do not rely on mtime luck
 - `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
 - `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
+- the agent now refuses to unlink an active socket or any non-socket file at the configured socket path
 - the default frontend is `terminal-pinentry`
 - `--frontend terminal-pinentry` keeps the existing terminal behavior
 - `--frontend macos-ui` uses `osascript` to show a native macOS dialog
