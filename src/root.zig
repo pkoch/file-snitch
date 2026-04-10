@@ -7,6 +7,7 @@ pub const config = @import("config.zig");
 pub const daemon = @import("daemon.zig");
 pub const enrollment = @import("enrollment.zig");
 pub const agent = @import("agent.zig");
+pub const cli = @import("cli.zig");
 pub const filesystem = @import("filesystem.zig");
 pub const policy = @import("policy.zig");
 pub const prompt = @import("prompt.zig");

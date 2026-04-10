@@ -1,6 +1,8 @@
 const std = @import("std");
 const app_src = @import("app_src");
+const builtin = @import("builtin");
 const config = app_src.config;
+const cli = app_src.cli;
 const daemon = app_src.daemon;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
@@ -714,6 +716,33 @@ test "policy lock prevents a second concurrent writer" {
     defer second_file.close();
 
     try std.testing.expect(!(try second_file.tryLock(.exclusive)));
+}
+
+test "current policy marker treats missing file as absent" {
+    const allocator = std.testing.allocator;
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-missing-{d}.yml", .{std.time.nanoTimestamp()});
+    defer allocator.free(policy_path);
+
+    const marker = try cli.currentPolicyMarker(policy_path);
+    try std.testing.expect(!marker.exists);
+}
+
+test "current policy marker preserves access errors" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-denied-{d}.yml", .{std.time.nanoTimestamp()});
+    defer allocator.free(policy_path);
+    defer std.fs.cwd().deleteFile(policy_path) catch {};
+
+    var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll("version: 1\nenrollments: []\ndecisions: []\n");
+
+    try file.chmod(0);
+    defer file.chmod(0o600) catch {};
+
+    try std.testing.expectError(error.AccessDenied, cli.currentPolicyMarker(policy_path));
 }
 
 test "enrolled parent shadows the guarded file and passes through siblings" {

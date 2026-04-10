@@ -1206,7 +1206,11 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             }
         }
 
-        const marker = currentPolicyMarker(command.policy_path);
+        const marker = currentPolicyMarker(command.policy_path) catch |err| {
+            std.log.warn("failed to inspect policy marker at {s}: {}", .{ command.policy_path, err });
+            change_sourceWait(&change_source, next_expiration_unix_seconds, &needs_reconcile);
+            continue;
+        };
         if (needs_reconcile or last_marker == null or !last_marker.?.eql(marker)) {
             next_expiration_unix_seconds = try reconcileManagedMountChildren(command, marker, &children);
             last_marker = marker;
@@ -1217,34 +1221,39 @@ fn reconcilePolicyInForeground(command: RunCommand) !void {
             needs_reconcile = true;
         }
 
-        if (!needs_reconcile) {
-            switch (change_source.wait(reconcileSleepNanos(next_expiration_unix_seconds))) {
-                .changed => needs_reconcile = true,
-                .timeout => {},
-            }
+        change_sourceWait(&change_source, next_expiration_unix_seconds, &needs_reconcile);
+    }
+}
+
+fn change_sourceWait(change_source: *PolicyChangeSource, next_expiration_unix_seconds: ?i64, needs_reconcile: *bool) void {
+    if (!needs_reconcile.*) {
+        switch (change_source.wait(reconcileSleepNanos(next_expiration_unix_seconds))) {
+            .changed => needs_reconcile.* = true,
+            .timeout => {},
         }
     }
 }
 
-fn currentPolicyMarker(policy_path: []const u8) PolicyMarker {
-    const stat = std.fs.cwd().statFile(policy_path) catch |err| switch (err) {
+pub fn currentPolicyMarker(policy_path: []const u8) !PolicyMarker {
+    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch |err| switch (err) {
         error.FileNotFound => return .{ .exists = false },
-        else => return .{ .exists = false },
+        else => return err,
     };
+    defer file.close();
+
+    const stat = try file.stat();
 
     return .{
         .exists = true,
         .size = stat.size,
         .mtime = stat.mtime,
-        .content_hash = hashPolicyContents(policy_path),
+        .content_hash = try hashPolicyContents(&file),
     };
 }
 
-fn hashPolicyContents(policy_path: []const u8) u64 {
-    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch return 0;
-    defer file.close();
-
-    const contents = file.readToEndAlloc(allocator, 1024 * 1024) catch return 0;
+fn hashPolicyContents(file: *std.fs.File) !u64 {
+    try file.seekTo(0);
+    const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(contents);
 
     return std.hash.Wyhash.hash(0, contents);
