@@ -91,3 +91,5 @@ jobs:
       - run: ./tests/smoke/run-multi-mount.sh
       - run: ./tests/smoke/run-prompt-linux-ui.sh
       - run: ./tests/smoke/run-prompt-macos-ui.sh
+      - run: ./tests/smoke/run-prompt-single.sh
+      - run: ./tests/smoke/run-prompt-remembered-decision.sh

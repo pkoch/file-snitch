@@ -50,6 +50,7 @@ Run the smoke suite:
 ./tests/smoke/run-prompt-linux-ui.sh
 ./tests/smoke/run-prompt-macos-ui.sh
 ./tests/smoke/run-prompt-single.sh
+./tests/smoke/run-prompt-remembered-decision.sh
 ./tests/smoke/user-service-rendering.sh
 ```
 

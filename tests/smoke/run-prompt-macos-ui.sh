@@ -32,7 +32,7 @@ queue_fake_macos_ui_decisions() {
 start_macos_ui_prompt_run() {
   mount_paths=("$home_dir/.kube")
   agent_frontend_args=(--frontend macos-ui)
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=2000 start_file_snitch_agent --foreground
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=2000 start_file_snitch_agent --daemon
   FILE_SNITCH_PROMPT_TIMEOUT_MS=2000 start_file_snitch_run prompt --daemon
 }
 
