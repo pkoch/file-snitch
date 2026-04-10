@@ -1294,8 +1294,51 @@ fn runRequesterThread(done: *std.atomic.Value(bool), context: *RequesterContext,
     done.store(true, .release);
 }
 
-fn runAgentServiceThread(context: *AgentServiceContext) void {
-    runAgentService(context) catch {};
+fn runTestConnectionWorker(worker_context: *ConnectionWorkerContext) void {
+    defer worker_context.allocator.destroy(worker_context);
+
+    handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
+        std.log.warn("test agent connection failed: {}", .{err});
+    };
+}
+
+const TestAgentServiceContext = struct {
+    service_context: *AgentServiceContext,
+};
+
+fn runTestAgentServiceThread(context: *TestAgentServiceContext) void {
+    runTestAgentService(context) catch {};
+}
+
+fn runTestAgentService(context: *TestAgentServiceContext) !void {
+    const service_context = context.service_context;
+
+    try ensureParentDirectory(service_context.socket_path);
+    try removeSocketFileIfStale(service_context.socket_path);
+
+    const address = try net.Address.initUnix(service_context.socket_path);
+    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+    defer std.posix.close(listener);
+    defer removeStaleSocketFile(service_context.socket_path) catch {};
+
+    try std.posix.bind(listener, &address.any, address.getOsSockLen());
+    try std.posix.listen(listener, 16);
+
+    const first_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
+    const first_worker_context = try service_context.allocator.create(ConnectionWorkerContext);
+    errdefer service_context.allocator.destroy(first_worker_context);
+    first_worker_context.* = .{
+        .allocator = service_context.allocator,
+        .service_context = service_context,
+        .stream = .{ .handle = first_accepted },
+    };
+    const first_worker = try std.Thread.spawn(.{}, runTestConnectionWorker, .{first_worker_context});
+    defer first_worker.join();
+
+    const second_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
+    var second_stream: net.Stream = .{ .handle = second_accepted };
+    defer second_stream.close();
+    try handleConnection(service_context, second_stream);
 }
 
 fn waitForPathToExist(path: []const u8) !void {
@@ -1324,8 +1367,13 @@ test "agent accepts later connections while one prompt is blocked" {
         },
     };
 
-    const service_thread = try std.Thread.spawn(.{}, runAgentServiceThread, .{service_context});
-    service_thread.detach();
+    const test_service_context = try page_allocator.create(TestAgentServiceContext);
+    test_service_context.* = .{
+        .service_context = service_context,
+    };
+
+    const service_thread = try std.Thread.spawn(.{}, runTestAgentServiceThread, .{test_service_context});
+    defer service_thread.join();
     try waitForPathToExist(socket_path);
 
     const request = prompt.Request{
