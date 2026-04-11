@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-11
+
+### Changed
+
+- Changed `file-snitch run` and `file-snitch agent` to stay in the foreground
+  and rely on the caller or service manager for supervision.
+- Changed the packaged `launchd` and `systemd --user` service definitions and
+  helper scripts to invoke `file-snitch` without execution-mode flags.
+
+### Removed
+
+- Removed the `--foreground` and `--daemon` execution-mode flags from
+  `file-snitch run` and `file-snitch agent`.
+
+### Fixed
+
+- Fixed the smoke-test harness to supervise prompt-agent processes without
+  leaking orphaned `file-snitch` children during teardown.
+
 ## [0.1.12] - 2026-04-10
 
 ## [0.1.11] - 2026-04-10
