@@ -153,10 +153,10 @@ setup_tmux_session() {
   tmux select-pane -t "$daemon_pane" -T "daemon"
   tmux select-pane -t "$user_pane" -T "user"
 
-  pane_send "$agent_pane" "source '$env_file'; export PS1='[agent]$ '; clear; printf 'file-snitch agent --foreground\\n\\n'; fs agent --foreground"
+  pane_send "$agent_pane" "source '$env_file'; export PS1='[agent]$ '; clear; printf 'file-snitch agent\\n\\n'; fs agent"
   wait_for_agent_socket
 
-  pane_send "$daemon_pane" "source '$env_file'; export PS1='[daemon]$ '; clear; printf 'file-snitch run prompt --foreground\\n\\n'; fs run prompt --foreground"
+  pane_send "$daemon_pane" "source '$env_file'; export PS1='[daemon]$ '; clear; printf 'file-snitch run prompt\\n\\n'; fs run prompt"
 
   pane_send "$user_pane" "source '$env_file'; export PS1='[user]$ '; clear; printf 'File Snitch tmux demo\\npolicy: $policy_file\\n\\n'"
   tmux select-pane -t "$user_pane"

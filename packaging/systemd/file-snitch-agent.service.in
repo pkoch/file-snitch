@@ -5,7 +5,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart={{FILE_SNITCH_BIN}} agent --frontend linux-ui --foreground
+ExecStart={{FILE_SNITCH_BIN}} agent --frontend linux-ui
 Restart=on-failure
 RestartSec=2
 

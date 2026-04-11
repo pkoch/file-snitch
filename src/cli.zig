@@ -26,10 +26,6 @@ pub fn main() !void {
 
     run(args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
-        error.DaemonizeFailed => {
-            std.debug.print("error: failed to daemonize the background process\n", .{});
-            std.process.exit(1);
-        },
         error.StoreUnavailable => {
             std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
             std.debug.print("hint: `file-snitch doctor` will also report the detected pass command and runtime state\n", .{});
@@ -113,7 +109,6 @@ const AgentCommand = struct {
     socket_path: []const u8,
     frontend_kind: agent.FrontendKind,
     tty_path: ?[]const u8 = null,
-    run_in_foreground: bool,
 
     fn deinit(self: AgentCommand, alloc: std.mem.Allocator) void {
         alloc.free(self.socket_path);
@@ -127,7 +122,6 @@ const RunCommand = struct {
     policy_path: []const u8,
     default_mutation_outcome: policy.Outcome,
     prompt_timeout_ms: u32,
-    run_in_foreground: bool,
     status_fifo_path: ?[]const u8 = null,
     mount_path_filter: ?[]const u8 = null,
 
@@ -215,29 +209,17 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
         .policy_path = policy_path,
         .default_mutation_outcome = .deny,
         .prompt_timeout_ms = try loadPromptTimeoutMs(),
-        .run_in_foreground = undefined,
         .status_fifo_path = try loadOptionalInternalPath(internal_status_fifo_env),
         .mount_path_filter = try loadOptionalInternalPath(internal_mount_path_env),
     };
     errdefer command.deinit(allocator);
 
-    var selected_execution_mode: ?bool = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
 
         if (parseOutcome(arg)) |outcome| {
             command.default_mutation_outcome = outcome;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--foreground")) {
-            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
-            selected_execution_mode = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--daemon")) {
-            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
-            selected_execution_mode = false;
             continue;
         }
         if (std.mem.eql(u8, arg, "--policy")) {
@@ -254,11 +236,6 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
         return error.InvalidUsage;
     }
 
-    if (selected_execution_mode == null) {
-        return invalidUsage("error: `run` requires exactly one of --foreground or --daemon\n", .{});
-    }
-    command.run_in_foreground = selected_execution_mode.?;
-
     return command;
 }
 
@@ -270,25 +247,12 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
         .socket_path = socket_path,
         .frontend_kind = .terminal_pinentry,
         .tty_path = null,
-        .run_in_foreground = undefined,
     };
     errdefer command.deinit(allocator);
 
-    var selected_execution_mode: ?bool = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
-
-        if (std.mem.eql(u8, arg, "--foreground")) {
-            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
-            selected_execution_mode = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--daemon")) {
-            if (selected_execution_mode != null) return invalidUsage("error: choose either --foreground or --daemon\n", .{});
-            selected_execution_mode = false;
-            continue;
-        }
         if (std.mem.eql(u8, arg, "--socket")) {
             index += 1;
             if (index >= args.len) {
@@ -325,12 +289,6 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
         printUsage();
         return error.InvalidUsage;
     }
-
-    if (selected_execution_mode == null) {
-        return invalidUsage("error: `agent` requires exactly one of --foreground or --daemon\n", .{});
-    }
-
-    command.run_in_foreground = selected_execution_mode.?;
     return command;
 }
 
@@ -454,15 +412,7 @@ fn parseOutcome(arg: []const u8) ?policy.Outcome {
 }
 
 fn runWithPolicy(command: RunCommand) !void {
-    if (command.mount_path_filter == null and !command.run_in_foreground) {
-        var foreground_command = command;
-        foreground_command.run_in_foreground = true;
-        try daemonizeSupervisor();
-        try reconcilePolicyInForeground(foreground_command);
-        return;
-    }
-
-    if (command.mount_path_filter == null and command.run_in_foreground) {
+    if (command.mount_path_filter == null) {
         try reconcilePolicyInForeground(command);
         return;
     }
@@ -476,9 +426,6 @@ fn runAgent(command: AgentCommand) !void {
         .timeout_ms = timeout_ms,
     };
 
-    var derived_tty_path: ?[]const u8 = null;
-    defer if (derived_tty_path) |path| allocator.free(path);
-
     var derived_osascript_path: ?[]const u8 = null;
     defer if (derived_osascript_path) |path| allocator.free(path);
     var derived_zenity_path: ?[]const u8 = null;
@@ -489,19 +436,7 @@ fn runAgent(command: AgentCommand) !void {
     var linux_ui_context: ?agent.LinuxUiContext = null;
     const frontend = switch (command.frontend_kind) {
         .terminal_pinentry => blk: {
-            const tty_path = if (command.tty_path) |path|
-                path
-            else if (command.run_in_foreground)
-                null
-            else tty: {
-                derived_tty_path = agent.defaultTerminalPathAlloc(allocator) catch {
-                    return invalidUsage(
-                        "error: `agent --daemon --frontend terminal-pinentry` requires --tty <path> or a startup TTY it can capture\n",
-                        .{},
-                    );
-                };
-                break :tty derived_tty_path.?;
-            };
+            const tty_path = if (command.tty_path) |path| path else null;
 
             terminal_pinentry_context = .{
                 .allocator = allocator,
@@ -551,20 +486,7 @@ fn runAgent(command: AgentCommand) !void {
         .frontend = frontend,
     };
 
-    if (!command.run_in_foreground) {
-        try daemonizeSupervisor();
-    }
-
     try agent.runAgentService(&service_context);
-}
-
-fn daemonizeSupervisor() !void {
-    const child_pid = std.posix.fork() catch return error.DaemonizeFailed;
-    if (child_pid != 0) {
-        std.process.exit(0);
-    }
-
-    _ = std.posix.setsid() catch return error.DaemonizeFailed;
 }
 
 fn runStaticPolicy(command: RunCommand) !void {
@@ -601,14 +523,6 @@ fn runStaticPolicy(command: RunCommand) !void {
     if (mount_plan.paths.len == 0) {
         std.debug.print("file-snitch: no planned mounts derived from {s}; nothing to do\n", .{loaded_policy.source_path});
         return;
-    }
-
-    if (!command.run_in_foreground and mount_plan.paths.len != 1) {
-        std.debug.print(
-            "error: multi-mount `run --daemon` is not supported yet; got {d} planned mounts in {s}\n",
-            .{ mount_plan.paths.len, loaded_policy.source_path },
-        );
-        return error.InvalidUsage;
     }
 
     if (mount_plan.paths.len > 1 and command.mount_path_filter == null) {
@@ -687,7 +601,7 @@ fn runStaticPolicy(command: RunCommand) !void {
             .mount_path = planned_mounts[0].mount_path,
             .guarded_entries = planned_mounts[0].guarded_entries,
             .guarded_store = guarded_store,
-            .run_in_foreground = command.run_in_foreground,
+            .run_in_foreground = true,
             .default_mutation_outcome = command.default_mutation_outcome,
             .policy_path = command.policy_path,
             .policy_rule_views = compiled_rule_views.items,
@@ -881,13 +795,12 @@ fn superviseMountChildren(command: RunCommand, mount_paths: []const []const u8) 
     }
 
     for (mount_paths, 0..) |mount_path, index| {
-        const argv = try allocator.alloc([]const u8, 6);
+        const argv = try allocator.alloc([]const u8, 5);
         argv[0] = exe_path;
         argv[1] = "run";
         argv[2] = outcomeArg(command.default_mutation_outcome);
-        argv[3] = "--foreground";
-        argv[4] = "--policy";
-        argv[5] = command.policy_path;
+        argv[3] = "--policy";
+        argv[4] = command.policy_path;
 
         var child = std.process.Child.init(argv, allocator);
         child.stdin_behavior = .Inherit;
@@ -1341,15 +1254,14 @@ fn spawnManagedMountChild(
     const mount_path_owned = try allocator.dupe(u8, mount_path);
     errdefer allocator.free(mount_path_owned);
 
-    const argv = try allocator.alloc([]const u8, 6);
+    const argv = try allocator.alloc([]const u8, 5);
     errdefer allocator.free(argv);
 
     argv[0] = exe_path;
     argv[1] = "run";
     argv[2] = outcomeArg(command.default_mutation_outcome);
-    argv[3] = "--foreground";
-    argv[4] = "--policy";
-    argv[5] = command.policy_path;
+    argv[3] = "--policy";
+    argv[4] = command.policy_path;
 
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Inherit;
@@ -1581,8 +1493,8 @@ fn printUsage() void {
     std.debug.print(
         \\usage:
         \\  file-snitch version
-        \\  file-snitch agent (--daemon|--foreground) [--socket <path>] [--frontend <terminal-pinentry|macos-ui|linux-ui>] [--tty <path>]
-        \\  file-snitch run [allow|deny|prompt] (--daemon|--foreground) [--policy <path>]
+        \\  file-snitch agent [--socket <path>] [--frontend <terminal-pinentry|macos-ui|linux-ui>] [--tty <path>]
+        \\  file-snitch run [allow|deny|prompt] [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
         \\  file-snitch unenroll <path> [--policy <path>]
         \\  file-snitch status [--policy <path>]
@@ -1591,12 +1503,10 @@ fn printUsage() void {
         \\notes:
         \\  - `agent` starts the local agent service on a Unix socket
         \\  - `agent` defaults to the `terminal-pinentry` frontend
-        \\  - `agent --frontend terminal-pinentry --foreground` uses inherited stdio when no --tty is provided
-        \\  - `agent --frontend terminal-pinentry --daemon` requires --tty <path> or a startup TTY it can capture
+        \\  - `agent --frontend terminal-pinentry` uses inherited stdio when no --tty is provided
         \\  - `agent --frontend macos-ui` uses `osascript` and does not accept --tty
         \\  - `agent --frontend linux-ui` uses `zenity` and does not accept --tty
-        \\  - `run` is the long-running daemon entrypoint and requires explicit foreground/background mode
-        \\  - foreground and daemon mode now share the same policy-reconciliation model
+        \\  - `run` is the long-running policy reconciler entrypoint
         \\  - `run` stays alive on an empty policy and reconciles mount workers as `policy.yml` changes
         \\  - prompt mode now talks to the local agent socket instead of reading from the daemon's stdin
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`

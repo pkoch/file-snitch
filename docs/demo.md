@@ -35,7 +35,7 @@ What the script demonstrates:
 - `enroll` evacuates plaintext from its original path
 - the guarded object lands in the configured store backend
 - `doctor --export-debug-dossier` writes a shareable report without secret file contents
-- `run prompt --foreground` projects the guarded file back into place through a visible agent prompt
+- `run prompt` projects the guarded file back into place through a visible agent prompt
 - unguarded siblings under the same parent directory still passthrough normally
 - stopping `run` hides the guarded path again
 - `unenroll` restores the guarded file

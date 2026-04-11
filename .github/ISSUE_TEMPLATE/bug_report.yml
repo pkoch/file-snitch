@@ -17,8 +17,8 @@ body:
       label: Reproduction
       description: List the exact commands or actions needed to reproduce the issue.
       placeholder: |
-        1. file-snitch agent --daemon --tty ...
-        2. file-snitch run prompt --daemon
+        1. file-snitch agent --tty ...
+        2. file-snitch run prompt
         3. ...
     validations:
       required: true

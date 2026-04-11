@@ -33,8 +33,8 @@ start_prompt_run() {
   exec 3<>"$prompt_fifo"
   agent_input_fd=3
   mount_paths=("$home_dir/.kube")
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_agent --daemon
-  FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_run prompt --daemon
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_agent
+  FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_run prompt
 }
 
 wait_for_policy_allow_rule() {

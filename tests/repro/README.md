@@ -20,7 +20,7 @@ the smoke tests in `tests/smoke/` and `./tests/build.sh`.
   `capture`, and `wrapper` modes.
 
 - `repro-run-exit.sh`
-  Stress foreground `file-snitch run allow --foreground` teardown with the same
+  Stress `file-snitch run allow` teardown with the same
   `SIGINT -> SIGTERM -> SIGKILL` escalation the smoke harness uses.
 
 - `repro-run-empty-policy-fixture.sh`

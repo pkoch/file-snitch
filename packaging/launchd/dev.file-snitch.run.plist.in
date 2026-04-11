@@ -11,7 +11,6 @@
       <string>{{FILE_SNITCH_BIN}}</string>
       <string>run</string>
       <string>prompt</string>
-      <string>--foreground</string>
     </array>
 
     <key>RunAtLoad</key>

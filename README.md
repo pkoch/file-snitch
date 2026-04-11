@@ -101,8 +101,8 @@ boundary. It is not.
 - File Snitch is intentionally user-space and single-user. It is meant to
   mediate one user's own secret-bearing files from that same user's software.
 - `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default,
-  derives the mount plan, and in both foreground and daemon mode stays alive to
-  reconcile policy changes over time.
+  derives the mount plan, and stays alive to reconcile policy changes over
+  time.
 - `enroll` migrates plaintext into the guarded store, `unenroll` restores it,
   and `status`/`doctor` inspect the resulting policy and mount plan.
 - The current store backend is `pass`, and the real `pass` path has been
@@ -112,15 +112,13 @@ boundary. It is not.
 - Per-user service install helpers now exist under `scripts/services/`.
 - The current agent frontends are:
   - `terminal-pinentry`
-    - `agent --foreground` uses inherited stdio when no `--tty` is provided
-    - `agent --daemon` can keep serving requests by reopening an explicit or
-      startup-derived TTY path
+    - `agent` uses inherited stdio when no `--tty` is provided
   - `macos-ui`
     - macOS-only frontend backed by `osascript`
-    - works in both foreground and daemon mode
+    - works in the normal supervised service model
   - `linux-ui`
     - Linux-only frontend backed by `zenity`
-    - works in both foreground and daemon mode
+    - works in the normal supervised service model
 - The remaining runtime limits are:
   - only the `pass` backend exists today
   - remote forwarding and richer agent UX are future work
@@ -216,7 +214,6 @@ zig build compile-commands
 ./tests/smoke/policy-lifecycle.sh
 ./tests/smoke/doctor-debug-dossier.sh
 ./tests/smoke/run-policy-reload.sh
-./tests/smoke/run-daemon-policy-reload.sh
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
@@ -234,17 +231,16 @@ What each command covers:
   - `src/store.zig`: guarded-store unit tests for object serialization and the mock backend
   - `src/agent.zig`: requester/agent framing and ULID unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
-- `./tests/smoke/run-empty-policy.sh`: black-box verification that foreground `run` stays alive and watches for future changes even when policy is currently empty
+- `./tests/smoke/run-empty-policy.sh`: black-box verification that `run` stays alive and watches for future changes even when policy is currently empty
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`
 - `./tests/smoke/doctor-debug-dossier.sh`: black-box verification that `doctor --export-debug-dossier` writes a shareable report without guarded file contents
-- `./tests/smoke/run-policy-reload.sh`: black-box verification that foreground `run` watches `policy.yml`, activates a new projection after `enroll`, and tears it down again after the enrollment is removed from policy
-- `./tests/smoke/run-daemon-policy-reload.sh`: black-box verification that daemonized `run` uses the same reconciler model and reacts to `policy.yml` changes without restart
-- `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that daemonized `run` prunes expired durable decisions and rewrites `policy.yml`
+- `./tests/smoke/run-policy-reload.sh`: black-box verification that `run` watches `policy.yml`, activates a new projection after `enroll`, and tears it down again after the enrollment is removed from policy
+- `./tests/smoke/run-expired-decision-cleanup.sh`: black-box verification that `run` prunes expired durable decisions and rewrites `policy.yml`
 - `./tests/smoke/run-single-enrollment.sh`: live verification that one enrolled file is projected from the guarded store while siblings passthrough
-- `./tests/smoke/run-multi-mount.sh`: live verification that one foreground `run` supervises multiple planned mounts and tears them down cleanly
+- `./tests/smoke/run-multi-mount.sh`: live verification that one `run` process supervises multiple planned mounts and tears them down cleanly
 - `./tests/smoke/run-prompt-linux-ui.sh`: black-box verification of the `linux-ui` frontend through a fake `zenity` path that can run in CI
 - `./tests/smoke/run-prompt-macos-ui.sh`: black-box verification of the `macos-ui` frontend through a fake `osascript` path on macOS
-- `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through a daemonized agent and `terminal-pinentry`
+- `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through `terminal-pinentry`
 - `./tests/smoke/run-prompt-remembered-decision.sh`: black-box verification that an `always allow` decision is written to `policy.yml`, reconciled by `run`, and suppresses later prompts
 - `./tests/smoke/user-service-rendering.sh`: black-box verification that the user-service helpers render the expected `launchd` and `systemd --user` files
 
@@ -253,24 +249,21 @@ When debugging a specific area, the build-managed test step above is still the d
 - `src/prompt.zig`
 
 Prompt notes:
-- `file-snitch run [allow|deny|prompt] (--foreground|--daemon) [--policy <path>]` is the new policy-driven daemon entrypoint
-- `run --foreground` is now the real long-lived reconciler: it stays alive on an empty policy, prefers event-driven `policy.yml` wakeups where the host supports them, falls back to polling where it does not, and adds or removes mount workers as the derived mount plan changes
+- `file-snitch run [allow|deny|prompt] [--policy <path>]` is the long-lived policy-driven reconciler entrypoint
+- `run` stays alive on an empty policy, prefers event-driven `policy.yml` wakeups where the host supports them, falls back to polling where it does not, and adds or removes mount workers as the derived mount plan changes
 - the polling fallback now compares full `policy.yml` content as well as file metadata, so same-size rewrites do not rely on mtime luck or a small-file cutoff
 - transient policy read/stat failures are no longer treated as “policy disappeared”; the reconciler keeps the current mounts and surfaces the real error instead
-- `run --daemon` now daemonizes the same reconciler model instead of using the older one-shot path
-- `file-snitch agent (--foreground|--daemon)` starts the current local agent service on the default Unix socket
+- `file-snitch agent` starts the current local agent service on the default Unix socket
 - the agent now refuses to unlink an active socket or any non-socket file at the configured socket path
 - the agent now handles accepted socket connections independently, so one blocked prompt no longer head-of-line blocks later requests at the socket boundary
 - the default frontend is `terminal-pinentry`
 - `--frontend terminal-pinentry` keeps the existing terminal behavior
 - `--frontend macos-ui` uses `osascript` to show a native macOS dialog
 - `--frontend linux-ui` uses `zenity` to show a native Linux dialog
-- `agent --foreground` uses inherited stdio when `--frontend terminal-pinentry` has no `--tty`
-- `agent --daemon` requires `--tty <path>` or a startup TTY it can capture when using `terminal-pinentry`
-- `run --foreground` supports multiple planned mounts and mounts each real parent directory in place
+- `agent` uses inherited stdio when `--frontend terminal-pinentry` has no `--tty`
+- `run` supports multiple planned mounts and mounts each real parent directory in place
 - each planned mount is still projected as its own child mount process
 - multiple enrolled files under one mounted tree are supported, including nested guarded paths
-- foreground and daemon mode now share the same policy-reconciliation behavior
 - `run prompt` now resolves decisions through the local agent socket instead of reading from the daemon's stdin
 - `file-snitch enroll <path>` migrates the plaintext file into the configured guarded store and appends an enrollment to `policy.yml`
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
@@ -298,7 +291,7 @@ Prompt notes:
   - a disposable temp home
   - a disposable password store
   - a real local GPG key
-  - `enroll -> run --foreground -> read/write -> unenroll`
+  - `enroll -> run -> read/write -> unenroll`
 - on the mounted FUSE path, `prompt` mode currently targets `open` and `create`, and the prompt text includes the open mode
 - later operations on an already-authorized handle may reuse that authorization when the requested behavior still aligns with the handle mode
 - `readonly` still allows reads and denies mutations

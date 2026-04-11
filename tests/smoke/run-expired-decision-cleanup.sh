@@ -48,7 +48,7 @@ decisions:
     expires_at: '1970-01-01T00:00:01Z'
 EOF
 
-  start_file_snitch_run allow --daemon
+  start_file_snitch_run allow
   wait_for_policy_cleanup
 
   if ! grep -F "decisions: []" "$policy_file" >/dev/null 2>&1; then

@@ -45,13 +45,13 @@ file-snitch status
 If the file is enrolled and `run` is not active, start the daemon:
 
 ```bash
-file-snitch run allow --foreground
+file-snitch run allow
 ```
 
 or:
 
 ```bash
-file-snitch run prompt --foreground
+file-snitch run prompt
 ```
 
 ## If You Expected A Prompt And Did Not Get One
@@ -76,8 +76,8 @@ file-snitch status
 
 If the current agent frontend is terminal-based, also confirm that the agent
 has a usable TTY:
-- `agent --foreground` uses inherited stdio
-- `agent --daemon` needs `--tty <path>` or a startup-captured terminal
+- `agent` uses inherited stdio
+- `agent --tty <path>` targets a specific terminal
 
 ## If `pass` Or GPG Is Failing
 
@@ -112,7 +112,7 @@ Recovery path:
 1. Restart the daemon and verify the projection returns:
 
 ```bash
-file-snitch run allow --foreground
+file-snitch run allow
 ```
 
 2. If you want to stop guarding the file entirely:
@@ -139,8 +139,7 @@ recovery work.
 
 ## If Policy Changes Do Not Seem To Apply
 
-`run` now reconciles policy changes without restart in both foreground and
-daemon mode.
+`run` now reconciles policy changes without restart.
 
 Check:
 - are you editing the same `policy.yml` the daemon is using?

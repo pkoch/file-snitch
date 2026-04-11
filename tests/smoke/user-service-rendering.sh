@@ -51,5 +51,5 @@ assert_eq \
 assert_file_contains "$macos_output_dir/dev.file-snitch.agent.plist" "<string>$tmp_dir/bin/file-snitch</string>"
 assert_file_contains "$macos_output_dir/dev.file-snitch.agent.plist" "<string>macos-ui</string>"
 assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<string>prompt</string>"
-assert_file_contains "$linux_output_dir/file-snitch-agent.service" "ExecStart=$tmp_dir/bin/file-snitch agent --frontend linux-ui --foreground"
-assert_file_contains "$linux_output_dir/file-snitch-run.service" "ExecStart=$tmp_dir/bin/file-snitch run prompt --foreground"
+assert_file_contains "$linux_output_dir/file-snitch-agent.service" "ExecStart=$tmp_dir/bin/file-snitch agent --frontend linux-ui"
+assert_file_contains "$linux_output_dir/file-snitch-run.service" "ExecStart=$tmp_dir/bin/file-snitch run prompt"

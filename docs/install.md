@@ -76,13 +76,13 @@ Cross-platform bootstrap path:
 Terminal 1:
 
 ```bash
-file-snitch agent --foreground
+file-snitch agent
 ```
 
 Terminal 2:
 
 ```bash
-file-snitch run prompt --foreground
+file-snitch run prompt
 ```
 
 Terminal 3:
@@ -98,13 +98,13 @@ macOS native dialog path:
 Terminal 1:
 
 ```bash
-file-snitch agent --frontend macos-ui --daemon
+file-snitch agent --frontend macos-ui
 ```
 
 Terminal 2:
 
 ```bash
-file-snitch run prompt --foreground
+file-snitch run prompt
 ```
 
 Terminal 3:
@@ -123,13 +123,13 @@ Linux native dialog path:
 Terminal 1:
 
 ```bash
-file-snitch agent --frontend linux-ui --daemon
+file-snitch agent --frontend linux-ui
 ```
 
 Terminal 2:
 
 ```bash
-file-snitch run prompt --foreground
+file-snitch run prompt
 ```
 
 Terminal 3:
@@ -201,7 +201,7 @@ Linux requires `zenity` for that unattended prompt path.
   `XDG_CONFIG_HOME` overrides it.
 - the default local agent socket lives under `XDG_RUNTIME_DIR` when it is
   set, otherwise under `~/.local/state/file-snitch/agent.sock`
-- set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a daemonized
+- set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a
   `terminal-pinentry` agent to use a specific terminal
 - `macos-ui` uses `osascript` on macOS and does not accept `--tty`
 - prompt-capable frontends offer:

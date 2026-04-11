@@ -177,7 +177,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         try report_writer.print("ok: agent socket path exists: {s}\n", .{agent_socket_path});
     } else {
         try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
-        try report_writer.writeAll("hint: start `file-snitch agent --foreground` or install the per-user agent service\n");
+        try report_writer.writeAll("hint: start `file-snitch agent` or install the per-user agent service\n");
     }
 
     switch (builtin.os.tag) {

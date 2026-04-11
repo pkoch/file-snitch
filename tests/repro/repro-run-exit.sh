@@ -15,10 +15,10 @@ usage() {
 usage: tests/repro/repro-run-exit.sh [--iterations N] [--ready-sleep SECONDS] [--int-wait SECONDS] [--term-wait SECONDS] [--keep-success] [--mode MODE]...
 
 modes:
-  direct   run `file-snitch run allow --foreground` directly in the background
+  direct   run `file-snitch run allow` directly in the background
   wrapper  run a tiny wrapper script that execs the same command
 
-The script reproduces the empty-policy foreground run case, then tears it down
+The script reproduces the empty-policy `run` case, then tears it down
 using the same signal escalation as the smoke harness: SIGINT, wait, SIGTERM,
 wait, SIGKILL.
 EOF
@@ -108,7 +108,7 @@ make_fixture() {
   cat >"$wrapper_script" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec "$binary" run allow --foreground --policy "$policy_file"
+exec "$binary" run allow --policy "$policy_file"
 EOF
   chmod +x "$wrapper_script"
 
@@ -187,7 +187,7 @@ run_mode() {
 
     case "$mode" in
       direct)
-        exec "$binary" run allow --foreground --policy "$policy_file"
+        exec "$binary" run allow --policy "$policy_file"
         ;;
       wrapper)
         exec "$wrapper_script"

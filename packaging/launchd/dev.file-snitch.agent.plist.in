@@ -12,7 +12,6 @@
       <string>agent</string>
       <string>--frontend</string>
       <string>macos-ui</string>
-      <string>--foreground</string>
     </array>
 
     <key>RunAtLoad</key>
