@@ -100,9 +100,10 @@ boundary. It is not.
 
 - File Snitch is intentionally user-space and single-user. It is meant to
   mediate one user's own secret-bearing files from that same user's software.
-- `file-snitch run` loads `~/.config/file-snitch/policy.yml` by default,
-  derives the mount plan, and stays alive to reconcile policy changes over
-  time.
+- `file-snitch run` loads `$FILE_SNITCH_POLICY_PATH` when set, otherwise
+  `$XDG_CONFIG_HOME/file-snitch/policy.yml`, otherwise
+  `~/.config/file-snitch/policy.yml`, derives the mount plan, and stays alive
+  to reconcile policy changes over time.
 - `enroll` migrates plaintext into the guarded store, `unenroll` restores it,
   and `status`/`doctor` inspect the resulting policy and mount plan.
 - The current store backend is `pass`, and the real `pass` path has been

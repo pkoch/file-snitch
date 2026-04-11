@@ -1500,10 +1500,44 @@ fn printUsage() void {
         \\  file-snitch status [--policy <path>]
         \\  file-snitch doctor [--policy <path>] [--export-debug-dossier <path>]
         \\
+        \\defaults:
+        \\  agent:
+        \\    --socket <path>
+        \\      $FILE_SNITCH_AGENT_SOCKET
+        \\      else $XDG_RUNTIME_DIR/file-snitch/agent.sock
+        \\      else $HOME/.local/state/file-snitch/agent.sock
+        \\    --frontend <kind>
+        \\      terminal-pinentry
+        \\    --tty <path>
+        \\      inherited stdio
+        \\
+        \\  run:
+        \\    [allow|deny|prompt]
+        \\      deny
+        \\    --policy <path>
+        \\      $FILE_SNITCH_POLICY_PATH
+        \\      else $XDG_CONFIG_HOME/file-snitch/policy.yml
+        \\      else $HOME/.config/file-snitch/policy.yml
+        \\    prompt timeout
+        \\      5000 ms
+        \\      override with $FILE_SNITCH_PROMPT_TIMEOUT_MS
+        \\
+        \\  enroll | unenroll | status:
+        \\    --policy <path>
+        \\      $FILE_SNITCH_POLICY_PATH
+        \\      else $XDG_CONFIG_HOME/file-snitch/policy.yml
+        \\      else $HOME/.config/file-snitch/policy.yml
+        \\
+        \\  doctor:
+        \\    --policy <path>
+        \\      $FILE_SNITCH_POLICY_PATH
+        \\      else $XDG_CONFIG_HOME/file-snitch/policy.yml
+        \\      else $HOME/.config/file-snitch/policy.yml
+        \\    --export-debug-dossier <path>
+        \\      omitted by default
+        \\
         \\notes:
         \\  - `agent` starts the local agent service on a Unix socket
-        \\  - `agent` defaults to the `terminal-pinentry` frontend
-        \\  - `agent --frontend terminal-pinentry` uses inherited stdio when no --tty is provided
         \\  - `agent --frontend macos-ui` uses `osascript` and does not accept --tty
         \\  - `agent --frontend linux-ui` uses `zenity` and does not accept --tty
         \\  - `run` is the long-running policy reconciler entrypoint

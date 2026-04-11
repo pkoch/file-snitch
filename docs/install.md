@@ -197,8 +197,9 @@ Linux requires `zenity` for that unattended prompt path.
 
 ## Notes
 
-- `policy.yml` lives at `~/.config/file-snitch/policy.yml` unless
-  `XDG_CONFIG_HOME` overrides it.
+- `policy.yml` lives at `FILE_SNITCH_POLICY_PATH` when set, otherwise at
+  `XDG_CONFIG_HOME/file-snitch/policy.yml`, otherwise at
+  `~/.config/file-snitch/policy.yml`.
 - the default local agent socket lives under `XDG_RUNTIME_DIR` when it is
   set, otherwise under `~/.local/state/file-snitch/agent.sock`
 - set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a

@@ -1,6 +1,9 @@
 const std = @import("std");
 const yaml = @import("yaml");
 const policy = @import("policy.zig");
+const c = @cImport({
+    @cInclude("stdlib.h");
+});
 
 pub const Enrollment = struct {
     path: []u8,
@@ -540,6 +543,13 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
 }
 
 pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_POLICY_PATH")) |policy_path| {
+        return policy_path;
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
     if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg_config_home| {
         defer allocator.free(xdg_config_home);
         return std.fmt.allocPrint(allocator, "{s}/file-snitch/policy.yml", .{xdg_config_home});
@@ -927,6 +937,27 @@ test "parse decision expiration accepts RFC3339 UTC" {
     try std.testing.expectEqual(@as(?i64, null), try parseOptionalDecisionExpiration(null));
     try std.testing.expectEqual(@as(?i64, null), try parseRawDecisionExpiration("null"));
     try std.testing.expectEqual(@as(?i64, 4_102_444_800), try parseRawDecisionExpiration("2100-01-01T00:00:00Z"));
+}
+
+test "default policy path uses FILE_SNITCH_POLICY_PATH override" {
+    const allocator = std.testing.allocator;
+    const policy_key = "FILE_SNITCH_POLICY_PATH";
+    const policy_value = "/tmp/file-snitch-test-policy.yml";
+    const xdg_key = "XDG_CONFIG_HOME";
+    const xdg_value = "/tmp/file-snitch-test-config-home";
+    const home_key = "HOME";
+    const home_value = "/tmp/file-snitch-test-home";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(policy_key, policy_value, 1));
+    defer _ = c.unsetenv(policy_key);
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(xdg_key, xdg_value, 1));
+    defer _ = c.unsetenv(xdg_key);
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(home_key, home_value, 1));
+    defer _ = c.unsetenv(home_key);
+
+    const resolved = try defaultPolicyPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(policy_value, resolved);
 }
 
 test "parse decision expiration rejects invalid values" {
