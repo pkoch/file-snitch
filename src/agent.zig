@@ -202,12 +202,16 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
 }
 
 fn runConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    defer worker_context.stream.close();
-    defer worker_context.allocator.destroy(worker_context);
+    defer cleanupConnectionWorker(worker_context);
 
     handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
         std.log.warn("agent connection failed: {}", .{err});
     };
+}
+
+fn cleanupConnectionWorker(worker_context: *ConnectionWorkerContext) void {
+    worker_context.stream.close();
+    worker_context.allocator.destroy(worker_context);
 }
 
 fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
@@ -1348,7 +1352,7 @@ fn resolveAllowFrontend(raw_context: ?*anyopaque, request: prompt.Request) promp
 }
 
 fn runTestConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    defer worker_context.allocator.destroy(worker_context);
+    defer cleanupConnectionWorker(worker_context);
 
     handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
         std.log.warn("test agent connection failed: {}", .{err});
