@@ -30,6 +30,7 @@ pub const FrontendKind = enum {
 pub const Frontend = struct {
     context: ?*anyopaque,
     resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Response,
+    supports_concurrent_requests: bool = true,
 
     pub fn resolve(self: Frontend, request: prompt.Request) prompt.Response {
         return self.resolve_fn(self.context, request);
@@ -105,6 +106,7 @@ pub fn terminalPinentryFrontend(context: *TerminalPinentryContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveTerminalPinentry,
+        .supports_concurrent_requests = true,
     };
 }
 
@@ -112,6 +114,7 @@ pub fn macosUiFrontend(context: *MacosUiContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveMacosUi,
+        .supports_concurrent_requests = false,
     };
 }
 
@@ -119,6 +122,7 @@ pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveLinuxUi,
+        .supports_concurrent_requests = false,
     };
 }
 
@@ -173,12 +177,23 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
             error.ConnectionAborted, error.WouldBlock => continue,
             else => return err,
         };
+        var stream: net.Stream = .{ .handle = accepted };
+        if (!context.frontend.supports_concurrent_requests) {
+            // GUI frontends shell out to helper processes. On Linux, doing that
+            // from a worker thread would fork a multithreaded process.
+            defer stream.close();
+            handleConnection(context, stream) catch |err| {
+                std.log.warn("agent connection failed: {}", .{err});
+            };
+            continue;
+        }
+
         const worker_context = try context.allocator.create(ConnectionWorkerContext);
         errdefer context.allocator.destroy(worker_context);
         worker_context.* = .{
             .allocator = context.allocator,
             .service_context = context,
-            .stream = .{ .handle = accepted },
+            .stream = stream,
         };
 
         const thread = try std.Thread.spawn(.{}, runConnectionWorker, .{worker_context});
@@ -1231,6 +1246,27 @@ test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
     const resolved = try defaultZenityPathAlloc(allocator);
     defer allocator.free(resolved);
     try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "gui frontends serialize requests" {
+    const page_allocator = std.heap.page_allocator;
+
+    var terminal_context = TerminalPinentryContext{
+        .allocator = page_allocator,
+    };
+    try std.testing.expect(terminalPinentryFrontend(&terminal_context).supports_concurrent_requests);
+
+    var macos_context = MacosUiContext{
+        .allocator = page_allocator,
+        .osascript_path = "osascript",
+    };
+    try std.testing.expect(!macosUiFrontend(&macos_context).supports_concurrent_requests);
+
+    var linux_context = LinuxUiContext{
+        .allocator = page_allocator,
+        .zenity_path = "zenity",
+    };
+    try std.testing.expect(!linuxUiFrontend(&linux_context).supports_concurrent_requests);
 }
 
 test "parse macos ui response accepts known values" {

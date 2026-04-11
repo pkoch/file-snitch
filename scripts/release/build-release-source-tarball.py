@@ -10,7 +10,7 @@ import tarfile
 
 
 def repo_root() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parent.parent
+    return pathlib.Path(__file__).resolve().parent.parent.parent
 
 
 def tracked_files(root: pathlib.Path) -> list[pathlib.Path]:
