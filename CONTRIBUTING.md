@@ -102,6 +102,11 @@ This codebase uses Zig slices heavily, so ownership must be obvious from API
 shape rather than inferred from types alone.
 
 - Functions ending in `Alloc` must return owned memory that the caller frees.
+- Unit tests should default to `std.testing.allocator` unless a different
+  allocator is required to exercise a specific behavior.
+- Deterministic allocator-heavy helpers should use
+  `std.testing.checkAllAllocationFailures` to verify cleanup on every induced
+  allocation failure.
 - Functions and methods named like snapshots or loaders must return fully owned
   data, including nested strings and slices.
 - Borrowed results should be named as borrowed views:
@@ -118,7 +123,9 @@ Practical examples:
 
 - `fooAlloc()` returns owned memory.
 - `fooView()` returns data tied to another object's lifetime.
-- `OwnedFoo.deinit()` makes ownership explicit for aggregate results.
+- `FooSnapshot.deinit()` makes ownership explicit for aggregate results.
+- `std.testing.checkAllAllocationFailures()` belongs on deterministic
+  constructors, parsers, and copy helpers.
 
 When reviewing code, be suspicious of:
 

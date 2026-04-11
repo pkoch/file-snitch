@@ -264,6 +264,8 @@ pub const EnrolledParentConfig = struct {
     guarded_store: store.Backend,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_path: ?[]const u8 = null,
+    // Borrowed views that must stay valid until Model.init deep-copies them
+    // into the policy engine.
     policy_rule_views: []const policy.RuleView = &.{},
     prompt_broker: ?prompt.Broker = null,
     status_output_file: ?std.fs.File = null,
