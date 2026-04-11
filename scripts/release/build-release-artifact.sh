@@ -82,7 +82,7 @@ case "$(uname -s)" in
     ;;
 esac
 
-version_command=("$install_prefix/bin/file-snitch" version)
+version_command=("$install_prefix/bin/file-snitch" --version)
 if [[ "$(uname -s)" == "Darwin" && -n "${FILE_SNITCH_FUSE_LIB_DIR:-}" ]]; then
   DYLD_LIBRARY_PATH="$FILE_SNITCH_FUSE_LIB_DIR" "${version_command[@]}" | grep -Fx "file-snitch $version" >/dev/null
 else

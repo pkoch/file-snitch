@@ -190,7 +190,7 @@ fn parseCommand(args: []const []const u8) !Command {
     if (std.mem.eql(u8, args[0], "doctor")) {
         return .{ .doctor = try parseDoctorCommand(args[1..]) };
     }
-    if (std.mem.eql(u8, args[0], "version") or std.mem.eql(u8, args[0], "--version")) {
+    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-V") or std.mem.eql(u8, args[0], "version")) {
         return .version;
     }
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {
@@ -1492,7 +1492,7 @@ fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8
 fn printUsage() void {
     std.debug.print(
         \\usage:
-        \\  file-snitch version
+        \\  file-snitch --version
         \\  file-snitch agent [--socket <path>] [--frontend <terminal-pinentry|macos-ui|linux-ui>] [--tty <path>]
         \\  file-snitch run [allow|deny|prompt] [--policy <path>]
         \\  file-snitch enroll <path> [--policy <path>]
