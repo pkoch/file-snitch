@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 platform=""
 bin_path=""
@@ -10,7 +10,7 @@ output_dir=""
 usage() {
   cat <<'EOF'
 usage:
-  ./scripts/render-user-services.sh [--platform <macos|linux>] --bin <path> --output-dir <dir>
+  ./scripts/services/render-user-services.sh [--platform <macos|linux>] --bin <path> --output-dir <dir>
 
 notes:
   - macOS renders both `dev.file-snitch.agent.plist` and `dev.file-snitch.run.plist`

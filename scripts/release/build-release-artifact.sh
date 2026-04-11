@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 version=""
 platform=""
@@ -89,7 +89,7 @@ else
   "${version_command[@]}" | grep -Fx "file-snitch $version" >/dev/null
 fi
 
-python3 "$repo_root/scripts/package-release-artifact.py" \
+python3 "$repo_root/scripts/release/package-release-artifact.py" \
   --version "$version" \
   --platform "$platform" \
   --binary "$install_prefix/bin/file-snitch" \

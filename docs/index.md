@@ -73,14 +73,14 @@ That is the core product moment.
 
 If you want a safe disposable walkthrough:
 - [demo.md](./demo.md)
-- `./scripts/demo-session.sh`
+- `./scripts/demo/demo-session.sh`
 
 If you want to install and try it on a real machine:
 - [install.md](./install.md)
 
 If you want per-user services:
 - [services.md](./services.md)
-- `./scripts/install-user-services.sh --bin "$(command -v file-snitch)"`
+- `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"`
 
 ## If Something Goes Wrong
 

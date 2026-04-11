@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 assets_dir="$repo_root/docs/assets"
 cast_path="$assets_dir/demo.cast"
 gif_path="$assets_dir/demo.gif"
@@ -24,7 +24,7 @@ asciinema rec \
   --headless \
   --idle-time-limit 1.0 \
   --window-size 100x32 \
-  --command "./scripts/demo-session.sh" \
+  --command "./scripts/demo/demo-session.sh" \
   "$cast_path"
 
 agg \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 binary_path="${FILE_SNITCH_BIN:-$repo_root/zig-out/bin/file-snitch}"
 session_name="file-snitch-demo-$$"
 

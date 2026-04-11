@@ -18,12 +18,12 @@ macos_output_dir="$tmp_dir/macos"
 linux_output_dir="$tmp_dir/linux"
 mkdir -p "$macos_output_dir" "$linux_output_dir"
 
-"$repo_root/scripts/render-user-services.sh" \
+"$repo_root/scripts/services/render-user-services.sh" \
   --platform macos \
   --bin "$tmp_dir/bin/file-snitch" \
   --output-dir "$macos_output_dir"
 
-"$repo_root/scripts/render-user-services.sh" \
+"$repo_root/scripts/services/render-user-services.sh" \
   --platform linux \
   --bin "$tmp_dir/bin/file-snitch" \
   --output-dir "$linux_output_dir"

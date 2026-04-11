@@ -35,7 +35,7 @@ When changing user-facing diagnostics or recorded assets, review:
 Run:
 
 ```bash
-./scripts/check-demo-artifacts.sh
+./scripts/demo/check-demo-artifacts.sh
 ```
 
 That script scans the checked-in demo artifacts for obvious leakage markers and

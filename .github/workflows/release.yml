@@ -29,10 +29,10 @@ jobs:
       - id: source
         run: |
           out="$RUNNER_TEMP/${{ steps.version.outputs.source_asset }}"
-          python3 ./scripts/build-release-source-tarball.py \
+          python3 ./scripts/release/build-release-source-tarball.py \
             --version "${{ steps.version.outputs.version }}" \
             --output "$out"
-          sha="$(python3 ./scripts/sha256-file.py "$out")"
+          sha="$(python3 ./scripts/release/sha256-file.py "$out")"
           echo "source_sha256=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -80,7 +80,7 @@ jobs:
       - name: Extract pinned macFUSE SDK
         if: runner.os == 'macOS'
         run: |
-          ./scripts/extract-macfuse-sdk.sh \
+          ./scripts/vendor/extract-macfuse-sdk.sh \
             --output "$RUNNER_TEMP/macfuse-sdk"
 
       - uses: ./.github/actions/setup-zig
@@ -99,7 +99,7 @@ jobs:
         run: |
           asset="${{ needs.source.outputs.source_asset }}"
           cd "$RUNNER_TEMP/source"
-          actual="$(python3 "${GITHUB_WORKSPACE}/scripts/sha256-file.py" "$asset")"
+          actual="$(python3 "${GITHUB_WORKSPACE}/scripts/release/sha256-file.py" "$asset")"
           test "$actual" = "${{ needs.source.outputs.source_sha256 }}"
 
       - name: Build twice and compare
@@ -125,7 +125,7 @@ jobs:
             FILE_SNITCH_FUSE_INCLUDE_DIR="${RUNNER_TEMP}/macfuse-sdk/include" \
             FILE_SNITCH_FUSE_LIB_DIR="${RUNNER_TEMP}/macfuse-sdk/lib" \
             ZIG_BUILD_TARGET="${{ matrix.zig_target }}" \
-            ./scripts/build-release-artifact.sh \
+            ./scripts/release/build-release-artifact.sh \
               --version "${{ needs.source.outputs.version }}" \
               --platform "${{ matrix.platform }}" \
               --source-date-epoch "$source_date_epoch" \
@@ -137,7 +137,7 @@ jobs:
             FILE_SNITCH_FUSE_INCLUDE_DIR="${RUNNER_TEMP}/macfuse-sdk/include" \
             FILE_SNITCH_FUSE_LIB_DIR="${RUNNER_TEMP}/macfuse-sdk/lib" \
             ZIG_BUILD_TARGET="${{ matrix.zig_target }}" \
-            ./scripts/build-release-artifact.sh \
+            ./scripts/release/build-release-artifact.sh \
               --version "${{ needs.source.outputs.version }}" \
               --platform "${{ matrix.platform }}" \
               --source-date-epoch "$source_date_epoch" \
@@ -187,7 +187,7 @@ jobs:
               "${{ needs.source.outputs.source_asset }}" \
               "file-snitch-$version-linux-x86_64.tar.gz" \
               "file-snitch-$version-macos-arm64.tar.gz"; do
-              printf '%s  %s\n' "$(python3 "${GITHUB_WORKSPACE}/scripts/sha256-file.py" "$asset")" "$asset"
+              printf '%s  %s\n' "$(python3 "${GITHUB_WORKSPACE}/scripts/release/sha256-file.py" "$asset")" "$asset"
             done > SHA256SUMS
           )
 
@@ -235,7 +235,7 @@ jobs:
 
       - name: Extract release notes
         run: |
-          python3 ./scripts/extract-changelog-release.py \
+          python3 ./scripts/release/extract-changelog-release.py \
             --changelog CHANGELOG.md \
             --version "${{ needs.source.outputs.version }}" > "$RUNNER_TEMP/release-notes.md"
 

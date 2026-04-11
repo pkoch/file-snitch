@@ -6,7 +6,7 @@ platform=""
 usage() {
   cat <<'EOF'
 usage:
-  ./scripts/uninstall-user-services.sh [--platform <macos|linux>]
+  ./scripts/services/uninstall-user-services.sh [--platform <macos|linux>]
 EOF
 }
 

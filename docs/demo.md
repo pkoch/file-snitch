@@ -12,13 +12,13 @@ zig build
 Then record the session:
 
 ```bash
-asciinema rec --command ./scripts/demo-session.sh
+asciinema rec --command ./scripts/demo/demo-session.sh
 ```
 
 Or regenerate the checked-in README assets directly:
 
 ```bash
-./scripts/regenerate-demo-artifacts.sh
+./scripts/demo/regenerate-demo-artifacts.sh
 ```
 
 That regeneration path expects:

@@ -33,7 +33,7 @@ CI also enforces a small hygiene layer:
 
 ```bash
 bash -n $(find scripts tests/smoke -type f \( -name '*.sh' -o -path 'tests/smoke/lib/*' \) | sort)
-./scripts/check-demo-artifacts.sh
+./scripts/demo/check-demo-artifacts.sh
 ```
 
 Run the smoke suite:
@@ -64,13 +64,13 @@ zig build compile-commands
 The README embed is not hand-made. Regenerate it with:
 
 ```bash
-./scripts/regenerate-demo-artifacts.sh
+./scripts/demo/regenerate-demo-artifacts.sh
 ```
 
 And then sanity-check it for obvious leakage:
 
 ```bash
-./scripts/check-demo-artifacts.sh
+./scripts/demo/check-demo-artifacts.sh
 ```
 
 That expects:
@@ -139,7 +139,7 @@ When reviewing code, be suspicious of:
 The current packaging story is:
 - tagged release artifacts from this repo
 - Homebrew/Linuxbrew formula in `pkoch/homebrew-tap`
-- per-user service helpers in `scripts/`
+- per-user service helpers in `scripts/services/`
 - FUSE remains an external system prerequisite
 - `pass` is the only guarded-object backend today
 

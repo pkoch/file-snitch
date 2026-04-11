@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 platform=""
 bin_path="file-snitch"
@@ -9,7 +9,7 @@ bin_path="file-snitch"
 usage() {
   cat <<'EOF'
 usage:
-  ./scripts/install-user-services.sh [--platform <macos|linux>] [--bin <path>]
+  ./scripts/services/install-user-services.sh [--platform <macos|linux>] [--bin <path>]
 
 notes:
   - macOS installs and starts both the `agent` and `run` LaunchAgents
@@ -68,7 +68,7 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    "$repo_root/scripts/render-user-services.sh" \
+    "$repo_root/scripts/services/render-user-services.sh" \
       --platform macos \
       --bin "$bin_path" \
       --output-dir "$temp_dir"
@@ -98,7 +98,7 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    "$repo_root/scripts/render-user-services.sh" \
+    "$repo_root/scripts/services/render-user-services.sh" \
       --platform linux \
       --bin "$bin_path" \
       --output-dir "$temp_dir"

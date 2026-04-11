@@ -49,12 +49,12 @@ Then choose one of these:
 
 - safe disposable demo:
   - [docs/demo.md](./docs/demo.md)
-  - `./scripts/demo-session.sh`
+  - `./scripts/demo/demo-session.sh`
 - real install and first-user drill:
   - [docs/install.md](./docs/install.md)
 - user service examples:
   - [docs/services.md](./docs/services.md)
-  - `./scripts/install-user-services.sh --bin "$(command -v file-snitch)"`
+  - `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"`
 
 ## Recorded Demo
 
@@ -63,7 +63,7 @@ Then choose one of these:
 Regenerate the embedded demo artifacts with:
 
 ```bash
-./scripts/regenerate-demo-artifacts.sh
+./scripts/demo/regenerate-demo-artifacts.sh
 ```
 
 The checked-in demo is a tmux-driven session that shows the agent pane, the
@@ -109,7 +109,7 @@ boundary. It is not.
   verified end to end on macOS and Linux.
 - The current agent service is local-only and user-owned. `run prompt` talks to
   that socket instead of reading daemon stdin directly.
-- Per-user service install helpers now exist under `scripts/`.
+- Per-user service install helpers now exist under `scripts/services/`.
 - The current agent frontends are:
   - `terminal-pinentry`
     - `agent --foreground` uses inherited stdio when no `--tty` is provided

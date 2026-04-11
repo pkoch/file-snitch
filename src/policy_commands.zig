@@ -558,7 +558,7 @@ fn appendServicePathReport(
         try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
     } else {
         try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
-        try writer.writeAll("hint: run `./scripts/install-user-services.sh --bin \"$(command -v file-snitch)\"`\n");
+        try writer.writeAll("hint: run `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\"`\n");
     }
 }
 

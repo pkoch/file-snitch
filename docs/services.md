@@ -7,19 +7,19 @@ File Snitch now has real per-user service install helpers:
 Render the service files without installing them:
 
 ```bash
-./scripts/render-user-services.sh --bin "$(command -v file-snitch)" --output-dir ./out
+./scripts/services/render-user-services.sh --bin "$(command -v file-snitch)" --output-dir ./out
 ```
 
 Install the default service set for the current platform:
 
 ```bash
-./scripts/install-user-services.sh --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"
 ```
 
 Remove them again:
 
 ```bash
-./scripts/uninstall-user-services.sh
+./scripts/services/uninstall-user-services.sh
 ```
 
 Current platform stance:
@@ -41,7 +41,7 @@ Templates:
 Install it with:
 
 ```bash
-./scripts/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
 ```
 
 Then inspect it with:
@@ -62,7 +62,7 @@ Templates:
 Install them with:
 
 ```bash
-./scripts/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
 ```
 
 Then inspect it with:

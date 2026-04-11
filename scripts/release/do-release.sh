@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo_root"
 
 usage() {
   cat <<'EOF'
-usage: ./scripts/do-release.sh <major|minor|patch>
+usage: ./scripts/release/do-release.sh <major|minor|patch>
 
 This script:
   - verifies the worktree is clean
@@ -176,11 +176,11 @@ run_host_release_sanity() {
 
   if [[ "$host_platform" == "macos-arm64" ]]; then
     local sdk_dir="$tmp_dir/macfuse-sdk"
-    ./scripts/extract-macfuse-sdk.sh --output "$sdk_dir"
+    ./scripts/vendor/extract-macfuse-sdk.sh --output "$sdk_dir"
     FILE_SNITCH_FUSE_INCLUDE_DIR="$sdk_dir/include" \
     FILE_SNITCH_FUSE_LIB_DIR="$sdk_dir/lib" \
     ZIG_BUILD_TARGET="$host_target" \
-    ./scripts/build-release-artifact.sh \
+    ./scripts/release/build-release-artifact.sh \
       --version "$new_version" \
       --platform "$host_platform" \
       --source-date-epoch "$source_date_epoch" \
@@ -189,7 +189,7 @@ run_host_release_sanity() {
   fi
 
   ZIG_BUILD_TARGET="$host_target" \
-  ./scripts/build-release-artifact.sh \
+  ./scripts/release/build-release-artifact.sh \
     --version "$new_version" \
     --platform "$host_platform" \
     --source-date-epoch "$source_date_epoch" \
@@ -254,15 +254,15 @@ wait_for_repo_workflow_run_by_branch() {
 }
 
 printf '%s\n' "$new_version" > VERSION
-python3 scripts/roll-changelog-release.py \
+python3 scripts/release/roll-changelog-release.py \
   --changelog CHANGELOG.md \
   --version "$new_version" \
   --date "$release_date"
 
-python3 scripts/build-release-source-tarball.py \
+python3 scripts/release/build-release-source-tarball.py \
   --version "$new_version" \
   --output "$tmp_dir/$source_asset"
-source_sha="$(python3 scripts/sha256-file.py "$tmp_dir/$source_asset")"
+source_sha="$(python3 scripts/release/sha256-file.py "$tmp_dir/$source_asset")"
 
 zig build test
 run_host_release_sanity
@@ -295,7 +295,7 @@ echo "pushed release commit and tag for $new_version"
 echo "release workflow should publish:"
 echo "  $source_url"
 
-python3 scripts/update-formula-release.py \
+python3 scripts/release/update-formula-release.py \
   --formula "$tap_formula" \
   --version "$new_version" \
   --sha256 "$source_sha" \

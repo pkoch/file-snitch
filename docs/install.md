@@ -149,7 +149,7 @@ use the repo demo driver:
 
 ```bash
 zig build
-./scripts/demo-session.sh
+./scripts/demo/demo-session.sh
 ```
 
 For a recording-friendly version, see [docs/demo.md](./demo.md).
@@ -169,20 +169,20 @@ environment diagnostics, but not guarded file contents.
 
 Per-user service installation now has real helper scripts:
 - [docs/services.md](./services.md)
-- [scripts/render-user-services.sh](../scripts/render-user-services.sh)
-- [scripts/install-user-services.sh](../scripts/install-user-services.sh)
-- [scripts/uninstall-user-services.sh](../scripts/uninstall-user-services.sh)
+- [scripts/services/render-user-services.sh](../scripts/services/render-user-services.sh)
+- [scripts/services/install-user-services.sh](../scripts/services/install-user-services.sh)
+- [scripts/services/uninstall-user-services.sh](../scripts/services/uninstall-user-services.sh)
 
 macOS first-class path:
 
 ```bash
-./scripts/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
 ```
 
 Linux first-class path:
 
 ```bash
-./scripts/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
 ```
 
 That installs:

@@ -21,7 +21,7 @@ jobs:
           bash -n "${shell_files[@]}"
 
       - name: Check demo artifact redaction
-        run: ./scripts/check-demo-artifacts.sh
+        run: ./scripts/demo/check-demo-artifacts.sh
 
   build:
     runs-on: ubuntu-24.04

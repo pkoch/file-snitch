@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 cast_path="$repo_root/docs/assets/demo.cast"
 gif_path="$repo_root/docs/assets/demo.gif"
 

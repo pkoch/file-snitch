@@ -1,10 +1,10 @@
 # Releasing
 
 Formal releases are owned by:
-- [scripts/do-release.sh](../scripts/do-release.sh)
-- [scripts/build-release-source-tarball.py](../scripts/build-release-source-tarball.py)
-- [scripts/build-release-artifact.sh](../scripts/build-release-artifact.sh)
-- [scripts/extract-macfuse-sdk.sh](../scripts/extract-macfuse-sdk.sh)
+- [scripts/release/do-release.sh](../scripts/release/do-release.sh)
+- [scripts/release/build-release-source-tarball.py](../scripts/release/build-release-source-tarball.py)
+- [scripts/release/build-release-artifact.sh](../scripts/release/build-release-artifact.sh)
+- [scripts/vendor/extract-macfuse-sdk.sh](../scripts/vendor/extract-macfuse-sdk.sh)
 - [.github/workflows/release.yml](../.github/workflows/release.yml)
 - [zig-toolchain.json](../zig-toolchain.json)
 - [release-inputs.json](../release-inputs.json)
@@ -74,14 +74,14 @@ and SDK inputs, same native runner class, same bytes out.
 From a clean worktree:
 
 ```bash
-./scripts/do-release.sh patch
+./scripts/release/do-release.sh patch
 ```
 
 Or:
 
 ```bash
-./scripts/do-release.sh minor
-./scripts/do-release.sh major
+./scripts/release/do-release.sh minor
+./scripts/release/do-release.sh major
 ```
 
 That script:
