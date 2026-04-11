@@ -136,6 +136,12 @@ start_file_snitch_agent() {
       "$repo_root/zig-out/bin/file-snitch" agent "${agent_frontend_args[@]}" "$execution_mode" >"$agent_log_file" 2>&1 &
   fi
   agent_pid="$!"
+
+  if [[ "$execution_mode" == "--daemon" ]]; then
+    wait "$agent_pid" || true
+    agent_pid="$(find_agent_daemon_pid)"
+  fi
+
   wait_for_agent_ready
 }
 
@@ -273,7 +279,7 @@ find_agent_daemon_pid() {
   local pid=""
 
   for _ in $(seq 1 "$attempts"); do
-    pid="$(pgrep -f "$pattern" | tail -n 1 || true)"
+    pid="$(pgrep -n -f "$pattern" || true)"
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
       return
@@ -291,7 +297,7 @@ find_run_daemon_pid() {
   local pid=""
 
   for _ in $(seq 1 "$attempts"); do
-    pid="$(pgrep -f "$pattern" | tail -n 1 || true)"
+    pid="$(pgrep -n -f "$pattern" || true)"
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
       return
