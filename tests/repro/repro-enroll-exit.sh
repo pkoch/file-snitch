@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 binary="${FILE_SNITCH_BIN:-$repo_root/zig-out/bin/file-snitch}"
 iterations=50
 timeout_seconds="${TIMEOUT_SECONDS:-5}"
@@ -10,7 +10,7 @@ modes=()
 
 usage() {
   cat <<'EOF'
-usage: scripts/repro-enroll-exit.sh [--iterations N] [--timeout SECONDS] [--keep-success] [--mode MODE]...
+usage: tests/repro/repro-enroll-exit.sh [--iterations N] [--timeout SECONDS] [--keep-success] [--mode MODE]...
 
 modes:
   direct   run `file-snitch enroll ...` directly

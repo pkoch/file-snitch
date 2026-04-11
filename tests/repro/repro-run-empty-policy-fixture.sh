@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 iterations=100
 keep_success="${KEEP_SUCCESS:-0}"
 
 usage() {
   cat <<'EOF'
-usage: scripts/repro-run-empty-policy-fixture.sh [--iterations N] [--keep-success]
+usage: tests/repro/repro-run-empty-policy-fixture.sh [--iterations N] [--keep-success]
 
 This reproduces the exact logic of tests/smoke/run-empty-policy.sh through the
 run-fixture helpers, but it preserves the failing fixture and captures daemon

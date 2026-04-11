@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 binary="${FILE_SNITCH_BIN:-$repo_root/zig-out/bin/file-snitch}"
 iterations=100
 ready_sleep="${READY_SLEEP_SECONDS:-0.3}"
@@ -12,7 +12,7 @@ modes=()
 
 usage() {
   cat <<'EOF'
-usage: scripts/repro-run-exit.sh [--iterations N] [--ready-sleep SECONDS] [--int-wait SECONDS] [--term-wait SECONDS] [--keep-success] [--mode MODE]...
+usage: tests/repro/repro-run-exit.sh [--iterations N] [--ready-sleep SECONDS] [--int-wait SECONDS] [--term-wait SECONDS] [--keep-success] [--mode MODE]...
 
 modes:
   direct   run `file-snitch run allow --foreground` directly in the background
