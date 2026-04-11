@@ -264,7 +264,7 @@ pub const EnrolledParentConfig = struct {
     guarded_store: store.Backend,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_path: ?[]const u8 = null,
-    policy_rules: []const policy.Rule = &.{},
+    policy_rule_views: []const policy.RuleView = &.{},
     prompt_broker: ?prompt.Broker = null,
     status_output_file: ?std.fs.File = null,
     audit_output_file: ?std.fs.File = null,
@@ -306,7 +306,7 @@ pub const Model = struct {
             .policy_engine = try policy.Engine.init(
                 allocator,
                 init_config.default_mutation_outcome,
-                init_config.policy_rules,
+                init_config.policy_rule_views,
             ),
             .prompt_broker = init_config.prompt_broker,
             .status_output_file = init_config.status_output_file,
@@ -1914,16 +1914,16 @@ pub const Model = struct {
         };
         defer loaded_policy.deinit();
 
-        var compiled_rules = loaded_policy.compilePolicyRules(self.allocator) catch |err| {
+        var compiled_rule_views = loaded_policy.compilePolicyRuleViews(self.allocator) catch |err| {
             std.log.warn("failed to compile live policy at {s}: {}", .{ policy_path, err });
             return;
         };
-        defer compiled_rules.deinit();
+        defer compiled_rule_views.deinit();
 
         const next_engine = policy.Engine.init(
             self.allocator,
             self.policy_engine.default_mutation_outcome,
-            compiled_rules.items,
+            compiled_rule_views.items,
         ) catch |err| {
             std.log.warn("failed to build live policy engine for {s}: {}", .{ policy_path, err });
             return;

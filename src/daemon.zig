@@ -20,7 +20,7 @@ pub const EnrolledParentConfig = struct {
     run_in_foreground: bool = true,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_path: ?[]const u8 = null,
-    policy_rules: []const policy.Rule = &.{},
+    policy_rule_views: []const policy.RuleView = &.{},
     prompt_broker: ?prompt.Broker = null,
     status_output_file: ?std.fs.File = null,
     audit_output_file: ?std.fs.File = null,
@@ -41,7 +41,29 @@ pub const Description = struct {
 };
 
 pub const ExecutionPlan = struct {
+    allocator: std.mem.Allocator,
     args: []const []const u8,
+
+    pub fn deinit(self: *ExecutionPlan) void {
+        for (self.args) |arg| {
+            self.allocator.free(arg);
+        }
+        self.allocator.free(self.args);
+        self.* = undefined;
+    }
+};
+
+pub const AuditEventSnapshot = struct {
+    allocator: std.mem.Allocator,
+    items: []AuditEvent,
+
+    pub fn deinit(self: *AuditEventSnapshot) void {
+        for (self.items) |*event| {
+            freeAuditEvent(self.allocator, event);
+        }
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
 };
 
 pub const NodeInfo = filesystem.NodeInfo;
@@ -138,7 +160,7 @@ pub const Session = struct {
                 .guarded_store = config.guarded_store,
                 .default_mutation_outcome = config.default_mutation_outcome,
                 .policy_path = config.policy_path,
-                .policy_rules = config.policy_rules,
+                .policy_rule_views = config.policy_rule_views,
                 .prompt_broker = config.prompt_broker,
                 .status_output_file = config.status_output_file,
                 .audit_output_file = config.audit_output_file,
@@ -193,18 +215,23 @@ pub const Session = struct {
     pub fn executionPlan(self: Session, allocator: std.mem.Allocator) !ExecutionPlan {
         const count = fuse.sessionArgumentCount(self.handle);
         var args = try allocator.alloc([]const u8, count);
-        errdefer allocator.free(args);
-
-        for (0..count) |index| {
-            args[index] = try fuse.sessionArgument(self.handle, @intCast(index));
+        var initialized: usize = 0;
+        errdefer {
+            for (args[0..initialized]) |arg| {
+                allocator.free(arg);
+            }
+            allocator.free(args);
         }
 
-        return .{ .args = args };
-    }
+        for (0..count) |index| {
+            args[index] = try allocator.dupe(u8, try fuse.sessionArgument(self.handle, @intCast(index)));
+            initialized += 1;
+        }
 
-    pub fn freeExecutionPlan(self: Session, allocator: std.mem.Allocator, plan: ExecutionPlan) void {
-        _ = self;
-        allocator.free(plan.args);
+        return .{
+            .allocator = allocator,
+            .args = args,
+        };
     }
 
     pub fn inspectPath(self: Session, path: [:0]const u8) !NodeInfo {
@@ -306,18 +333,29 @@ pub const Session = struct {
         }
     }
 
-    pub fn auditEvents(self: Session, allocator: std.mem.Allocator) ![]AuditEvent {
+    pub fn auditEventSnapshot(self: Session, allocator: std.mem.Allocator) !AuditEventSnapshot {
         const count = self.state.filesystem.auditCount();
         var events = try allocator.alloc(AuditEvent, count);
-        errdefer allocator.free(events);
-
-        for (0..count) |index| {
-            events[index] = self.state.filesystem.auditEvent(@intCast(index)) orelse {
-                return error.Unexpected;
-            };
+        var initialized: usize = 0;
+        errdefer {
+            for (events[0..initialized]) |*event| {
+                freeAuditEvent(allocator, event);
+            }
+            allocator.free(events);
         }
 
-        return events;
+        for (0..count) |index| {
+            const stored = self.state.filesystem.auditEvent(@intCast(index)) orelse {
+                return error.Unexpected;
+            };
+            events[index] = try cloneAuditEvent(allocator, stored);
+            initialized += 1;
+        }
+
+        return .{
+            .allocator = allocator,
+            .items = events,
+        };
     }
 
     pub fn run(self: *Session) !void {
@@ -329,6 +367,51 @@ pub const Session = struct {
         self.state.filesystem.publishStatus();
     }
 };
+
+fn cloneAuditEvent(allocator: std.mem.Allocator, event: AuditEvent) !AuditEvent {
+    return .{
+        .action = try allocator.dupe(u8, event.action),
+        .path = try allocator.dupe(u8, event.path),
+        .result = event.result,
+        .timestamp = event.timestamp,
+        .pid = event.pid,
+        .uid = event.uid,
+        .gid = event.gid,
+        .executable_path = if (event.executable_path) |value| try allocator.dupe(u8, value) else null,
+        .file_info = event.file_info,
+        .lock = event.lock,
+        .flock = event.flock,
+        .xattr = if (event.xattr) |xattr| .{
+            .name = if (xattr.name) |name| try allocator.dupe(u8, name) else null,
+            .size = xattr.size,
+            .flags = xattr.flags,
+            .position = xattr.position,
+        } else null,
+        .rename = if (event.rename) |rename| .{
+            .from = try allocator.dupe(u8, rename.from),
+            .to = try allocator.dupe(u8, rename.to),
+        } else null,
+        .fsync = event.fsync,
+    };
+}
+
+fn freeAuditEvent(allocator: std.mem.Allocator, event: *AuditEvent) void {
+    allocator.free(event.action);
+    allocator.free(event.path);
+    if (event.executable_path) |value| {
+        allocator.free(value);
+    }
+    if (event.xattr) |xattr| {
+        if (xattr.name) |name| {
+            allocator.free(name);
+        }
+    }
+    if (event.rename) |rename| {
+        allocator.free(rename.from);
+        allocator.free(rename.to);
+    }
+    event.* = undefined;
+}
 
 pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !void {
     try ensureDirectory(config.mount_path);

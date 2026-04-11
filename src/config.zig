@@ -46,11 +46,11 @@ pub const MountPlan = struct {
     }
 };
 
-pub const CompiledRules = struct {
+pub const CompiledRuleViews = struct {
     allocator: std.mem.Allocator,
-    items: []policy.Rule,
+    items: []policy.RuleView,
 
-    pub fn deinit(self: *CompiledRules) void {
+    pub fn deinit(self: *CompiledRuleViews) void {
         self.allocator.free(self.items);
         self.* = undefined;
     }
@@ -298,8 +298,8 @@ pub const PolicyFile = struct {
         };
     }
 
-    pub fn compilePolicyRules(self: *const PolicyFile, allocator: std.mem.Allocator) !CompiledRules {
-        var compiled: std.ArrayListUnmanaged(policy.Rule) = .{};
+    pub fn compilePolicyRuleViews(self: *const PolicyFile, allocator: std.mem.Allocator) !CompiledRuleViews {
+        var compiled: std.ArrayListUnmanaged(policy.RuleView) = .{};
         errdefer compiled.deinit(allocator);
 
         for (self.decisions) |decision| {

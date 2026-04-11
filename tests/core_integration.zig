@@ -67,7 +67,7 @@ fn initSession(
     fixture: *Fixture,
     guarded_entries: []const filesystem.GuardedEntryConfig,
     default_mutation_outcome: policy.Outcome,
-    policy_rules: []const policy.Rule,
+    policy_rule_views: []const policy.RuleView,
     prompt_broker: ?prompt.Broker,
 ) !daemon.Session {
     return daemon.Session.initEnrolledParent(allocator, .{
@@ -77,7 +77,7 @@ fn initSession(
         .run_in_foreground = true,
         .default_mutation_outcome = default_mutation_outcome,
         .policy_path = null,
-        .policy_rules = policy_rules,
+        .policy_rule_views = policy_rule_views,
         .prompt_broker = prompt_broker,
     });
 }
@@ -134,8 +134,8 @@ test "session exercise is covered by core assertions" {
     try std.testing.expectEqualStrings(fixture.mount_path, description.mount_path);
     try std.testing.expect(description.configured_operation_count >= 1);
 
-    const plan = try session.executionPlan(allocator);
-    defer session.freeExecutionPlan(allocator, plan);
+    var plan = try session.executionPlan(allocator);
+    defer plan.deinit();
     try std.testing.expectEqual(@as(usize, 3), plan.args.len);
     try std.testing.expectEqualStrings("file-snitch", plan.args[0]);
     try std.testing.expectEqualStrings("-f", plan.args[1]);
@@ -163,13 +163,13 @@ test "session exercise is covered by core assertions" {
     defer allocator.free(note_content);
     try std.testing.expectEqualStrings("hello from file-snitch\n", note_content);
 
-    const audit_events = try session.auditEvents(allocator);
-    defer allocator.free(audit_events);
-    try expectAuditEvent(audit_events, "create", created_note_path, 0);
-    try expectAuditEvent(audit_events, "write", created_note_path, 23);
-    try expectAuditEvent(audit_events, "rename", created_note_path, 0);
-    try expectRenameAudit(audit_events, created_note_path, note_path, 0);
-    try expectAuditEvent(audit_events, "fsync", note_path, 0);
+    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    defer audit_snapshot.deinit();
+    try expectAuditEvent(audit_snapshot.items, "create", created_note_path, 0);
+    try expectAuditEvent(audit_snapshot.items, "write", created_note_path, 23);
+    try expectAuditEvent(audit_snapshot.items, "rename", created_note_path, 0);
+    try expectRenameAudit(audit_snapshot.items, created_note_path, note_path, 0);
+    try expectAuditEvent(audit_snapshot.items, "fsync", note_path, 0);
 
     var reloaded_session = try initSession(allocator, &fixture, &.{}, .deny, &.{}, null);
     defer reloaded_session.deinit();
@@ -178,6 +178,31 @@ test "session exercise is covered by core assertions" {
     defer allocator.free(reloaded_note);
     try std.testing.expectEqualStrings("hello from file-snitch\n", reloaded_note);
     try std.testing.expectEqual(@as(usize, 0), session.state.run_attempts);
+}
+
+test "session helper snapshots survive session teardown" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
+    try session.debugCreateFile(created_note_path, 0o600);
+
+    var plan = try session.executionPlan(allocator);
+    errdefer plan.deinit();
+
+    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    errdefer audit_snapshot.deinit();
+
+    session.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), plan.args.len);
+    try std.testing.expectEqualStrings("file-snitch", plan.args[0]);
+    try std.testing.expectEqualStrings(fixture.mount_path, plan.args[2]);
+    try expectAuditEvent(audit_snapshot.items, "create", created_note_path, 0);
+
+    plan.deinit();
+    audit_snapshot.deinit();
 }
 
 test "policy and prompt paths are covered by core assertions" {
@@ -251,22 +276,22 @@ test "policy and prompt paths are covered by core assertions" {
 
     try allowed_prompt_session.debugWriteFile(guarded_note_path, "updated guarded note\n");
 
-    const readonly_audit = try readonly_session.auditEvents(allocator);
-    defer allocator.free(readonly_audit);
-    try expectAuditEvent(readonly_audit, "policy", "write /guarded-note.txt", 2);
-    try expectAuditEvent(readonly_audit, "write", guarded_note_path, -13);
+    var readonly_audit = try readonly_session.auditEventSnapshot(allocator);
+    defer readonly_audit.deinit();
+    try expectAuditEvent(readonly_audit.items, "policy", "write /guarded-note.txt", 2);
+    try expectAuditEvent(readonly_audit.items, "write", guarded_note_path, -13);
 
-    const policy_audit = try policy_session.auditEvents(allocator);
-    defer allocator.free(policy_audit);
-    try expectAuditEvent(policy_audit, "prompt", "read /guarded-note.txt", 4);
-    try expectAuditEvent(policy_audit, "read", guarded_note_path, -13);
-    try expectAuditEvent(policy_audit, "policy", "write /guarded-note.txt", 2);
-    try expectAuditEvent(policy_audit, "write", guarded_note_path, -13);
+    var policy_audit = try policy_session.auditEventSnapshot(allocator);
+    defer policy_audit.deinit();
+    try expectAuditEvent(policy_audit.items, "prompt", "read /guarded-note.txt", 4);
+    try expectAuditEvent(policy_audit.items, "read", guarded_note_path, -13);
+    try expectAuditEvent(policy_audit.items, "policy", "write /guarded-note.txt", 2);
+    try expectAuditEvent(policy_audit.items, "write", guarded_note_path, -13);
 
-    const allowed_prompt_audit = try allowed_prompt_session.auditEvents(allocator);
-    defer allocator.free(allowed_prompt_audit);
-    try expectAuditEvent(allowed_prompt_audit, "prompt", "write /guarded-note.txt", 1);
-    try expectAuditEvent(allowed_prompt_audit, "write", guarded_note_path, 21);
+    var allowed_prompt_audit = try allowed_prompt_session.auditEventSnapshot(allocator);
+    defer allowed_prompt_audit.deinit();
+    try expectAuditEvent(allowed_prompt_audit.items, "prompt", "write /guarded-note.txt", 1);
+    try expectAuditEvent(allowed_prompt_audit.items, "write", guarded_note_path, 21);
 
     {
         var stored = try fixture.mock_state.loadObject(allocator, "guarded-note");
@@ -289,10 +314,10 @@ test "policy and prompt paths are covered by core assertions" {
     defer allocator.free(prompted_read);
     try std.testing.expectEqualStrings("updated guarded note\n", prompted_read);
 
-    const default_prompt_audit = try default_prompt_session.auditEvents(allocator);
-    defer allocator.free(default_prompt_audit);
-    try expectAuditEvent(default_prompt_audit, "prompt", "read /guarded-note.txt", 1);
-    try expectAuditEvent(default_prompt_audit, "read", guarded_note_path, 21);
+    var default_prompt_audit = try default_prompt_session.auditEventSnapshot(allocator);
+    defer default_prompt_audit.deinit();
+    try expectAuditEvent(default_prompt_audit.items, "prompt", "read /guarded-note.txt", 1);
+    try expectAuditEvent(default_prompt_audit.items, "read", guarded_note_path, 21);
 }
 
 test "directory operations fail explicitly in the file-only spike" {
@@ -321,10 +346,10 @@ test "directory operations fail explicitly in the file-only spike" {
     try std.testing.expectError(error.FileNotFound, std.fs.openDirAbsolute(host_path, .{}));
 
     const not_supported = -@as(i32, @intFromEnum(std.posix.E.OPNOTSUPP));
-    const audit_events = try session.auditEvents(allocator);
-    defer allocator.free(audit_events);
-    try expectAuditEvent(audit_events, "mkdir", "/empty-dir", not_supported);
-    try expectAuditEvent(audit_events, "rmdir", "/empty-dir", not_supported);
+    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    defer audit_snapshot.deinit();
+    try expectAuditEvent(audit_snapshot.items, "mkdir", "/empty-dir", not_supported);
+    try expectAuditEvent(audit_snapshot.items, "rmdir", "/empty-dir", not_supported);
 }
 
 test "policy file loader treats empty file as a no-op" {
@@ -502,7 +527,7 @@ test "compiled durable decisions respect executable path and uid" {
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
 
-    var compiled = try loaded.compilePolicyRules(allocator);
+    var compiled = try loaded.compilePolicyRuleViews(allocator);
     defer compiled.deinit();
 
     var engine = try policy.Engine.init(allocator, .allow, compiled.items);
@@ -580,7 +605,7 @@ test "compiled durable decisions ignore expired entries" {
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
 
-    var compiled = try loaded.compilePolicyRules(allocator);
+    var compiled = try loaded.compilePolicyRuleViews(allocator);
     defer compiled.deinit();
 
     var engine = try policy.Engine.init(allocator, .allow, compiled.items);
@@ -858,7 +883,7 @@ test "live policy reload suppresses repeated prompt without remount" {
         .run_in_foreground = true,
         .default_mutation_outcome = .prompt,
         .policy_path = policy_path,
-        .policy_rules = &.{},
+        .policy_rule_views = &.{},
         .prompt_broker = countingPromptBroker(&prompt_context),
     });
     defer session.deinit();
@@ -894,6 +919,139 @@ test "live policy reload suppresses repeated prompt without remount" {
     try std.testing.expect(second_len > 0);
     try std.testing.expectEqualStrings("guarded kubeconfig\n", buffer[0..@intCast(second_len)]);
     try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+}
+
+test "generated policy engine behavior survives source teardown" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x5eed_cafe);
+    const random = prng.random();
+
+    for (0..24) |case_index| {
+        const path = try tempPolicyPath(allocator, "generated-engine-teardown");
+        defer {
+            std.fs.deleteFileAbsolute(path) catch {};
+            allocator.free(path);
+        }
+
+        try writeGeneratedPolicyFile(allocator, path, random, 1 + (case_index % 6));
+
+        var loaded = try config.loadFromFile(allocator, path);
+        errdefer loaded.deinit();
+        var compiled = try loaded.compilePolicyRuleViews(allocator);
+        errdefer compiled.deinit();
+        var engine = try policy.Engine.init(allocator, .allow, compiled.items);
+        defer engine.deinit();
+
+        var requests: [20]policy.Request = undefined;
+        var before: [20]policy.Outcome = undefined;
+        for (&requests, &before) |*request, *outcome| {
+            request.* = randomPolicyRequest(random);
+            outcome.* = engine.evaluateAt(request.*, 1_900_000_000);
+        }
+
+        compiled.deinit();
+        loaded.deinit();
+
+        for (requests, before) |request, expected| {
+            try std.testing.expectEqual(expected, engine.evaluateAt(request, 1_900_000_000));
+        }
+    }
+}
+
+test "generated policy save load preserves engine behavior" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x51a0_1eed);
+    const random = prng.random();
+
+    for (0..24) |case_index| {
+        const path = try tempPolicyPath(allocator, "generated-policy-roundtrip");
+        defer {
+            std.fs.deleteFileAbsolute(path) catch {};
+            allocator.free(path);
+        }
+
+        var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        file.close();
+
+        var loaded = try config.loadFromFile(allocator, path);
+        defer loaded.deinit();
+
+        const enrollment_count = 1 + (case_index % generated_enrollments.len);
+        for (generated_enrollments[0..enrollment_count]) |entry| {
+            try loaded.appendEnrollment(entry.path, entry.object_id);
+        }
+
+        const decision_count = 2 + (case_index % 6);
+        for (0..decision_count) |_| {
+            const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
+            const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
+            const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
+            const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
+            const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
+            const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
+            try loaded.upsertDecision(executable_path, uid, enrollment.path, approval_class, outcome, expires_at);
+        }
+
+        var compiled_before = try loaded.compilePolicyRuleViews(allocator);
+        defer compiled_before.deinit();
+        var engine_before = try policy.Engine.init(allocator, .allow, compiled_before.items);
+        defer engine_before.deinit();
+
+        try loaded.saveToFile();
+
+        var reloaded = try config.loadFromFile(allocator, path);
+        defer reloaded.deinit();
+        var compiled_after = try reloaded.compilePolicyRuleViews(allocator);
+        defer compiled_after.deinit();
+        var engine_after = try policy.Engine.init(allocator, .allow, compiled_after.items);
+        defer engine_after.deinit();
+
+        for (0..20) |_| {
+            const request = randomPolicyRequest(random);
+            const before = engine_before.evaluateAt(request, 1_900_000_000);
+            const after = engine_after.evaluateAt(request, 1_900_000_000);
+            try std.testing.expectEqual(before, after);
+        }
+    }
+}
+
+test "audit event snapshots remain immutable after later writes" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
+    defer session.deinit();
+
+    for (0..8) |index| {
+        const current_path_raw = try std.fmt.allocPrint(allocator, "/property-note-{d}.txt", .{index});
+        defer allocator.free(current_path_raw);
+        const current_path = try allocator.dupeZ(u8, current_path_raw);
+        defer allocator.free(current_path);
+
+        const first_contents = try repeatedByteStringZAlloc(allocator, 'a', 5 + index);
+        defer allocator.free(first_contents);
+        const second_contents = try repeatedByteStringZAlloc(allocator, 'b', 17 + index);
+        defer allocator.free(second_contents);
+
+        try session.debugCreateFile(current_path, 0o600);
+        try session.debugWriteFile(current_path, first_contents);
+
+        var first_snapshot = try session.auditEventSnapshot(allocator);
+        defer first_snapshot.deinit();
+
+        try expectAuditEvent(first_snapshot.items, "write", current_path, @intCast(first_contents.len));
+        try expectNoAuditEvent(first_snapshot.items, "write", current_path, @intCast(second_contents.len));
+
+        try session.debugWriteFile(current_path, second_contents);
+
+        var second_snapshot = try session.auditEventSnapshot(allocator);
+        defer second_snapshot.deinit();
+
+        try expectAuditEvent(first_snapshot.items, "write", current_path, @intCast(first_contents.len));
+        try expectNoAuditEvent(first_snapshot.items, "write", current_path, @intCast(second_contents.len));
+        try expectAuditEvent(second_snapshot.items, "write", current_path, @intCast(second_contents.len));
+    }
 }
 
 test "enrolled parent shadows the guarded file and passes through siblings" {
@@ -1187,6 +1345,111 @@ fn tempPolicyPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     );
 }
 
+const GeneratedEnrollment = struct {
+    path: []const u8,
+    object_id: []const u8,
+};
+
+const generated_enrollments = [_]GeneratedEnrollment{
+    .{ .path = "/tmp/generated/config", .object_id = "generated-config" },
+    .{ .path = "/tmp/generated/hosts", .object_id = "generated-hosts" },
+    .{ .path = "/tmp/generated/token", .object_id = "generated-token" },
+};
+
+const generated_executable_paths = [_][]const u8{
+    "/usr/bin/kubectl",
+    "/usr/bin/git",
+    "/usr/bin/cat",
+    "/usr/bin/python3",
+};
+
+const generated_uids = [_]u32{ 1000, 1001, 501 };
+const generated_approval_classes = [_][]const u8{ "read_like", "write_capable" };
+const generated_outcomes = [_][]const u8{ "allow", "deny" };
+const generated_expirations = [_]?[]const u8{ null, "1970-01-01T00:00:01Z", "2100-01-01T00:00:00Z" };
+const generated_query_paths = [_][]const u8{
+    "/tmp/generated/config",
+    "/tmp/generated/hosts",
+    "/tmp/generated/token",
+    "/tmp/generated/unmatched",
+};
+const generated_access_classes = [_]policy.AccessClass{
+    .read,
+    .create,
+    .write,
+    .rename,
+    .delete,
+    .metadata,
+    .xattr,
+};
+const generated_query_executable_paths = [_]?[]const u8{
+    "/usr/bin/kubectl",
+    "/usr/bin/git",
+    "/usr/bin/cat",
+    "/usr/bin/python3",
+    "/usr/bin/bash",
+    null,
+};
+
+fn writeGeneratedPolicyFile(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    random: std.Random,
+    decision_count: usize,
+) !void {
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(allocator);
+
+    try source.writer(allocator).writeAll("version: 1\nenrollments:\n");
+    for (generated_enrollments) |entry| {
+        try source.writer(allocator).print(
+            "  - path: {s}\n    object_id: {s}\n",
+            .{ entry.path, entry.object_id },
+        );
+    }
+    try source.writer(allocator).writeAll("decisions:\n");
+    for (0..decision_count) |_| {
+        const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
+        const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
+        const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
+        const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
+        const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
+        const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
+        try source.writer(allocator).print(
+            "  - executable_path: {s}\n    uid: {d}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
+            .{
+                executable_path,
+                uid,
+                enrollment.path,
+                approval_class,
+                outcome,
+                expires_at orelse "null",
+            },
+        );
+    }
+
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source.items);
+}
+
+fn randomPolicyRequest(random: std.Random) policy.Request {
+    return .{
+        .path = generated_query_paths[random.uintLessThan(usize, generated_query_paths.len)],
+        .access_class = generated_access_classes[random.uintLessThan(usize, generated_access_classes.len)],
+        .pid = @intCast(1 + random.uintLessThan(u32, 4_000)),
+        .uid = generated_uids[random.uintLessThan(usize, generated_uids.len)],
+        .gid = 20,
+        .executable_path = generated_query_executable_paths[random.uintLessThan(usize, generated_query_executable_paths.len)],
+    };
+}
+
+fn repeatedByteStringZAlloc(allocator: std.mem.Allocator, byte: u8, len: usize) ![:0]u8 {
+    const value = try allocator.allocSentinel(u8, len, 0);
+    @memset(value[0..len], byte);
+    return value;
+}
+
 fn readFileAbsoluteAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
     defer file.close();
@@ -1240,4 +1503,22 @@ fn expectRenameAudit(
         .{ from, to, result },
     );
     return error.TestExpectedAuditEvent;
+}
+
+fn expectNoAuditEvent(
+    events: []const daemon.AuditEvent,
+    action: []const u8,
+    path: []const u8,
+    result: i32,
+) !void {
+    for (events) |event| {
+        if (!std.mem.eql(u8, event.action, action)) continue;
+        if (!std.mem.eql(u8, event.path, path)) continue;
+        if (event.result != result) continue;
+        std.debug.print(
+            "unexpected audit event action={s} path={s} result={d}\n",
+            .{ action, path, result },
+        );
+        return error.TestUnexpectedAuditEvent;
+    }
 }

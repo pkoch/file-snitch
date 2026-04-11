@@ -16,7 +16,7 @@ pub const Outcome = enum(u32) {
     prompt = 3,
 };
 
-pub const Rule = struct {
+pub const RuleView = struct {
     path_prefix: []const u8,
     access_class: AccessClass,
     outcome: Outcome,
@@ -53,7 +53,7 @@ pub const Engine = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         default_mutation_outcome: Outcome,
-        source_rules: []const Rule,
+        source_rules: []const RuleView,
     ) !Engine {
         var engine = Engine{
             .allocator = allocator,

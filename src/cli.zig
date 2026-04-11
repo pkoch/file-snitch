@@ -576,8 +576,8 @@ fn runStaticPolicy(command: RunCommand) !void {
         return;
     }
 
-    var compiled_rules = try loaded_policy.compilePolicyRules(allocator);
-    defer compiled_rules.deinit();
+    var compiled_rule_views = try loaded_policy.compilePolicyRuleViews(allocator);
+    defer compiled_rule_views.deinit();
 
     var mount_plan = try loaded_policy.deriveMountPlan(allocator);
     defer mount_plan.deinit();
@@ -690,7 +690,7 @@ fn runStaticPolicy(command: RunCommand) !void {
             .run_in_foreground = command.run_in_foreground,
             .default_mutation_outcome = command.default_mutation_outcome,
             .policy_path = command.policy_path,
-            .policy_rules = compiled_rules.items,
+            .policy_rule_views = compiled_rule_views.items,
             .prompt_broker = if (command.default_mutation_outcome == .prompt)
                 agent.socketBroker(@constCast(&prompt_requester.?))
             else
@@ -1292,11 +1292,11 @@ fn reconcileManagedMountChildren(
         return null;
     };
 
-    var compiled_rules = loaded_policy.compilePolicyRules(allocator) catch |err| {
+    var compiled_rule_views = loaded_policy.compilePolicyRuleViews(allocator) catch |err| {
         std.log.err("failed to compile policy rules from {s}: {}", .{ loaded_policy.source_path, err });
         return next_expiration_unix_seconds;
     };
-    defer compiled_rules.deinit();
+    defer compiled_rule_views.deinit();
 
     var mount_plan = loaded_policy.deriveMountPlan(allocator) catch |err| {
         std.log.err("failed to derive mount plan from {s}: {}", .{ loaded_policy.source_path, err });
