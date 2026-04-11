@@ -19,9 +19,12 @@ mount_paths=()
 run_mode=""
 run_execution_mode=""
 fake_ui_queue_file=""
+smoke_lock_dir=""
 
 prepare_run_fixture() {
   local fixture_name="$1"
+
+  acquire_smoke_lock "$fixture_name"
 
   home_dir="$(mktemp -d "$TMP_ROOT/${fixture_name}-home.XXXXXX")"
   config_home_dir="$home_dir/.config"
@@ -482,8 +485,50 @@ cleanup_run_fixture() {
   agent_execution_mode=""
   agent_frontend_args=()
   fake_ui_queue_file=""
+  release_smoke_lock
 
   return "$status"
+}
+
+acquire_smoke_lock() {
+  local fixture_name="$1"
+  local lock_dir="$TMP_ROOT/file-snitch-smoke.lock"
+  local pid_file="$lock_dir/pid"
+  local fixture_file="$lock_dir/fixture"
+  local owner_pid=""
+
+  if mkdir "$lock_dir" 2>/dev/null; then
+    smoke_lock_dir="$lock_dir"
+    printf '%s\n' "${BASHPID:-$$}" >"$pid_file"
+    printf '%s\n' "$fixture_name" >"$fixture_file"
+    return
+  fi
+
+  if [[ -f "$pid_file" ]]; then
+    owner_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$owner_pid" ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+      rm -rf "$lock_dir"
+      if mkdir "$lock_dir" 2>/dev/null; then
+        smoke_lock_dir="$lock_dir"
+        printf '%s\n' "${BASHPID:-$$}" >"$pid_file"
+        printf '%s\n' "$fixture_name" >"$fixture_file"
+        return
+      fi
+    fi
+  fi
+
+  local active_fixture="unknown"
+  if [[ -f "$fixture_file" ]]; then
+    active_fixture="$(cat "$fixture_file" 2>/dev/null || printf 'unknown')"
+  fi
+  fail "another smoke fixture is already running ($active_fixture); run smoke tests serially"
+}
+
+release_smoke_lock() {
+  if [[ -n "$smoke_lock_dir" ]]; then
+    rm -rf "$smoke_lock_dir" 2>/dev/null || true
+  fi
+  smoke_lock_dir=""
 }
 
 remove_tree_with_retries() {
