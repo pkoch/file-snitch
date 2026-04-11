@@ -16,6 +16,8 @@ pub const Outcome = enum(u32) {
     prompt = 3,
 };
 
+/// Borrowed rule fields that alias another owner's storage.
+/// Callers that need the data after the source owner is torn down must copy it.
 pub const RuleView = struct {
     path_prefix: []const u8,
     access_class: AccessClass,
@@ -53,6 +55,7 @@ pub const Engine = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         default_mutation_outcome: Outcome,
+        // The engine deep-copies all nested slices from these borrowed views.
         source_rules: []const RuleView,
     ) !Engine {
         var engine = Engine{
@@ -175,4 +178,36 @@ fn matchesPath(prefix: []const u8, path: []const u8, exact_path: bool) bool {
     }
 
     return prefix[prefix.len - 1] == '/' or path[prefix.len] == '/';
+}
+
+fn checkEngineInitAllocationFailures(allocator: std.mem.Allocator) !void {
+    var engine = try Engine.init(allocator, .deny, &.{
+        .{
+            .path_prefix = "/tmp/demo-secret",
+            .access_class = .read,
+            .outcome = .allow,
+            .uid = 501,
+            .executable_path = "/bin/cat",
+            .exact_path = true,
+            .expires_at_unix_seconds = 1_776_120_000,
+        },
+        .{
+            .path_prefix = "/tmp/demo-dir",
+            .access_class = .write,
+            .outcome = .deny,
+            .uid = null,
+            .executable_path = null,
+            .exact_path = false,
+            .expires_at_unix_seconds = null,
+        },
+    });
+    defer engine.deinit();
+}
+
+test "engine init handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkEngineInitAllocationFailures,
+        .{},
+    );
 }

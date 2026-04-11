@@ -48,6 +48,7 @@ pub const MountPlan = struct {
 
 pub const CompiledRuleViews = struct {
     allocator: std.mem.Allocator,
+    // Owns the outer slice only. Each RuleView aliases PolicyFile.decisions.
     items: []policy.RuleView,
 
     pub fn deinit(self: *CompiledRuleViews) void {
@@ -123,14 +124,13 @@ pub const PolicyFile = struct {
             .object_id = object_id,
         });
 
-        const previous_len = self.enrollments.len;
-        self.enrollments = try self.allocator.realloc(self.enrollments, previous_len + 1);
-        errdefer self.enrollments = self.enrollments[0..previous_len];
-
         const owned_path = try self.allocator.dupe(u8, enrolled_path);
         errdefer self.allocator.free(owned_path);
         const owned_object_id = try self.allocator.dupe(u8, object_id);
         errdefer self.allocator.free(owned_object_id);
+
+        const previous_len = self.enrollments.len;
+        self.enrollments = try self.allocator.realloc(self.enrollments, previous_len + 1);
 
         self.enrollments[previous_len] = .{
             .path = owned_path,
@@ -191,33 +191,47 @@ pub const PolicyFile = struct {
             if (!std.mem.eql(u8, decision.path, enrolled_path)) continue;
             if (!std.mem.eql(u8, decision.approval_class, approval_class)) continue;
 
-            self.allocator.free(decision.outcome);
-            decision.outcome = try self.allocator.dupe(u8, outcome);
-
-            if (decision.expires_at) |existing| {
-                self.allocator.free(existing);
-            }
-            decision.expires_at = if (expires_at) |value|
+            const owned_outcome = try self.allocator.dupe(u8, outcome);
+            errdefer self.allocator.free(owned_outcome);
+            const owned_expires_at = if (expires_at) |value|
                 try self.allocator.dupe(u8, value)
             else
                 null;
+            errdefer if (owned_expires_at) |value| self.allocator.free(value);
+
+            self.allocator.free(decision.outcome);
+            decision.outcome = owned_outcome;
+            if (decision.expires_at) |existing| {
+                self.allocator.free(existing);
+            }
+            decision.expires_at = owned_expires_at;
             return;
         }
 
+        const owned_executable_path = try self.allocator.dupe(u8, executable_path);
+        errdefer self.allocator.free(owned_executable_path);
+        const owned_path = try self.allocator.dupe(u8, enrolled_path);
+        errdefer self.allocator.free(owned_path);
+        const owned_approval_class = try self.allocator.dupe(u8, approval_class);
+        errdefer self.allocator.free(owned_approval_class);
+        const owned_outcome = try self.allocator.dupe(u8, outcome);
+        errdefer self.allocator.free(owned_outcome);
+        const owned_expires_at = if (expires_at) |value|
+            try self.allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (owned_expires_at) |value| self.allocator.free(value);
+
         const previous_len = self.decisions.len;
         self.decisions = try self.allocator.realloc(self.decisions, previous_len + 1);
-        errdefer self.decisions = self.decisions[0..previous_len];
 
         self.decisions[previous_len] = .{
-            .executable_path = try self.allocator.dupe(u8, executable_path),
+            .executable_path = owned_executable_path,
             .uid = uid,
-            .path = try self.allocator.dupe(u8, enrolled_path),
-            .approval_class = try self.allocator.dupe(u8, approval_class),
-            .outcome = try self.allocator.dupe(u8, outcome),
-            .expires_at = if (expires_at) |value|
-                try self.allocator.dupe(u8, value)
-            else
-                null,
+            .path = owned_path,
+            .approval_class = owned_approval_class,
+            .outcome = owned_outcome,
+            .expires_at = owned_expires_at,
         };
     }
 
@@ -656,9 +670,13 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
 
     for (raw_enrollments, 0..) |raw, index| {
         try validateEnrollment(raw);
+        const owned_path = try allocator.dupe(u8, raw.path);
+        errdefer allocator.free(owned_path);
+        const owned_object_id = try allocator.dupe(u8, raw.object_id);
+        errdefer allocator.free(owned_object_id);
         enrollments[index] = .{
-            .path = try allocator.dupe(u8, raw.path),
-            .object_id = try allocator.dupe(u8, raw.object_id),
+            .path = owned_path,
+            .object_id = owned_object_id,
         };
         initialized += 1;
     }
@@ -687,16 +705,26 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
 
     for (raw_decisions, 0..) |raw, index| {
         try validateDecision(raw);
+        const owned_executable_path = try allocator.dupe(u8, raw.executable_path);
+        errdefer allocator.free(owned_executable_path);
+        const owned_path = try allocator.dupe(u8, raw.path);
+        errdefer allocator.free(owned_path);
+        const owned_approval_class = try allocator.dupe(u8, raw.approval_class);
+        errdefer allocator.free(owned_approval_class);
+        const owned_outcome = try allocator.dupe(u8, raw.outcome);
+        errdefer allocator.free(owned_outcome);
+        const owned_expires_at = if (normalizeScalar(raw.expires_at)) |expires_at|
+            try allocator.dupe(u8, expires_at)
+        else
+            null;
+        errdefer if (owned_expires_at) |value| allocator.free(value);
         decisions[index] = .{
-            .executable_path = try allocator.dupe(u8, raw.executable_path),
+            .executable_path = owned_executable_path,
             .uid = raw.uid,
-            .path = try allocator.dupe(u8, raw.path),
-            .approval_class = try allocator.dupe(u8, raw.approval_class),
-            .outcome = try allocator.dupe(u8, raw.outcome),
-            .expires_at = if (normalizeScalar(raw.expires_at)) |expires_at|
-                try allocator.dupe(u8, expires_at)
-            else
-                null,
+            .path = owned_path,
+            .approval_class = owned_approval_class,
+            .outcome = owned_outcome,
+            .expires_at = owned_expires_at,
         };
         initialized += 1;
     }
@@ -905,4 +933,110 @@ test "parse decision expiration rejects invalid values" {
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("later-ish"));
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("4102444800"));
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("2026-13-01T00:00:00Z"));
+}
+
+fn checkAppendEnrollmentAllocationFailures(allocator: std.mem.Allocator) !void {
+    const source_path = try allocator.dupe(u8, "/tmp/file-snitch-alloc-failure.yml");
+    var policy_file = try emptyPolicy(allocator, source_path);
+    defer policy_file.deinit();
+
+    try policy_file.appendEnrollment("/tmp/demo-secret", "object-1");
+}
+
+test "appendEnrollment handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkAppendEnrollmentAllocationFailures,
+        .{},
+    );
+}
+
+fn checkUpsertDecisionInsertAllocationFailures(allocator: std.mem.Allocator) !void {
+    const source_path = try allocator.dupe(u8, "/tmp/file-snitch-alloc-failure.yml");
+    var policy_file = try emptyPolicy(allocator, source_path);
+    defer policy_file.deinit();
+
+    try policy_file.upsertDecision(
+        "/bin/cat",
+        501,
+        "/tmp/demo-secret",
+        "read_like",
+        "allow",
+        "2026-04-10T12:00:00Z",
+    );
+}
+
+test "upsertDecision insert handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkUpsertDecisionInsertAllocationFailures,
+        .{},
+    );
+}
+
+fn checkUpsertDecisionUpdateAllocationFailures(allocator: std.mem.Allocator) !void {
+    const source_path = try allocator.dupe(u8, "/tmp/file-snitch-alloc-failure.yml");
+    var policy_file = try emptyPolicy(allocator, source_path);
+    defer policy_file.deinit();
+
+    try policy_file.upsertDecision(
+        "/bin/cat",
+        501,
+        "/tmp/demo-secret",
+        "read_like",
+        "allow",
+        null,
+    );
+    try policy_file.upsertDecision(
+        "/bin/cat",
+        501,
+        "/tmp/demo-secret",
+        "read_like",
+        "deny",
+        "2026-04-10T12:00:00Z",
+    );
+}
+
+test "upsertDecision update handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkUpsertDecisionUpdateAllocationFailures,
+        .{},
+    );
+}
+
+fn checkCopyEnrollmentsAllocationFailures(allocator: std.mem.Allocator) !void {
+    const enrollments = try copyEnrollments(allocator, &.{.{
+        .path = "/tmp/demo-secret",
+        .object_id = "object-1",
+    }});
+    defer freeEnrollmentsAndSlice(allocator, enrollments);
+}
+
+test "copyEnrollments handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkCopyEnrollmentsAllocationFailures,
+        .{},
+    );
+}
+
+fn checkCopyDecisionsAllocationFailures(allocator: std.mem.Allocator) !void {
+    const decisions = try copyDecisions(allocator, &.{.{
+        .executable_path = "/bin/cat",
+        .uid = 501,
+        .path = "/tmp/demo-secret",
+        .approval_class = "read_like",
+        .outcome = "allow",
+        .expires_at = "2026-04-10T12:00:00Z",
+    }});
+    defer freeDecisionsAndSlice(allocator, decisions);
+}
+
+test "copyDecisions handles allocation failures" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkCopyDecisionsAllocationFailures,
+        .{},
+    );
 }
