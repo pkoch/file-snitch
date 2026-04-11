@@ -27,6 +27,7 @@ The product brief lives in
   - `terminal-pinentry`
   - `macos-ui` on macOS via `osascript`
   - `linux-ui` on Linux via `zenity`
+- shell completion generation for bash, zsh, and fish
 - formal release artifacts on GitHub Releases plus Homebrew/Linuxbrew packaging
 - per-user service install helpers for `launchd` and `systemd --user`
 
@@ -270,6 +271,7 @@ Prompt notes:
 - `file-snitch unenroll <path>` restores the guarded file to its original path and removes remembered decisions for that path
 - `file-snitch status` prints the current enrollments plus the derived mount plan
 - `file-snitch doctor` validates `policy.yml`, guarded objects, and target-path health and exits non-zero on actionable problems
+- `file-snitch completion <bash|zsh|fish>` prints a shell completion script for the requested shell
 - durable decisions from `policy.yml` are now enforced by `run` for exact enrolled paths, keyed by `executable_path`, `uid`, and approval class
 - policy updates are now serialized with a sidecar lock so `enroll`, `unenroll`, remembered decisions, and daemon expiry pruning do not clobber each other
 - prompt-capable frontends now expose:

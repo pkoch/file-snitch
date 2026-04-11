@@ -195,6 +195,33 @@ That installs:
 
 Linux requires `zenity` for that unattended prompt path.
 
+## Shell Completion
+
+Bash:
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+file-snitch completion bash > ~/.local/share/bash-completion/completions/file-snitch
+```
+
+Zsh:
+
+```bash
+mkdir -p ~/.zsh/completions
+file-snitch completion zsh > ~/.zsh/completions/_file-snitch
+```
+
+Fish:
+
+```bash
+mkdir -p ~/.config/fish/completions
+file-snitch completion fish > ~/.config/fish/completions/file-snitch.fish
+```
+
+These commands write the generated completion file to a common per-user location.
+Whether that location is loaded automatically depends on your shell
+configuration.
+
 ## Notes
 
 - `policy.yml` lives at `FILE_SNITCH_POLICY_PATH` when set, otherwise at
