@@ -223,14 +223,19 @@ zig build compile-commands
 ./tests/smoke/run-prompt-single.sh
 ./tests/smoke/run-prompt-remembered-decision.sh
 ./tests/smoke/user-service-rendering.sh
+
+# macOS only:
+./tests/smoke/run-prompt-macos-ui.sh
 ```
 
 What each command covers:
 - `zig build`: compile the CLI binary and the C `libfuse` shim
-- `zig build test`: run both Zig test roots wired in `build.zig`
+- `zig build test`: run every Zig test artifact wired in `build.zig`
   - `tests/core_integration.zig`: dry-run core coverage for the session/filesystem boundary
   - `src/prompt.zig`: prompt broker unit tests
   - `src/store.zig`: guarded-store unit tests for object serialization and the mock backend
+  - `src/config.zig`: `policy.yml` load, save, and mount-plan derivation tests
+  - `src/enrollment.zig`: enrollment helper unit tests
   - `src/agent.zig`: requester/agent framing and ULID unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that `run` stays alive and watches for future changes even when policy is currently empty
@@ -245,10 +250,6 @@ What each command covers:
 - `./tests/smoke/run-prompt-single.sh`: live verification of the current local interactive prompt path for allow, deny, and timeout behavior through `terminal-pinentry`
 - `./tests/smoke/run-prompt-remembered-decision.sh`: black-box verification that an `always allow` decision is written to `policy.yml`, reconciled by `run`, and suppresses later prompts
 - `./tests/smoke/user-service-rendering.sh`: black-box verification that the user-service helpers render the expected `launchd` and `systemd --user` files
-
-When debugging a specific area, the build-managed test step above is still the default, but the underlying Zig test roots are:
-- `tests/core_integration.zig`
-- `src/prompt.zig`
 
 Prompt notes:
 - `file-snitch run [allow|deny|prompt] [--policy <path>]` is the long-lived policy-driven reconciler entrypoint

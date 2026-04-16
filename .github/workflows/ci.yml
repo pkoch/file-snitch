@@ -16,7 +16,7 @@ jobs:
       - name: Check shell scripts
         run: |
           mapfile -t shell_files < <(
-            find scripts tests/smoke -type f \( -name '*.sh' -o -path 'tests/smoke/lib/*' \) | sort
+            find scripts tests -type f -name '*.sh' | sort
           )
           bash -n "${shell_files[@]}"
 

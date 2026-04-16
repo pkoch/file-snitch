@@ -32,7 +32,7 @@ zig build test
 CI also enforces a small hygiene layer:
 
 ```bash
-bash -n $(find scripts tests/smoke -type f \( -name '*.sh' -o -path 'tests/smoke/lib/*' \) | sort)
+bash -n $(find scripts tests -type f -name '*.sh' | sort)
 ./scripts/demo/check-demo-artifacts.sh
 ```
 
@@ -43,7 +43,6 @@ Run the smoke suite:
 ./tests/smoke/policy-lifecycle.sh
 ./tests/smoke/doctor-debug-dossier.sh
 ./tests/smoke/run-policy-reload.sh
-./tests/smoke/run-daemon-policy-reload.sh
 ./tests/smoke/run-expired-decision-cleanup.sh
 ./tests/smoke/run-single-enrollment.sh
 ./tests/smoke/run-multi-mount.sh
@@ -51,6 +50,9 @@ Run the smoke suite:
 ./tests/smoke/run-prompt-single.sh
 ./tests/smoke/run-prompt-remembered-decision.sh
 ./tests/smoke/user-service-rendering.sh
+
+# macOS only:
+./tests/smoke/run-prompt-macos-ui.sh
 ```
 
 Refresh `compile_commands.json` when needed:
