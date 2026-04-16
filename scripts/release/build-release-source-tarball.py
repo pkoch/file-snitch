@@ -20,13 +20,23 @@ def tracked_files(root: pathlib.Path) -> list[pathlib.Path]:
         text=False,
     )
     paths = []
+    forbidden_in_source = []
     for raw in output.split(b"\0"):
         if not raw:
             continue
         rel = pathlib.Path(raw.decode("utf-8"))
         if rel.parts and rel.parts[0] == "Formula":
+            forbidden_in_source.append(rel)
             continue
         paths.append(rel)
+    if forbidden_in_source:
+        joined = "\n  ".join(str(p) for p in forbidden_in_source)
+        raise SystemExit(
+            "error: tracked files found under Formula/, which must not ship in"
+            " the source tarball (the Homebrew formula lives in"
+            " pkoch/homebrew-tap and would create a checksum self-reference"
+            " loop). Move or delete these paths and try again:\n  " + joined
+        )
     return sorted(paths)
 
 

@@ -52,8 +52,10 @@ tap update from the main release script then.
 
 The release flow is built around deterministic inputs:
 - the release source tarball is generated from tracked files only
-- the release source tarball intentionally excludes `Formula/` to avoid a
-  checksum self-reference loop
+- the release source tarball builder fails loudly if any tracked file appears
+  under `Formula/`; the Homebrew formula lives in `pkoch/homebrew-tap` and
+  shipping it inside the source tarball would create a checksum
+  self-reference loop
 - Zig is pinned in [zig-toolchain.json](../zig-toolchain.json)
 - macOS release builds extract a pinned macFUSE SDK from the checksum-verified
   DMG declared in [release-inputs.json](../release-inputs.json)
