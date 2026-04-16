@@ -1,5 +1,6 @@
 const std = @import("std");
 const yaml = @import("yaml");
+const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -543,24 +544,16 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
 }
 
 pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_POLICY_PATH")) |policy_path| {
+    if (std.process.getEnvVarOwned(allocator, defaults.policy_path_env)) |policy_path| {
         return policy_path;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
         else => return err,
     }
 
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg_config_home| {
-        defer allocator.free(xdg_config_home);
-        return std.fmt.allocPrint(allocator, "{s}/file-snitch/policy.yml", .{xdg_config_home});
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.config/file-snitch/policy.yml", .{home});
+    const base = try defaults.xdgBasePathAlloc(allocator, "XDG_CONFIG_HOME", ".config");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "policy.yml" });
 }
 
 fn loadPolicySource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -941,7 +934,7 @@ test "parse decision expiration accepts RFC3339 UTC" {
 
 test "default policy path uses FILE_SNITCH_POLICY_PATH override" {
     const allocator = std.testing.allocator;
-    const policy_key = "FILE_SNITCH_POLICY_PATH";
+    const policy_key = defaults.policy_path_env;
     const policy_value = "/tmp/file-snitch-test-policy.yml";
     const xdg_key = "XDG_CONFIG_HOME";
     const xdg_value = "/tmp/file-snitch-test-config-home";

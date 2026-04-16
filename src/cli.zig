@@ -3,6 +3,7 @@ const agent = @import("agent.zig");
 const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
 const daemon = @import("daemon.zig");
+const defaults = @import("defaults.zig");
 const enrollment_ops = @import("enrollment.zig");
 const filesystem = @import("filesystem.zig");
 const policy = @import("policy.zig");
@@ -17,8 +18,6 @@ pub const std_options: std.Options = .{
 
 const allocator = std.heap.page_allocator;
 var supervisor_shutdown_signal = std.atomic.Value(i32).init(0);
-const internal_mount_path_env = "FILE_SNITCH_INTERNAL_MOUNT_PATH";
-const internal_status_fifo_env = "FILE_SNITCH_INTERNAL_STATUS_FIFO";
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
@@ -214,8 +213,8 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
         .policy_path = policy_path,
         .default_mutation_outcome = .deny,
         .prompt_timeout_ms = try loadPromptTimeoutMs(),
-        .status_fifo_path = try loadOptionalInternalPath(internal_status_fifo_env),
-        .mount_path_filter = try loadOptionalInternalPath(internal_mount_path_env),
+        .status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env),
+        .mount_path_filter = try loadOptionalInternalPath(defaults.internal_mount_path_env),
     };
     errdefer command.deinit(allocator);
 
@@ -738,8 +737,8 @@ fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const 
 }
 
 fn loadPromptTimeoutMs() !u32 {
-    const raw_value = std.process.getEnvVarOwned(allocator, "FILE_SNITCH_PROMPT_TIMEOUT_MS") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return 5_000,
+    const raw_value = std.process.getEnvVarOwned(allocator, defaults.prompt_timeout_ms_env) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return defaults.prompt_timeout_ms_default,
         else => return err,
     };
     defer allocator.free(raw_value);
@@ -1312,11 +1311,11 @@ fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.
     var env_map = try std.process.getEnvMap(allocator);
     errdefer env_map.deinit();
 
-    try env_map.put(internal_mount_path_env, mount_path);
+    try env_map.put(defaults.internal_mount_path_env, mount_path);
     if (command.status_fifo_path) |status_fifo_path| {
-        try env_map.put(internal_status_fifo_env, status_fifo_path);
+        try env_map.put(defaults.internal_status_fifo_env, status_fifo_path);
     } else {
-        _ = env_map.remove(internal_status_fifo_env);
+        _ = env_map.remove(defaults.internal_status_fifo_env);
     }
 
     return env_map;

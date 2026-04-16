@@ -1,7 +1,9 @@
 const std = @import("std");
+const agent = @import("agent.zig");
 const app_meta = @import("app_meta.zig");
 const builtin = @import("builtin");
 const config = @import("config.zig");
+const defaults = @import("defaults.zig");
 const enrollment = @import("enrollment.zig");
 const fuse = @import("fuse/shim.zig");
 const store = @import("store.zig");
@@ -151,7 +153,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         else => return err,
     };
     defer allocator.free(home_dir);
-    const agent_socket_path = try defaultAgentSocketPathForDossier(allocator);
+    const agent_socket_path = try agent.defaultSocketPathAlloc(allocator);
     defer allocator.free(agent_socket_path);
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
@@ -182,7 +184,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 
     switch (builtin.os.tag) {
         .macos => {
-            const helper_command = try detectGuiHelperCommandAlloc(allocator, "FILE_SNITCH_OSASCRIPT_BIN", "osascript");
+            const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.osascript_bin_env, "osascript");
             defer allocator.free(helper_command);
             if (try commandExists(allocator, helper_command)) {
                 try report_writer.print("ok: macos-ui helper is available: {s}\n", .{helper_command});
@@ -199,7 +201,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             try appendServicePathReport(report_writer, "launchd run", run_service_path);
         },
         .linux => {
-            const helper_command = try detectGuiHelperCommandAlloc(allocator, "FILE_SNITCH_ZENITY_BIN", "zenity");
+            const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.zenity_bin_env, "zenity");
             defer allocator.free(helper_command);
             if (try commandExists(allocator, helper_command)) {
                 try report_writer.print("ok: linux-ui helper is available: {s}\n", .{helper_command});
@@ -336,7 +338,7 @@ fn writeDebugDossier(
     defer allocator.free(pass_command);
     const gpg_command = try allocator.dupe(u8, "gpg");
     defer allocator.free(gpg_command);
-    const agent_socket_path = try defaultAgentSocketPathForDossier(allocator);
+    const agent_socket_path = try agent.defaultSocketPathAlloc(allocator);
     defer allocator.free(agent_socket_path);
     const pass_version = try summarizeCommandVersionAlloc(allocator, pass_command);
     defer allocator.free(pass_version);
@@ -421,7 +423,7 @@ fn writeDebugDossier(
 }
 
 fn detectPassCommandAlloc(allocator: std.mem.Allocator) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, "FILE_SNITCH_PASS_BIN") catch |err| switch (err) {
+    return std.process.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, "pass"),
         else => return err,
     };
@@ -533,20 +535,6 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
     }
     const suffix = path[home_dir.len..];
     return std.fmt.allocPrint(allocator, "~{s}", .{suffix});
-}
-
-fn defaultAgentSocketPathForDossier(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR")) |runtime_dir| {
-        defer allocator.free(runtime_dir);
-        return std.fs.path.join(allocator, &.{ runtime_dir, "file-snitch", "agent.sock" });
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {
-            const home_dir = try enrollment.currentUserHomeAlloc(allocator);
-            defer allocator.free(home_dir);
-            return std.fs.path.join(allocator, &.{ home_dir, ".local", "state", "file-snitch", "agent.sock" });
-        },
-        else => return err,
-    }
 }
 
 fn appendServicePathReport(

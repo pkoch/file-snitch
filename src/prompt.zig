@@ -1,4 +1,5 @@
 const std = @import("std");
+const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 
 pub const Request = struct {
@@ -42,7 +43,7 @@ pub const Broker = struct {
 };
 
 pub const CliContext = struct {
-    timeout_ms: u32 = 5_000,
+    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     stdin_file: std.fs.File = .stdin(),
     stderr_file: std.fs.File = .stderr(),
     mutex: std.Thread.Mutex = .{},
@@ -289,7 +290,7 @@ fn parseResponse(line: []const u8, can_remember: bool) Response {
             return .{
                 .decision = .allow,
                 .remember_kind = .temporary,
-                .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+                .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
             };
         }
         if (std.ascii.eqlIgnoreCase(trimmed, "a") or std.ascii.eqlIgnoreCase(trimmed, "always")) {

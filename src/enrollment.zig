@@ -1,4 +1,5 @@
 const std = @import("std");
+const defaults = @import("defaults.zig");
 const store = @import("store.zig");
 
 pub const PathKind = enum {
@@ -59,25 +60,11 @@ pub fn moveGuardedFileBack(
 }
 
 pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u8) ![]u8 {
-    if (std.process.getEnvVarOwned(alloc, "XDG_RUNTIME_DIR")) |xdg_runtime_dir| {
-        defer alloc.free(xdg_runtime_dir);
-        return std.fmt.allocPrint(
-            alloc,
-            "{s}/file-snitch/lock-anchors/{s}.lock",
-            .{ xdg_runtime_dir, object_id },
-        );
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    const home = try std.process.getEnvVarOwned(alloc, "HOME");
-    defer alloc.free(home);
-    return std.fmt.allocPrint(
-        alloc,
-        "{s}/.local/state/file-snitch/lock-anchors/{s}.lock",
-        .{ home, object_id },
-    );
+    const base = try defaults.xdgBasePathAlloc(alloc, "XDG_RUNTIME_DIR", ".local/state");
+    defer alloc.free(base);
+    const filename = try std.fmt.allocPrint(alloc, "{s}.lock", .{object_id});
+    defer alloc.free(filename);
+    return std.fs.path.join(alloc, &.{ base, "file-snitch", "lock-anchors", filename });
 }
 
 pub fn pathKind(path: []const u8) PathKind {

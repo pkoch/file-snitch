@@ -1,4 +1,5 @@
 const std = @import("std");
+const defaults = @import("defaults.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -88,7 +89,7 @@ pub const PassBackend = struct {
     const store_prefix = "file-snitch";
 
     fn init(allocator: Allocator) !PassBackend {
-        const command = std.process.getEnvVarOwned(allocator, "FILE_SNITCH_PASS_BIN") catch |err| switch (err) {
+        const command = std.process.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
             error.EnvironmentVariableNotFound => try allocator.dupe(u8, "pass"),
             else => return err,
         };

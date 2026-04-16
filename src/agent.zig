@@ -2,6 +2,7 @@ const std = @import("std");
 const net = std.net;
 const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
+const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
@@ -18,7 +19,7 @@ pub const RequesterContext = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
     policy_path: []const u8,
-    timeout_ms: u32 = 5_000,
+    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
 };
 
 pub const FrontendKind = enum {
@@ -39,7 +40,7 @@ pub const Frontend = struct {
 
 pub const TerminalPinentryContext = struct {
     allocator: std.mem.Allocator,
-    timeout_ms: u32 = 5_000,
+    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     tty_path: ?[]const u8 = null,
     inherited_cli_context: ?*prompt.CliContext = null,
     mutex: std.Thread.Mutex = .{},
@@ -47,13 +48,13 @@ pub const TerminalPinentryContext = struct {
 
 pub const MacosUiContext = struct {
     allocator: std.mem.Allocator,
-    timeout_ms: u32 = 5_000,
+    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     osascript_path: []const u8,
 };
 
 pub const LinuxUiContext = struct {
     allocator: std.mem.Allocator,
-    timeout_ms: u32 = 5_000,
+    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     zenity_path: []const u8,
 };
 
@@ -75,24 +76,16 @@ const ConnectionWorkerContext = struct {
 };
 
 pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_SOCKET")) |value| {
+    if (std.process.getEnvVarOwned(allocator, defaults.agent_socket_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
         else => return err,
     }
 
-    if (std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR")) |runtime_dir| {
-        defer allocator.free(runtime_dir);
-        return std.fmt.allocPrint(allocator, "{s}/file-snitch/agent.sock", .{runtime_dir});
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.local/state/file-snitch/agent.sock", .{home});
+    const base = try defaults.xdgBasePathAlloc(allocator, "XDG_RUNTIME_DIR", ".local/state");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "agent.sock" });
 }
 
 pub fn socketBroker(context: *RequesterContext) prompt.Broker {
@@ -127,7 +120,7 @@ pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
 }
 
 pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_AGENT_TTY")) |value| {
+    if (std.process.getEnvVarOwned(allocator, defaults.agent_tty_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -139,7 +132,7 @@ pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_OSASCRIPT_BIN")) |value| {
+    if (std.process.getEnvVarOwned(allocator, defaults.osascript_bin_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -150,7 +143,7 @@ pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultZenityPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "FILE_SNITCH_ZENITY_BIN")) |value| {
+    if (std.process.getEnvVarOwned(allocator, defaults.zenity_bin_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -714,7 +707,7 @@ fn parseMacosUiResponse(raw_output: []const u8) !prompt.Response {
     if (std.mem.eql(u8, trimmed, "allow-5m")) return .{
         .decision = .allow,
         .remember_kind = .temporary,
-        .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+        .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
     };
     if (std.mem.eql(u8, trimmed, "always-allow")) return .{ .decision = .allow, .remember_kind = .durable };
     if (std.mem.eql(u8, trimmed, "always-deny")) return .{ .decision = .deny, .remember_kind = .durable };
@@ -744,7 +737,7 @@ fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
     if (std.mem.eql(u8, trimmed, "Allow 5 min") or std.mem.eql(u8, trimmed, "allow-5m")) return .{
         .decision = .allow,
         .remember_kind = .temporary,
-        .expires_at_unix_seconds = std.time.timestamp() + (5 * 60),
+        .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
     };
     if (std.mem.eql(u8, trimmed, "Always allow") or std.mem.eql(u8, trimmed, "always-allow")) {
         return .{ .decision = .allow, .remember_kind = .durable };
@@ -1215,7 +1208,7 @@ test "generated ulid is well-formed" {
 
 test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
     const allocator = std.testing.allocator;
-    const key = "FILE_SNITCH_AGENT_TTY";
+    const key = defaults.agent_tty_env;
     const value = "/tmp/file-snitch-agent-test-tty";
 
     try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
@@ -1228,7 +1221,7 @@ test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
 
 test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
     const allocator = std.testing.allocator;
-    const key = "FILE_SNITCH_OSASCRIPT_BIN";
+    const key = defaults.osascript_bin_env;
     const value = "/tmp/file-snitch-test-osascript";
 
     try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
@@ -1241,7 +1234,7 @@ test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
 
 test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
     const allocator = std.testing.allocator;
-    const key = "FILE_SNITCH_ZENITY_BIN";
+    const key = defaults.zenity_bin_env;
     const value = "/tmp/file-snitch-test-zenity";
 
     try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
