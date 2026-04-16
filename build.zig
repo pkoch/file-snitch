@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     });
     app_src_module.addImport("yaml", yaml_module);
     app_src_module.addOptions("build_options", build_options);
+    app_src_module.addIncludePath(b.path("c"));
     test_module.addImport("app_src", app_src_module);
     configureFuseInterop(b, test_module, target.result.os.tag);
 

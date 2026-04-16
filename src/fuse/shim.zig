@@ -1,5 +1,9 @@
 const std = @import("std");
 
+const c_header = @cImport({
+    @cInclude("libfuse_shim.h");
+});
+
 const c = struct {
     pub const OpaqueSession = opaque {};
 
@@ -41,6 +45,149 @@ const c = struct {
     extern fn fsn_fuse_session_argument_at(session: *const OpaqueSession, index: u32) ?[*:0]const u8;
     extern fn fsn_fuse_status_label(status: c_int) [*:0]const u8;
 };
+
+comptime {
+    assertAbi(c.RawEnvironment, c_header.struct_fsn_fuse_environment, &.{
+        .{ "fuse_major_version", "fuse_major_version" },
+        .{ "fuse_minor_version", "fuse_minor_version" },
+        .{ "high_level_ops_size", "high_level_ops_size" },
+        .{ "uses_c_shim", "uses_c_shim" },
+        .{ "reserved", "reserved" },
+    });
+    assertAbi(c.RawSessionConfig, c_header.struct_fsn_fuse_session_config, &.{
+        .{ "mount_path", "mount_path" },
+        .{ "source_dir_fd", "source_dir_fd" },
+        .{ "daemon_state", "daemon_state" },
+        .{ "run_in_foreground", "run_in_foreground" },
+        .{ "reserved", "reserved" },
+    });
+    assertAbi(c.RawSessionInfo, c_header.struct_fsn_fuse_session_info, &.{
+        .{ "high_level_ops_size", "high_level_ops_size" },
+        .{ "configured_operation_count", "configured_operation_count" },
+        .{ "planned_argument_count", "planned_argument_count" },
+        .{ "mount_implemented", "mount_implemented" },
+        .{ "has_session_state", "has_session_state" },
+        .{ "has_daemon_state", "has_daemon_state" },
+        .{ "has_init_callback", "has_init_callback" },
+        .{ "run_in_foreground", "run_in_foreground" },
+        .{ "reserved", "reserved" },
+    });
+}
+
+fn assertAbi(
+    comptime ZigStruct: type,
+    comptime CStruct: type,
+    comptime fields: []const struct { []const u8, []const u8 },
+) void {
+    if (@sizeOf(ZigStruct) != @sizeOf(CStruct)) {
+        @compileError(std.fmt.comptimePrint(
+            "ABI size mismatch: Zig {s}={d} bytes, C {s}={d} bytes",
+            .{ @typeName(ZigStruct), @sizeOf(ZigStruct), @typeName(CStruct), @sizeOf(CStruct) },
+        ));
+    }
+    if (@alignOf(ZigStruct) != @alignOf(CStruct)) {
+        @compileError(std.fmt.comptimePrint(
+            "ABI alignment mismatch: Zig {s}={d}, C {s}={d}",
+            .{ @typeName(ZigStruct), @alignOf(ZigStruct), @typeName(CStruct), @alignOf(CStruct) },
+        ));
+    }
+    for (fields) |pair| {
+        const zig_offset = @offsetOf(ZigStruct, pair[0]);
+        const c_offset = @offsetOf(CStruct, pair[1]);
+        if (zig_offset != c_offset) {
+            @compileError(std.fmt.comptimePrint(
+                "ABI field offset mismatch: Zig {s}.{s}={d}, C {s}.{s}={d}",
+                .{ @typeName(ZigStruct), pair[0], zig_offset, @typeName(CStruct), pair[1], c_offset },
+            ));
+        }
+        const ZigField = @FieldType(ZigStruct, pair[0]);
+        const CField = @FieldType(CStruct, pair[1]);
+        if (@sizeOf(ZigField) != @sizeOf(CField)) {
+            @compileError(std.fmt.comptimePrint(
+                "ABI field size mismatch: Zig {s}.{s}={d} bytes, C {s}.{s}={d} bytes",
+                .{ @typeName(ZigStruct), pair[0], @sizeOf(ZigField), @typeName(CStruct), pair[1], @sizeOf(CField) },
+            ));
+        }
+        if (@alignOf(ZigField) != @alignOf(CField)) {
+            @compileError(std.fmt.comptimePrint(
+                "ABI field alignment mismatch: Zig {s}.{s}={d}, C {s}.{s}={d}",
+                .{ @typeName(ZigStruct), pair[0], @alignOf(ZigField), @typeName(CStruct), pair[1], @alignOf(CField) },
+            ));
+        }
+    }
+}
+
+fn assertFnAbi(comptime name: []const u8, comptime ZigFn: type, comptime CFn: type) void {
+    const zig_info = @typeInfo(ZigFn).@"fn";
+    const c_info = @typeInfo(CFn).@"fn";
+    if (zig_info.params.len != c_info.params.len) {
+        @compileError(std.fmt.comptimePrint(
+            "ABI fn arity mismatch for {s}: Zig={d} params, C={d} params",
+            .{ name, zig_info.params.len, c_info.params.len },
+        ));
+    }
+    inline for (zig_info.params, c_info.params, 0..) |zp, cp, i| {
+        const ZT = zp.type orelse @compileError("ABI fn param missing Zig type: " ++ name);
+        const CT = cp.type orelse @compileError("ABI fn param missing C type: " ++ name);
+        if (@sizeOf(ZT) != @sizeOf(CT)) {
+            @compileError(std.fmt.comptimePrint(
+                "ABI fn {s} param[{d}] size mismatch: Zig={d}, C={d}",
+                .{ name, i, @sizeOf(ZT), @sizeOf(CT) },
+            ));
+        }
+        if (@alignOf(ZT) != @alignOf(CT)) {
+            @compileError(std.fmt.comptimePrint(
+                "ABI fn {s} param[{d}] alignment mismatch: Zig={d}, C={d}",
+                .{ name, i, @alignOf(ZT), @alignOf(CT) },
+            ));
+        }
+    }
+    const ZR = zig_info.return_type orelse @compileError("ABI fn missing Zig return type: " ++ name);
+    const CR = c_info.return_type orelse @compileError("ABI fn missing C return type: " ++ name);
+    if (@sizeOf(ZR) != @sizeOf(CR)) {
+        @compileError(std.fmt.comptimePrint(
+            "ABI fn {s} return size mismatch: Zig={d}, C={d}",
+            .{ name, @sizeOf(ZR), @sizeOf(CR) },
+        ));
+    }
+    if (@alignOf(ZR) != @alignOf(CR)) {
+        @compileError(std.fmt.comptimePrint(
+            "ABI fn {s} return alignment mismatch: Zig={d}, C={d}",
+            .{ name, @alignOf(ZR), @alignOf(CR) },
+        ));
+    }
+}
+
+comptime {
+    assertFnAbi("fsn_fuse_probe", @TypeOf(c.fsn_fuse_probe), @TypeOf(c_header.fsn_fuse_probe));
+    assertFnAbi("fsn_fuse_backend_name", @TypeOf(c.fsn_fuse_backend_name), @TypeOf(c_header.fsn_fuse_backend_name));
+    assertFnAbi("fsn_fuse_session_create", @TypeOf(c.fsn_fuse_session_create), @TypeOf(c_header.fsn_fuse_session_create));
+    assertFnAbi("fsn_fuse_session_destroy", @TypeOf(c.fsn_fuse_session_destroy), @TypeOf(c_header.fsn_fuse_session_destroy));
+    assertFnAbi("fsn_fuse_session_describe", @TypeOf(c.fsn_fuse_session_describe), @TypeOf(c_header.fsn_fuse_session_describe));
+    assertFnAbi("fsn_fuse_session_run", @TypeOf(c.fsn_fuse_session_run), @TypeOf(c_header.fsn_fuse_session_run));
+    assertFnAbi("fsn_fuse_session_argument_count", @TypeOf(c.fsn_fuse_session_argument_count), @TypeOf(c_header.fsn_fuse_session_argument_count));
+    assertFnAbi("fsn_fuse_session_argument_at", @TypeOf(c.fsn_fuse_session_argument_at), @TypeOf(c_header.fsn_fuse_session_argument_at));
+    assertFnAbi("fsn_fuse_status_label", @TypeOf(c.fsn_fuse_status_label), @TypeOf(c_header.fsn_fuse_status_label));
+}
+
+comptime {
+    const status_pairs = [_]struct { c_int, c_int }{
+        .{ 0, c_header.FSN_FUSE_STATUS_OK },
+        .{ -1, c_header.FSN_FUSE_STATUS_INVALID_ARGUMENT },
+        .{ -2, c_header.FSN_FUSE_STATUS_OUT_OF_MEMORY },
+        .{ -4, c_header.FSN_FUSE_STATUS_PLAN_BUILD_FAILED },
+        .{ -5, c_header.FSN_FUSE_STATUS_SETUP_FAILED },
+        .{ -6, c_header.FSN_FUSE_STATUS_LOOP_FAILED },
+    };
+    for (status_pairs) |pair| {
+        if (pair[0] != pair[1]) {
+            @compileError(std.fmt.comptimePrint(
+                "fsn_fuse_status value drift: expected {d}, header has {d}",
+                .{ pair[0], pair[1] },
+            ));
+        }
+    }
+}
 
 pub const Environment = struct {
     backend_name: []const u8,

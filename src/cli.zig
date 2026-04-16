@@ -25,7 +25,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     run(args[1..]) catch |err| switch (err) {
-        error.InvalidUsage, error.DoctorFailed, error.RunFailed => std.process.exit(1),
+        error.InvalidUsage, error.DoctorFailed => std.process.exit(1),
         error.StoreUnavailable => {
             std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
             std.debug.print("hint: `file-snitch doctor` will also report the detected pass command and runtime state\n", .{});
