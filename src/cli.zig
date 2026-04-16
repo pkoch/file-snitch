@@ -420,6 +420,7 @@ fn runWithPolicy(command: RunCommand) !void {
 fn runAgent(command: AgentCommand) !void {
     const timeout_ms = try loadPromptTimeoutMs();
     var cli_context = prompt.CliContext{
+        .allocator = allocator,
         .timeout_ms = timeout_ms,
     };
 

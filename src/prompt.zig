@@ -43,6 +43,7 @@ pub const Broker = struct {
 };
 
 pub const CliContext = struct {
+    allocator: std.mem.Allocator = std.heap.page_allocator,
     timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     stdin_file: std.fs.File = .stdin(),
     stderr_file: std.fs.File = .stderr(),
@@ -84,8 +85,8 @@ pub fn resolveCliWithContext(context: *CliContext, request: Request) Response {
     context.mutex.lock();
     defer context.mutex.unlock();
 
-    const label = promptLabel(request) catch return .{ .decision = .unavailable };
-    defer if (request.label == null) std.heap.page_allocator.free(label);
+    const label = promptLabel(context.allocator, request) catch return .{ .decision = .unavailable };
+    defer if (request.label == null) context.allocator.free(label);
 
     writePrompt(context, request, label) catch return .{ .decision = .unavailable };
 
@@ -116,27 +117,27 @@ fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void 
 
     if (context.stderr_file.isTty()) {
         const human = try std.fmt.allocPrint(
-            std.heap.page_allocator,
+            context.allocator,
             "{s}Authorize:{s} {s}{s}{s}\n",
             .{ ansi_bold, ansi_reset, ansi_bold, label, ansi_reset },
         );
-        defer std.heap.page_allocator.free(human);
+        defer context.allocator.free(human);
         try context.stderr_file.writeAll(human);
     }
 
     const message = if (request.can_remember)
         try std.fmt.allocPrint(
-            std.heap.page_allocator,
+            context.allocator,
             "allow? {s}[Y] once / [5] 5m / [a] always / [n] deny once / [d] always deny{s} ",
             .{ ansi_bold, ansi_reset },
         )
     else
         try std.fmt.allocPrint(
-            std.heap.page_allocator,
+            context.allocator,
             "allow? {s}[Y/n]{s} ",
             .{ ansi_bold, ansi_reset },
         );
-    defer std.heap.page_allocator.free(message);
+    defer context.allocator.free(message);
 
     try context.stderr_file.writeAll(message);
 }
@@ -145,7 +146,7 @@ fn finishPrompt(context: *CliContext, request: Request, label: []const u8, respo
     try context.stderr_file.writeAll("\n");
     if (context.stderr_file.isTty()) {
         const human = try std.fmt.allocPrint(
-            std.heap.page_allocator,
+            context.allocator,
             "{s}Decision:{s} {s}{s}{s}{s} for {s}{s}{s}\n",
             .{
                 ansi_bold,
@@ -159,7 +160,7 @@ fn finishPrompt(context: *CliContext, request: Request, label: []const u8, respo
                 ansi_reset,
             },
         );
-        defer std.heap.page_allocator.free(human);
+        defer context.allocator.free(human);
         try context.stderr_file.writeAll(human);
     }
     try writePromptJson(context, request, label, response);
@@ -171,7 +172,7 @@ fn writePromptJson(
     label: []const u8,
     response: ?Response,
 ) !void {
-    var output: std.io.Writer.Allocating = .init(std.heap.page_allocator);
+    var output: std.io.Writer.Allocating = .init(context.allocator);
     defer output.deinit();
 
     try std.json.Stringify.value(.{
@@ -192,9 +193,9 @@ fn writePromptJson(
     try context.stderr_file.writeAll(output.written());
 }
 
-fn promptLabel(request: Request) ![]const u8 {
+fn promptLabel(allocator: std.mem.Allocator, request: Request) ![]const u8 {
     return request.label orelse std.fmt.allocPrint(
-        std.heap.page_allocator,
+        allocator,
         "{s} {s}",
         .{ accessClassLabel(request.access_class), request.path },
     );
@@ -369,6 +370,7 @@ test "cli broker allows yes" {
     try writer.writeAll("yes\n");
 
     var context = CliContext{
+        .allocator = std.testing.allocator,
         .timeout_ms = 50,
         .stdin_file = .{ .handle = fds[0] },
         .stderr_file = .{ .handle = stderr_fds[1] },
@@ -400,6 +402,7 @@ test "cli broker allows empty response by default" {
     try writer.writeAll("\n");
 
     var context = CliContext{
+        .allocator = std.testing.allocator,
         .timeout_ms = 50,
         .stdin_file = .{ .handle = fds[0] },
         .stderr_file = .{ .handle = stderr_fds[1] },
@@ -428,6 +431,7 @@ test "cli broker times out to deny path" {
     defer std.posix.close(stderr_fds[1]);
 
     var context = CliContext{
+        .allocator = std.testing.allocator,
         .timeout_ms = 10,
         .stdin_file = .{ .handle = fds[0] },
         .stderr_file = .{ .handle = stderr_fds[1] },
@@ -458,6 +462,7 @@ test "cli broker can request remembered allow" {
     try writer.writeAll("a\n");
 
     var context = CliContext{
+        .allocator = std.testing.allocator,
         .timeout_ms = 50,
         .stdin_file = .{ .handle = fds[0] },
         .stderr_file = .{ .handle = stderr_fds[1] },

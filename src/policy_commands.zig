@@ -507,11 +507,8 @@ fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
 }
 
 fn backendName(guarded_store: ?store.Backend) []const u8 {
-    if (guarded_store == null) return "none";
-    return switch (guarded_store.?) {
-        .pass => "pass",
-        .mock => "mock",
-    };
+    if (guarded_store) |value| return value.name();
+    return "none";
 }
 
 fn describeStoreRefAlloc(

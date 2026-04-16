@@ -522,6 +522,7 @@ fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) pr
     defer tty_file.close();
 
     var cli_context = prompt.CliContext{
+        .allocator = pinentry_context.allocator,
         .timeout_ms = pinentry_context.timeout_ms,
         .stdin_file = tty_file,
         .stderr_file = tty_file,

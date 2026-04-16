@@ -38,46 +38,47 @@ pub const Backend = union(enum) {
         return .{ .mock = .{ .state = state } };
     }
 
+    pub fn name(self: *const Backend) []const u8 {
+        return switch (self.*) {
+            .pass => "pass",
+            .mock => "mock",
+        };
+    }
+
     pub fn deinit(self: *Backend, allocator: Allocator) void {
         switch (self.*) {
-            .pass => |*backend| backend.deinit(allocator),
-            .mock => |*backend| backend.deinit(allocator),
+            inline else => |*backend| backend.deinit(allocator),
         }
         self.* = undefined;
     }
 
     pub fn describeRefAlloc(self: *const Backend, allocator: Allocator, object_id: []const u8) ![]u8 {
         return switch (self.*) {
-            .pass => |*backend| backend.describeRefAlloc(allocator, object_id),
-            .mock => |*backend| backend.describeRefAlloc(allocator, object_id),
+            inline else => |*backend| backend.describeRefAlloc(allocator, object_id),
         };
     }
 
     pub fn exists(self: *Backend, allocator: Allocator, object_id: []const u8) !bool {
         return switch (self.*) {
-            .pass => |*backend| backend.exists(allocator, object_id),
-            .mock => |*backend| backend.exists(allocator, object_id),
+            inline else => |*backend| backend.exists(allocator, object_id),
         };
     }
 
     pub fn loadObject(self: *Backend, allocator: Allocator, object_id: []const u8) !Object {
         return switch (self.*) {
-            .pass => |*backend| backend.loadObject(allocator, object_id),
-            .mock => |*backend| backend.loadObject(allocator, object_id),
+            inline else => |*backend| backend.loadObject(allocator, object_id),
         };
     }
 
     pub fn putObject(self: *Backend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         return switch (self.*) {
-            .pass => |*backend| backend.putObject(allocator, object_id, object),
-            .mock => |*backend| backend.putObject(allocator, object_id, object),
+            inline else => |*backend| backend.putObject(allocator, object_id, object),
         };
     }
 
     pub fn removeObject(self: *Backend, allocator: Allocator, object_id: []const u8) !void {
         return switch (self.*) {
-            .pass => |*backend| backend.removeObject(allocator, object_id),
-            .mock => |*backend| backend.removeObject(allocator, object_id),
+            inline else => |*backend| backend.removeObject(allocator, object_id),
         };
     }
 };
@@ -252,7 +253,7 @@ pub const PassBackend = struct {
 
 pub const MockBackend = struct {
     state: *MockState,
-    
+
     fn deinit(self: *MockBackend, allocator: Allocator) void {
         _ = self;
         _ = allocator;
