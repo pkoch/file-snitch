@@ -451,3 +451,35 @@ test "termFromWaitStatus decodes exit, signal, and stop encodings" {
         else => try std.testing.expect(false),
     }
 }
+
+test "buildMountChildEnv sets mount path and removes status fifo when missing" {
+    const command = RunCommand{
+        .policy_path = "/tmp/policy.yml",
+        .default_mutation_outcome = .deny,
+        .prompt_timeout_ms = 100,
+        .status_fifo_path = null,
+        .mount_path_filter = null,
+    };
+
+    var env = try buildMountChildEnv(command, "/tmp/mount");
+    defer env.deinit();
+
+    try std.testing.expectEqualStrings("/tmp/mount", env.get(defaults.internal_mount_path_env).?);
+    try std.testing.expect(env.get(defaults.internal_status_fifo_env) == null);
+}
+
+test "buildMountChildEnv propagates status fifo when provided" {
+    const command = RunCommand{
+        .policy_path = "/tmp/policy.yml",
+        .default_mutation_outcome = .allow,
+        .prompt_timeout_ms = 100,
+        .status_fifo_path = "/tmp/status.fifo",
+        .mount_path_filter = null,
+    };
+
+    var env = try buildMountChildEnv(command, "/tmp/mount");
+    defer env.deinit();
+
+    try std.testing.expectEqualStrings("/tmp/mount", env.get(defaults.internal_mount_path_env).?);
+    try std.testing.expectEqualStrings("/tmp/status.fifo", env.get(defaults.internal_status_fifo_env).?);
+}
