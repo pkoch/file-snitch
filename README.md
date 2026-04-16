@@ -237,6 +237,10 @@ What each command covers:
   - `src/config.zig`: `policy.yml` load, save, and mount-plan derivation tests
   - `src/enrollment.zig`: enrollment helper unit tests
   - `src/agent.zig`: requester/agent framing and ULID unit tests
+  - `src/cli_completion.zig`: shell-completion script parsing and surface tests
+  - `src/cli_policy_watch.zig`: policy-watch helper unit tests
+  - `src/cli_supervisor.zig`: child-supervisor helper unit tests
+  - `src/filesystem_util.zig`: pure filesystem helper unit tests
 - `zig build compile-commands`: regenerate `compile_commands.json` for clangd
 - `./tests/smoke/run-empty-policy.sh`: black-box verification that `run` stays alive and watches for future changes even when policy is currently empty
 - `./tests/smoke/policy-lifecycle.sh`: black-box verification of `enroll`, `status`, `doctor`, and `unenroll`

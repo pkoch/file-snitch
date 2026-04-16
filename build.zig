@@ -155,6 +155,18 @@ pub fn build(b: *std.Build) void {
     configureLinkerPolicy(supervisor_tests, target.result.os.tag);
     const run_supervisor_tests = b.addRunArtifact(supervisor_tests);
 
+    const filesystem_util_test_module = b.createModule(.{
+        .root_source_file = b.path("src/filesystem_util.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const filesystem_util_tests = b.addTest(.{
+        .root_module = filesystem_util_test_module,
+    });
+    configureLinkerPolicy(filesystem_util_tests, target.result.os.tag);
+    const run_filesystem_util_tests = b.addRunArtifact(filesystem_util_tests);
+
     const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
@@ -165,6 +177,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_completion_tests.step);
     test_step.dependOn(&run_policy_watch_tests.step);
     test_step.dependOn(&run_supervisor_tests.step);
+    test_step.dependOn(&run_filesystem_util_tests.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {

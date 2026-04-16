@@ -4,142 +4,32 @@ const config = @import("config.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const store = @import("store.zig");
+const types = @import("filesystem_types.zig");
+const util = @import("filesystem_util.zig");
 const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
     @cInclude("sys/xattr.h");
 });
 
-const first_dynamic_inode: u64 = 4;
+const first_dynamic_inode = util.first_dynamic_inode;
 
-pub const NodeKind = enum(u32) {
-    missing = 0,
-    directory = 1,
-    regular_file = 2,
-};
-
-pub const OpenKind = enum(u8) {
-    missing = 0,
-    directory = 1,
-    synthetic_readonly = 2,
-    user_file = 3,
-};
-
-pub const AccessContext = struct {
-    pid: u32 = 0,
-    uid: u32 = 0,
-    gid: u32 = 0,
-    umask: u32 = 0,
-    executable_path: ?[]const u8 = null,
-};
-
-pub const Timestamp = struct {
-    sec: i64,
-    nsec: u32,
-};
-
-pub const RuntimeStats = struct {
-    configured_operation_count: u32 = 0,
-    planned_argument_count: u32 = 0,
-};
-
-pub const NodeInfo = struct {
-    kind: NodeKind,
-    mode: u32,
-    nlink: u32,
-    size: u64,
-    block_size: u32,
-    block_count: u64,
-    inode: u64,
-    uid: u32,
-    gid: u32,
-    atime: Timestamp,
-    mtime: Timestamp,
-    ctime: Timestamp,
-};
-
-pub const Lookup = struct {
-    node: NodeInfo,
-    open_kind: OpenKind,
-    guarded: bool,
-};
-
-pub const FileRequestInfo = struct {
-    flags: i32,
-    handle_id: ?u64 = null,
-};
-
-pub const AuditFileInfo = struct {
-    flags: i32,
-    fh_old: u64,
-    writepage: i32,
-    direct_io: u8,
-    keep_cache: u8,
-    flush: u8,
-    nonseekable: u8,
-    flock_release: u8,
-    padding_bits: u32,
-    purge_attr: u8,
-    purge_ubc: u8,
-    fh: u64,
-    lock_owner: u64,
-};
-
-pub const AuditLockInfo = struct {
-    cmd: i32,
-    lock_type: i16,
-    whence: i16,
-    pid: i32,
-    start: i64,
-    len: i64,
-};
-
-pub const AuditFlockInfo = struct {
-    operation: i32,
-};
-
-pub const AuditXattrInfo = struct {
-    name: ?[]const u8 = null,
-    size: ?u64 = null,
-    flags: ?i32 = null,
-    position: ?u32 = null,
-};
-
-pub const AuditRenameInfo = struct {
-    from: []const u8,
-    to: []const u8,
-};
-
-pub const AuditSyncInfo = struct {
-    datasync: bool,
-};
-
-pub const AuditMetadata = struct {
-    context: AccessContext = .{},
-    file_info: ?AuditFileInfo = null,
-    lock: ?AuditLockInfo = null,
-    flock: ?AuditFlockInfo = null,
-    xattr: ?AuditXattrInfo = null,
-    rename: ?AuditRenameInfo = null,
-    fsync: ?AuditSyncInfo = null,
-};
-
-pub const AuditEvent = struct {
-    action: []const u8,
-    path: []const u8,
-    result: i32,
-    timestamp: Timestamp,
-    pid: u32,
-    uid: u32,
-    gid: u32,
-    executable_path: ?[]const u8,
-    file_info: ?AuditFileInfo,
-    lock: ?AuditLockInfo,
-    flock: ?AuditFlockInfo,
-    xattr: ?AuditXattrInfo,
-    rename: ?AuditRenameInfo,
-    fsync: ?AuditSyncInfo,
-};
+pub const NodeKind = types.NodeKind;
+pub const OpenKind = types.OpenKind;
+pub const AccessContext = types.AccessContext;
+pub const Timestamp = types.Timestamp;
+pub const RuntimeStats = types.RuntimeStats;
+pub const NodeInfo = types.NodeInfo;
+pub const Lookup = types.Lookup;
+pub const FileRequestInfo = types.FileRequestInfo;
+pub const AuditFileInfo = types.AuditFileInfo;
+pub const AuditLockInfo = types.AuditLockInfo;
+pub const AuditFlockInfo = types.AuditFlockInfo;
+pub const AuditXattrInfo = types.AuditXattrInfo;
+pub const AuditRenameInfo = types.AuditRenameInfo;
+pub const AuditSyncInfo = types.AuditSyncInfo;
+pub const AuditMetadata = types.AuditMetadata;
+pub const AuditEvent = types.AuditEvent;
 
 const StoredAuditEvent = struct {
     action: []u8,
@@ -252,11 +142,7 @@ const RenameMutation = struct {
     replaced_target: ?StoredFile,
 };
 
-pub const GuardedEntryConfig = struct {
-    relative_path: []const u8,
-    object_id: []const u8,
-    lock_anchor_path: []const u8,
-};
+pub const GuardedEntryConfig = types.GuardedEntryConfig;
 
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
@@ -2047,154 +1933,33 @@ pub const Model = struct {
     }
 };
 
-fn writeIntoArrayList(
-    allocator: std.mem.Allocator,
-    list: *std.ArrayListUnmanaged(u8),
-    offset: usize,
-    bytes: []const u8,
-) !void {
-    const end = offset + bytes.len;
-    try list.ensureTotalCapacityPrecise(allocator, end);
-    if (list.items.len < end) {
-        const old_len = list.items.len;
-        list.items.len = end;
-        @memset(list.items[old_len..end], 0);
-    }
-    @memcpy(list.items[offset..end], bytes);
-}
-
-fn resizeArrayList(
-    allocator: std.mem.Allocator,
-    list: *std.ArrayListUnmanaged(u8),
-    size: usize,
-) !void {
-    try list.ensureTotalCapacityPrecise(allocator, size);
-    if (list.items.len < size) {
-        const old_len = list.items.len;
-        list.items.len = size;
-        @memset(list.items[old_len..size], 0);
-        return;
-    }
-
-    list.items.len = size;
-}
-
-fn copySlice(source: []const u8, buffer: []u8, offset: usize) i32 {
-    if (offset >= source.len) {
-        return 0;
-    }
-
-    const length = @min(source.len - offset, buffer.len);
-    @memcpy(buffer[0..length], source[offset .. offset + length]);
-    return @intCast(length);
-}
-
-fn currentTimestamp() Timestamp {
-    const now = std.time.nanoTimestamp();
-    return .{
-        .sec = @intCast(@divTrunc(now, std.time.ns_per_s)),
-        .nsec = @intCast(@mod(now, std.time.ns_per_s)),
-    };
-}
-
-fn ensureParentDirectoryAbsolute(path: []const u8) !void {
-    const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent_dir);
-}
-
-fn nanosFromTimestamp(timestamp: Timestamp) i128 {
-    return @as(i128, timestamp.sec) * std.time.ns_per_s + timestamp.nsec;
-}
-
-fn timestampFromNanos(nanos: i128) Timestamp {
-    return .{
-        .sec = @intCast(@divTrunc(nanos, std.time.ns_per_s)),
-        .nsec = @intCast(@mod(nanos, std.time.ns_per_s)),
-    };
-}
-
-fn timestampFromStatNanos(nanos: i128) Timestamp {
-    return timestampFromNanos(nanos);
-}
-
-fn timestampFromPosixStat(sec: i64, nsec: u64) Timestamp {
-    return .{
-        .sec = sec,
-        .nsec = @intCast(nsec),
-    };
-}
-
-fn missingLookup() Lookup {
-    return .{
-        .node = .{
-            .kind = .missing,
-            .mode = 0,
-            .nlink = 0,
-            .size = 0,
-            .block_size = 0,
-            .block_count = 0,
-            .inode = 0,
-            .uid = 0,
-            .gid = 0,
-            .atime = .{ .sec = 0, .nsec = 0 },
-            .mtime = .{ .sec = 0, .nsec = 0 },
-            .ctime = .{ .sec = 0, .nsec = 0 },
-        },
-        .open_kind = .missing,
-        .guarded = false,
-    };
-}
-
-fn relativeMountedPath(path: []const u8) ?[]const u8 {
-    if (path.len < 2 or path[0] != '/') {
-        return null;
-    }
-    return path[1..];
-}
-
-fn joinVirtualPath(allocator: std.mem.Allocator, directory_path: []const u8, child_name: []const u8) ![]u8 {
-    if (isRootPath(directory_path)) {
-        return std.fmt.allocPrint(allocator, "/{s}", .{child_name});
-    }
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ directory_path, child_name });
-}
-
-fn directChildName(directory_path: []const u8, descendant_path: []const u8) ?[]const u8 {
-    const relative = if (isRootPath(directory_path)) blk: {
-        if (descendant_path.len < 2 or descendant_path[0] != '/') return null;
-        break :blk descendant_path[1..];
-    } else blk: {
-        if (!std.mem.startsWith(u8, descendant_path, directory_path)) return null;
-        if (descendant_path.len <= directory_path.len or descendant_path[directory_path.len] != '/') return null;
-        break :blk descendant_path[directory_path.len + 1 ..];
-    };
-
-    if (relative.len == 0) return null;
-    const separator = std.mem.indexOfScalar(u8, relative, '/') orelse relative.len;
-    return relative[0..separator];
-}
-
-fn isDescendantPath(parent_path: []const u8, candidate_path: []const u8) bool {
-    if (isRootPath(parent_path)) {
-        return candidate_path.len > 1 and candidate_path[0] == '/';
-    }
-    return std.mem.startsWith(u8, candidate_path, parent_path) and
-        candidate_path.len > parent_path.len and
-        candidate_path[parent_path.len] == '/';
-}
-
-fn syntheticDirectoryInode(path: []const u8) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(path);
-    return first_dynamic_inode +% hasher.final();
-}
-
-fn blockCountForSize(size: u64) u64 {
-    if (size == 0) {
-        return 0;
-    }
-    return (size + 511) / 512;
-}
+const writeIntoArrayList = util.writeIntoArrayList;
+const resizeArrayList = util.resizeArrayList;
+const copySlice = util.copySlice;
+const currentTimestamp = util.currentTimestamp;
+const ensureParentDirectoryAbsolute = util.ensureParentDirectoryAbsolute;
+const nanosFromTimestamp = util.nanosFromTimestamp;
+const timestampFromNanos = util.timestampFromNanos;
+const timestampFromStatNanos = util.timestampFromStatNanos;
+const missingLookup = util.missingLookup;
+const relativeMountedPath = util.relativeMountedPath;
+const joinVirtualPath = util.joinVirtualPath;
+const directChildName = util.directChildName;
+const isDescendantPath = util.isDescendantPath;
+const syntheticDirectoryInode = util.syntheticDirectoryInode;
+const blockCountForSize = util.blockCountForSize;
+const currentUid = util.currentUid;
+const currentGid = util.currentGid;
+const accessClassForOpenFlags = util.accessClassForOpenFlags;
+const authorizeReadFromOpenFlags = util.authorizeReadFromOpenFlags;
+const authorizeWriteFromOpenFlags = util.authorizeWriteFromOpenFlags;
+const formatOpenPromptLabel = util.formatOpenPromptLabel;
+const accessClassLabel = util.accessClassLabel;
+const isRootPath = util.isRootPath;
+const isTransientVirtualPath = util.isTransientVirtualPath;
+const shouldPersistPath = util.shouldPersistPath;
+const errnoCode = util.errnoCode;
+const mapFsError = util.mapFsError;
 
 fn touchFileAtime(file: *StoredFile) void {
     file.atime = currentTimestamp();
@@ -2209,21 +1974,6 @@ fn touchFileContent(file: *StoredFile) void {
     const now = currentTimestamp();
     file.mtime = now;
     file.ctime = now;
-}
-
-fn currentUid() u32 {
-    return @intCast(std.posix.getuid());
-}
-
-fn currentGid() u32 {
-    return @intCast(c.getgid());
-}
-
-fn accessClassForOpenFlags(flags: i32) policy.AccessClass {
-    return switch (flags & c.O_ACCMODE) {
-        c.O_WRONLY, c.O_RDWR => .write,
-        else => .read,
-    };
 }
 
 fn grantForOpenFlags(flags: i32) HandleGrant {
@@ -2242,105 +1992,4 @@ fn hasActiveWriteGrant(self: *const Model, path: []const u8, pid: u32) bool {
         }
     }
     return false;
-}
-
-fn authorizeReadFromOpenFlags(flags: i32) i32 {
-    return switch (flags & c.O_ACCMODE) {
-        c.O_WRONLY => errnoCode(.BADF),
-        else => 0,
-    };
-}
-
-fn authorizeWriteFromOpenFlags(flags: i32) i32 {
-    return switch (flags & c.O_ACCMODE) {
-        c.O_RDONLY => errnoCode(.BADF),
-        else => 0,
-    };
-}
-
-fn formatOpenPromptLabel(
-    allocator: std.mem.Allocator,
-    operation: []const u8,
-    path: []const u8,
-    flags: i32,
-) ![]u8 {
-    var mode: std.ArrayList(u8) = .{};
-    defer mode.deinit(allocator);
-
-    switch (flags & c.O_ACCMODE) {
-        c.O_WRONLY => try mode.appendSlice(allocator, "O_WRONLY"),
-        c.O_RDWR => try mode.appendSlice(allocator, "O_RDWR"),
-        else => try mode.appendSlice(allocator, "O_RDONLY"),
-    }
-
-    const flag_bits = [_]struct {
-        mask: i32,
-        name: []const u8,
-    }{
-        .{ .mask = c.O_APPEND, .name = "O_APPEND" },
-        .{ .mask = c.O_CREAT, .name = "O_CREAT" },
-        .{ .mask = c.O_EXCL, .name = "O_EXCL" },
-        .{ .mask = c.O_TRUNC, .name = "O_TRUNC" },
-    };
-
-    for (flag_bits) |flag_bit| {
-        if ((flags & flag_bit.mask) != 0) {
-            try mode.appendSlice(allocator, "|");
-            try mode.appendSlice(allocator, flag_bit.name);
-        }
-    }
-
-    return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ operation, mode.items, path });
-}
-
-fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
-    return switch (access_class) {
-        .read => "read",
-        .create => "create",
-        .write => "write",
-        .rename => "rename",
-        .delete => "delete",
-        .metadata => "metadata",
-        .xattr => "xattr",
-    };
-}
-
-fn isRootPath(path: []const u8) bool {
-    return std.mem.eql(u8, path, "/");
-}
-
-fn isTransientSidecarName(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, "._");
-}
-
-fn isTransientVirtualPath(path: []const u8) bool {
-    return path.len > 3 and path[0] == '/' and isTransientSidecarName(path[1..]);
-}
-
-fn shouldPersistPath(path: []const u8) bool {
-    return !(path.len >= 3 and path[0] == '/' and path[1] == '.' and path[2] == '_');
-}
-
-fn errnoCode(err: std.posix.E) i32 {
-    return -@as(i32, @intFromEnum(err));
-}
-
-fn mapFsError(err: anyerror) i32 {
-    return switch (err) {
-        error.AccessDenied => errnoCode(.ACCES),
-        error.FileNotFound => errnoCode(.NOENT),
-        error.ObjectNotFound => errnoCode(.NOENT),
-        error.PathAlreadyExists => errnoCode(.EXIST),
-        error.NameTooLong => errnoCode(.NAMETOOLONG),
-        error.NotDir => errnoCode(.NOTDIR),
-        error.IsDir => errnoCode(.ISDIR),
-        error.InvalidPath => errnoCode(.OPNOTSUPP),
-        error.InvalidStoredObject, error.StoreCommandFailed, error.StoreUnavailable => errnoCode(.IO),
-        error.FileBusy, error.Locked => errnoCode(.BUSY),
-        error.ReadOnlyFileSystem => errnoCode(.ROFS),
-        error.NoSpaceLeft => errnoCode(.NOSPC),
-        error.DiskQuota => errnoCode(.DQUOT),
-        error.OutOfMemory, error.SystemResources => errnoCode(.NOMEM),
-        else => errnoCode(.IO),
-    };
 }
