@@ -117,6 +117,43 @@ pub fn build(b: *std.Build) void {
     configureLinkerPolicy(agent_tests, target.result.os.tag);
     const run_agent_tests = b.addRunArtifact(agent_tests);
 
+    const completion_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli_completion.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const completion_tests = b.addTest(.{
+        .root_module = completion_test_module,
+    });
+    configureLinkerPolicy(completion_tests, target.result.os.tag);
+    const run_completion_tests = b.addRunArtifact(completion_tests);
+
+    const policy_watch_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli_policy_watch.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const policy_watch_tests = b.addTest(.{
+        .root_module = policy_watch_test_module,
+    });
+    configureLinkerPolicy(policy_watch_tests, target.result.os.tag);
+    const run_policy_watch_tests = b.addRunArtifact(policy_watch_tests);
+
+    const supervisor_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli_supervisor.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    supervisor_test_module.addImport("yaml", yaml_module);
+    supervisor_test_module.addOptions("build_options", build_options);
+    const supervisor_tests = b.addTest(.{
+        .root_module = supervisor_test_module,
+    });
+    configureLinkerPolicy(supervisor_tests, target.result.os.tag);
+    const run_supervisor_tests = b.addRunArtifact(supervisor_tests);
+
     const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
@@ -124,6 +161,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_enrollment_tests.step);
     test_step.dependOn(&run_agent_tests.step);
+    test_step.dependOn(&run_completion_tests.step);
+    test_step.dependOn(&run_policy_watch_tests.step);
+    test_step.dependOn(&run_supervisor_tests.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
