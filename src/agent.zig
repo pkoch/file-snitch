@@ -645,7 +645,7 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
             \\on error number -128
             \\  return "deny"
             \\end try
-            ,
+        ,
             .{ escaped_prompt, escaped_title, timeout_seconds },
         );
     }
@@ -669,7 +669,7 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         \\on error number -128
         \\  return "deny"
         \\end try
-        ,
+    ,
         .{ escaped_prompt, escaped_title, timeout_seconds },
     );
 }
