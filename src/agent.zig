@@ -227,7 +227,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
 
     const hello_request_id = try requestIdFromFrame(context.allocator, hello_frame);
     defer context.allocator.free(hello_request_id);
-    try sendWelcome(stream, hello_request_id);
+    try sendWelcome(context.allocator, stream, hello_request_id);
 
     const request_id = try generateUlidAlloc(context.allocator);
     defer context.allocator.free(request_id);
@@ -247,7 +247,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     };
     defer if (request.label == null) context.allocator.free(display_path);
 
-    try sendDecide(stream, request_id, request, display_path, timeout_at_rfc3339);
+    try sendDecide(context.allocator, stream, request_id, request, display_path, timeout_at_rfc3339);
 
     while (true) {
         const frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
@@ -272,7 +272,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
 fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
     const hello_request_id = try generateUlidAlloc(context.allocator);
     defer context.allocator.free(hello_request_id);
-    try sendHello(stream, hello_request_id);
+    try sendHello(context.allocator, stream, hello_request_id);
 
     const welcome_frame = try readFrameAlloc(context.allocator, stream, null);
     defer context.allocator.free(welcome_frame);
@@ -291,14 +291,14 @@ fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
         if (std.mem.eql(u8, message_type, "query")) {
             const request_id = try requestIdFromFrame(context.allocator, frame);
             defer context.allocator.free(request_id);
-            try sendQueryResult(stream, request_id);
+            try sendQueryResult(context.allocator, stream, request_id);
             continue;
         }
 
         if (std.mem.eql(u8, message_type, "decide")) {
             const decision = try decideFromFrame(context.allocator, frame, context.frontend);
             defer context.allocator.free(decision.request_id);
-            sendDecision(stream, decision.request_id, decision.response) catch |err| {
+            sendDecision(context.allocator, stream, decision.request_id, decision.response) catch |err| {
                 if (isPeerClosedError(err)) return;
                 return err;
             };
@@ -307,7 +307,7 @@ fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
 
         const request_id = try requestIdFromFrame(context.allocator, frame);
         defer context.allocator.free(request_id);
-        try sendError(stream, request_id, "unsupported-message-type", "message type not supported");
+        try sendError(context.allocator, stream, request_id, "unsupported-message-type", "message type not supported");
     }
 }
 
@@ -377,8 +377,8 @@ const ResolvedDecision = struct {
     response: prompt.Response,
 };
 
-fn sendHello(stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(stream, .{
+fn sendHello(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "hello",
@@ -390,8 +390,8 @@ fn sendHello(stream: net.Stream, request_id: []const u8) !void {
     });
 }
 
-fn sendWelcome(stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(stream, .{
+fn sendWelcome(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "welcome",
@@ -403,8 +403,8 @@ fn sendWelcome(stream: net.Stream, request_id: []const u8) !void {
     });
 }
 
-fn sendQueryResult(stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(stream, .{
+fn sendQueryResult(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "query_result",
@@ -414,13 +414,14 @@ fn sendQueryResult(stream: net.Stream, request_id: []const u8) !void {
 }
 
 fn sendDecide(
+    allocator: std.mem.Allocator,
     stream: net.Stream,
     request_id: []const u8,
     request: prompt.Request,
     display_path: []const u8,
     timeout_at_rfc3339: []const u8,
 ) !void {
-    try sendJsonFrame(stream, .{
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "decide",
@@ -451,14 +452,19 @@ fn sendDecide(
     });
 }
 
-fn sendDecision(stream: net.Stream, request_id: []const u8, response: prompt.Response) !void {
+fn sendDecision(
+    allocator: std.mem.Allocator,
+    stream: net.Stream,
+    request_id: []const u8,
+    response: prompt.Response,
+) !void {
     const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
-        try formatRfc3339UtcAlloc(std.heap.page_allocator, unix_seconds)
+        try formatRfc3339UtcAlloc(allocator, unix_seconds)
     else
         null;
-    defer if (expires_at) |value| std.heap.page_allocator.free(value);
+    defer if (expires_at) |value| allocator.free(value);
 
-    try sendJsonFrame(stream, .{
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "decision",
@@ -472,8 +478,14 @@ fn sendDecision(stream: net.Stream, request_id: []const u8, response: prompt.Res
     });
 }
 
-fn sendError(stream: net.Stream, request_id: []const u8, code: []const u8, message: []const u8) !void {
-    try sendJsonFrame(stream, .{
+fn sendError(
+    allocator: std.mem.Allocator,
+    stream: net.Stream,
+    request_id: []const u8,
+    code: []const u8,
+    message: []const u8,
+) !void {
+    try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
         .version = protocol_version,
         .type = "error",
@@ -861,8 +873,8 @@ fn frameTypeFromJson(allocator: std.mem.Allocator, frame: []const u8) ![]u8 {
     return allocator.dupe(u8, parsed.value.type);
 }
 
-fn sendJsonFrame(stream: net.Stream, value: anytype) !void {
-    var output: std.io.Writer.Allocating = .init(std.heap.page_allocator);
+fn sendJsonFrame(allocator: std.mem.Allocator, stream: net.Stream, value: anytype) !void {
+    var output: std.io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     try std.json.Stringify.value(value, .{}, &output.writer);
     try writeFrame(stream, output.written());
@@ -1247,21 +1259,21 @@ test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
 }
 
 test "gui frontends serialize requests" {
-    const page_allocator = std.heap.page_allocator;
+    const allocator = std.testing.allocator;
 
     var terminal_context = TerminalPinentryContext{
-        .allocator = page_allocator,
+        .allocator = allocator,
     };
     try std.testing.expect(terminalPinentryFrontend(&terminal_context).supports_concurrent_requests);
 
     var macos_context = MacosUiContext{
-        .allocator = page_allocator,
+        .allocator = allocator,
         .osascript_path = "osascript",
     };
     try std.testing.expect(!macosUiFrontend(&macos_context).supports_concurrent_requests);
 
     var linux_context = LinuxUiContext{
-        .allocator = page_allocator,
+        .allocator = allocator,
         .zenity_path = "zenity",
     };
     try std.testing.expect(!linuxUiFrontend(&linux_context).supports_concurrent_requests);
@@ -1457,18 +1469,18 @@ fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
 }
 
 test "handleConnection ignores requester disconnect after prompt timeout" {
-    const page_allocator = std.heap.page_allocator;
-    const socket_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-disconnect-{d}.sock", .{std.time.nanoTimestamp()});
-    defer page_allocator.free(socket_path);
+    const allocator = std.testing.allocator;
+    const socket_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-disconnect-{d}.sock", .{std.time.nanoTimestamp()});
+    defer allocator.free(socket_path);
 
-    const blocking_context = try page_allocator.create(BlockingFrontendContext);
-    defer page_allocator.destroy(blocking_context);
+    const blocking_context = try allocator.create(BlockingFrontendContext);
+    defer allocator.destroy(blocking_context);
     blocking_context.* = .{};
 
-    const service_context = try page_allocator.create(AgentServiceContext);
-    defer page_allocator.destroy(service_context);
+    const service_context = try allocator.create(AgentServiceContext);
+    defer allocator.destroy(service_context);
     service_context.* = .{
-        .allocator = page_allocator,
+        .allocator = allocator,
         .socket_path = socket_path,
         .frontend = .{
             .context = blocking_context,
@@ -1476,12 +1488,12 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         },
     };
 
-    const failed = try page_allocator.create(std.atomic.Value(bool));
-    defer page_allocator.destroy(failed);
+    const failed = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(failed);
     failed.* = std.atomic.Value(bool).init(false);
 
-    const server_context = try page_allocator.create(DelayedDecisionServerContext);
-    defer page_allocator.destroy(server_context);
+    const server_context = try allocator.create(DelayedDecisionServerContext);
+    defer allocator.destroy(server_context);
     server_context.* = .{
         .service_context = service_context,
         .socket_path = socket_path,
@@ -1493,13 +1505,13 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
 
     var client_stream = try net.connectUnixSocket(socket_path);
 
-    const hello_frame = try readFrameAlloc(page_allocator, client_stream, 1_000);
-    defer page_allocator.free(hello_frame);
-    try validateHelloFrame(page_allocator, hello_frame);
+    const hello_frame = try readFrameAlloc(allocator, client_stream, 1_000);
+    defer allocator.free(hello_frame);
+    try validateHelloFrame(allocator, hello_frame);
 
-    const hello_request_id = try requestIdFromFrame(page_allocator, hello_frame);
-    defer page_allocator.free(hello_request_id);
-    try sendWelcome(client_stream, hello_request_id);
+    const hello_request_id = try requestIdFromFrame(allocator, hello_frame);
+    defer allocator.free(hello_request_id);
+    try sendWelcome(allocator, client_stream, hello_request_id);
 
     const request: prompt.Request = .{
         .path = "/known_hosts.old",
@@ -1511,7 +1523,7 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         .gid = 0,
         .executable_path = "/bin/cat",
     };
-    try sendDecide(client_stream, "disconnect-check", request, request.label.?, "2026-04-10T12:00:00Z");
+    try sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?, "2026-04-10T12:00:00Z");
     client_stream.close();
 
     var wait_attempts: usize = 0;
@@ -1527,15 +1539,18 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
 }
 
 test "agent accepts later connections while one prompt is blocked" {
-    const page_allocator = std.heap.page_allocator;
-    const socket_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-concurrency-{d}.sock", .{std.time.nanoTimestamp()});
+    const allocator = std.testing.allocator;
+    const socket_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.sock", .{std.time.nanoTimestamp()});
+    defer allocator.free(socket_path);
 
-    const blocking_context = try page_allocator.create(BlockingFrontendContext);
+    const blocking_context = try allocator.create(BlockingFrontendContext);
+    defer allocator.destroy(blocking_context);
     blocking_context.* = .{};
 
-    const service_context = try page_allocator.create(AgentServiceContext);
+    const service_context = try allocator.create(AgentServiceContext);
+    defer allocator.destroy(service_context);
     service_context.* = .{
-        .allocator = page_allocator,
+        .allocator = allocator,
         .socket_path = socket_path,
         .frontend = .{
             .context = blocking_context,
@@ -1543,10 +1558,32 @@ test "agent accepts later connections while one prompt is blocked" {
         },
     };
 
-    const test_service_context = try page_allocator.create(TestAgentServiceContext);
+    const test_service_context = try allocator.create(TestAgentServiceContext);
+    defer allocator.destroy(test_service_context);
     test_service_context.* = .{
         .service_context = service_context,
     };
+
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{std.time.nanoTimestamp()});
+    defer allocator.free(policy_path);
+    const first_done = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(first_done);
+    first_done.* = std.atomic.Value(bool).init(false);
+    const second_done = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(second_done);
+    second_done.* = std.atomic.Value(bool).init(false);
+
+    const first_requester = try allocator.create(RequesterContext);
+    defer allocator.destroy(first_requester);
+    first_requester.* = .{
+        .allocator = allocator,
+        .socket_path = socket_path,
+        .policy_path = policy_path,
+        .timeout_ms = 1_000,
+    };
+    const second_requester = try allocator.create(RequesterContext);
+    defer allocator.destroy(second_requester);
+    second_requester.* = first_requester.*;
 
     const service_thread = try std.Thread.spawn(.{}, runTestAgentServiceThread, .{test_service_context});
     defer service_thread.join();
@@ -1561,22 +1598,6 @@ test "agent accepts later connections while one prompt is blocked" {
         .gid = 1000,
         .executable_path = "/usr/bin/demo",
     };
-
-    const policy_path = try std.fmt.allocPrint(page_allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{std.time.nanoTimestamp()});
-    const first_done = try page_allocator.create(std.atomic.Value(bool));
-    first_done.* = std.atomic.Value(bool).init(false);
-    const second_done = try page_allocator.create(std.atomic.Value(bool));
-    second_done.* = std.atomic.Value(bool).init(false);
-
-    const first_requester = try page_allocator.create(RequesterContext);
-    first_requester.* = .{
-        .allocator = page_allocator,
-        .socket_path = socket_path,
-        .policy_path = policy_path,
-        .timeout_ms = 1_000,
-    };
-    const second_requester = try page_allocator.create(RequesterContext);
-    second_requester.* = first_requester.*;
 
     const first_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ first_done, first_requester, request });
     defer first_thread.join();
