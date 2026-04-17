@@ -709,7 +709,11 @@ fn loadPromptTimeoutMs() !u32 {
     };
     defer allocator.free(raw_value);
 
-    return std.fmt.parseInt(u32, raw_value, 10);
+    return std.fmt.parseInt(u32, raw_value, 10) catch
+        return invalidUsage(
+            "error: {s} must be a non-negative integer (milliseconds), got: {s}\n",
+            .{ defaults.prompt_timeout_ms_env, raw_value },
+        );
 }
 
 fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {

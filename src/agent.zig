@@ -783,7 +783,7 @@ fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Re
     defer parsed.deinit();
     _ = parsed.value.request_id;
     return .{
-        .decision = switch (parsed.value.outcome[0]) {
+        .decision = if (parsed.value.outcome.len == 0) .unavailable else switch (parsed.value.outcome[0]) {
             'a' => .allow,
             'd' => .deny,
             't' => .timeout,
