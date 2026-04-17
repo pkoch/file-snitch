@@ -210,13 +210,7 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
             continue;
         }
         if (std.mem.eql(u8, arg, "--policy")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            allocator.free(command.policy_path);
-            command.policy_path = try resolvePathArgument(args[index]);
+            try parsePolicyFlag(args, &index, &command.policy_path);
             continue;
         }
         printUsage();
@@ -301,13 +295,7 @@ fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            allocator.free(command.policy_path);
-            command.policy_path = try resolvePathArgument(args[index]);
+            try parsePolicyFlag(args, &index, &command.policy_path);
             continue;
         }
 
@@ -331,13 +319,7 @@ fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            allocator.free(command.policy_path);
-            command.policy_path = try resolvePathArgument(args[index]);
+            try parsePolicyFlag(args, &index, &command.policy_path);
             continue;
         }
         if (std.mem.eql(u8, args[index], "--export-debug-dossier")) {
@@ -384,13 +366,7 @@ fn parsePathCommand(args: []const []const u8, require_existing_target: bool) !Pa
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            index += 1;
-            if (index >= args.len) {
-                printUsage();
-                return error.InvalidUsage;
-            }
-            allocator.free(command.policy_path);
-            command.policy_path = try resolvePathArgument(args[index]);
+            try parsePolicyFlag(args, &index, &command.policy_path);
             continue;
         }
 
@@ -766,6 +742,17 @@ fn coversEnrollmentPath(mount_path: []const u8, enrollment_path: []const u8) boo
     return std.mem.startsWith(u8, enrollment_path, mount_path) and
         enrollment_path.len > mount_path.len and
         enrollment_path[mount_path.len] == '/';
+}
+
+fn parsePolicyFlag(args: []const []const u8, index: *usize, policy_path: *[]const u8) !void {
+    index.* += 1;
+    if (index.* >= args.len) {
+        printUsage();
+        return error.InvalidUsage;
+    }
+    const new_path = try resolvePathArgument(args[index.*]);
+    allocator.free(policy_path.*);
+    policy_path.* = new_path;
 }
 
 fn invalidUsage(comptime format: []const u8, args: anytype) error{InvalidUsage} {
