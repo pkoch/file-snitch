@@ -783,14 +783,7 @@ fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Re
     defer parsed.deinit();
     _ = parsed.value.request_id;
     return .{
-        .decision = if (parsed.value.outcome.len == 0) .unavailable else switch (parsed.value.outcome[0]) {
-            'a' => .allow,
-            'd' => .deny,
-            't' => .timeout,
-            'u' => .unavailable,
-            'c' => .deny,
-            else => .unavailable,
-        },
+        .decision = outcomeFromLabel(parsed.value.outcome) catch .unavailable,
         .remember_kind = if (parsed.value.remember) |remember|
             rememberKindFromLabel(remember.kind) catch .none
         else
@@ -1028,6 +1021,15 @@ fn outcomeLabel(decision: prompt.Decision) []const u8 {
         .timeout => "timeout",
         .unavailable => "unavailable",
     };
+}
+
+fn outcomeFromLabel(label: []const u8) !prompt.Decision {
+    if (std.mem.eql(u8, label, "allow")) return .allow;
+    if (std.mem.eql(u8, label, "deny")) return .deny;
+    if (std.mem.eql(u8, label, "timeout")) return .timeout;
+    if (std.mem.eql(u8, label, "unavailable")) return .unavailable;
+    if (std.mem.eql(u8, label, "cancel") or std.mem.eql(u8, label, "canceled")) return .deny;
+    return error.InvalidProtocolMessage;
 }
 
 fn rememberKindLabel(kind: prompt.RememberKind) []const u8 {
@@ -1628,4 +1630,23 @@ test "apple script escaping covers control characters" {
     defer allocator.free(escaped);
 
     try std.testing.expectEqualStrings("quoted \\\"value\\\"\\npath\\\\name", escaped);
+}
+
+test "outcomeFromLabel maps canonical labels to decisions" {
+    try std.testing.expectEqual(prompt.Decision.allow, try outcomeFromLabel("allow"));
+    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("deny"));
+    try std.testing.expectEqual(prompt.Decision.timeout, try outcomeFromLabel("timeout"));
+    try std.testing.expectEqual(prompt.Decision.unavailable, try outcomeFromLabel("unavailable"));
+}
+
+test "outcomeFromLabel maps cancel aliases to deny" {
+    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("cancel"));
+    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("canceled"));
+}
+
+test "outcomeFromLabel rejects unknown and prefix-matching labels" {
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel(""));
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("abc"));
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("allowed"));
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("ALLOW"));
 }
