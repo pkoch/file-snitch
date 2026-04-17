@@ -593,7 +593,7 @@ fn runStaticPolicy(command: RunCommand) !void {
         try daemon.mountEnrolledParent(allocator, .{
             .mount_path = planned_mounts[0].mount_path,
             .guarded_entries = planned_mounts[0].guarded_entries,
-            .guarded_store = guarded_store,
+            .guarded_store = &guarded_store,
             .run_in_foreground = true,
             .default_mutation_outcome = command.default_mutation_outcome,
             .policy_path = command.policy_path,

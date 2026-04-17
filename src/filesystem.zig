@@ -147,7 +147,8 @@ pub const GuardedEntryConfig = types.GuardedEntryConfig;
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const GuardedEntryConfig,
-    guarded_store: store.Backend,
+    /// Borrowed; the caller retains ownership and is the sole `deinit` site.
+    guarded_store: *store.Backend,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_path: ?[]const u8 = null,
     // Borrowed views that must stay valid until Model.init deep-copies them
@@ -162,7 +163,8 @@ pub const Model = struct {
     allocator: std.mem.Allocator,
     mount_path: []u8,
     source_dir: ?std.fs.Dir = null,
-    guarded_store: ?store.Backend = null,
+    /// Borrowed when set; the owner (CLI / policy command) is responsible for `deinit`.
+    guarded_store: ?*store.Backend = null,
     live_policy_path: ?[]u8 = null,
     last_policy_marker: ?config.PolicyMarker = null,
     policy_engine: policy.Engine,
@@ -212,7 +214,7 @@ pub const Model = struct {
             return error.FilesAlreadyLoaded;
         }
 
-        const guarded_store = &(self.guarded_store orelse return error.MissingGuardedStore);
+        const guarded_store = self.guarded_store orelse return error.MissingGuardedStore;
         for (guarded_entries) |entry| {
             const guarded_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{entry.relative_path});
             defer self.allocator.free(guarded_path);
@@ -254,9 +256,7 @@ pub const Model = struct {
         self.handle_grants.deinit(self.allocator);
 
         self.policy_engine.deinit();
-        if (self.guarded_store) |*guarded_store| {
-            guarded_store.deinit(self.allocator);
-        }
+        // `guarded_store` is borrowed; the owning caller deinits it.
         if (self.live_policy_path) |path| {
             self.allocator.free(path);
         }
@@ -1658,7 +1658,7 @@ pub const Model = struct {
 
     fn syncFileToContentRoot(self: *Model, file: *const StoredFile) i32 {
         if (file.backing_object_id) |object_id| {
-            const guarded_store = &(self.guarded_store orelse return errnoCode(.IO));
+            const guarded_store = self.guarded_store orelse return errnoCode(.IO);
             guarded_store.putObject(self.allocator, object_id, .{
                 .metadata = .{
                     .mode = file.mode,
@@ -1677,7 +1677,7 @@ pub const Model = struct {
 
     fn removeGuardedBackingFile(self: *Model, file: *const StoredFile) i32 {
         const object_id = file.backing_object_id orelse return errnoCode(.NOENT);
-        const guarded_store = &(self.guarded_store orelse return errnoCode(.IO));
+        const guarded_store = self.guarded_store orelse return errnoCode(.IO);
         guarded_store.removeObject(self.allocator, object_id) catch |err| return mapFsError(err);
         return 0;
     }

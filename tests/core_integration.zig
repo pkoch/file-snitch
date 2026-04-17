@@ -29,6 +29,7 @@ const Fixture = struct {
     allocator: std.mem.Allocator,
     mount_path: []u8,
     mock_state: store.MockState = .{},
+    backend: store.Backend = undefined,
 
     fn init(allocator: std.mem.Allocator) !Fixture {
         const run_id = std.time.nanoTimestamp();
@@ -57,8 +58,9 @@ const Fixture = struct {
         self.allocator.free(self.mount_path);
     }
 
-    fn guardedStore(self: *Fixture) store.Backend {
-        return store.Backend.initMock(&self.mock_state);
+    fn guardedStore(self: *Fixture) *store.Backend {
+        self.backend = store.Backend.initMock(&self.mock_state);
+        return &self.backend;
     }
 };
 
@@ -879,7 +881,7 @@ test "live policy reload suppresses repeated prompt without remount" {
             .object_id = "kube-config",
             .lock_anchor_path = lock_anchor_path,
         }},
-        .guarded_store = guarded_store,
+        .guarded_store = &guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .prompt,
         .policy_path = policy_path,
@@ -1098,7 +1100,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
             .object_id = "kube-config",
             .lock_anchor_path = lock_anchor_path,
         }},
-        .guarded_store = guarded_store,
+        .guarded_store = &guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
         .policy_path = null,
@@ -1209,7 +1211,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
                 .lock_anchor_path = second_lock_anchor_path,
             },
         },
-        .guarded_store = guarded_store,
+        .guarded_store = &guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
         .policy_path = null,
@@ -1302,7 +1304,7 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
             .object_id = "nested-token",
             .lock_anchor_path = lock_anchor_path,
         }},
-        .guarded_store = guarded_store,
+        .guarded_store = &guarded_store,
         .run_in_foreground = true,
         .default_mutation_outcome = .allow,
         .policy_path = null,

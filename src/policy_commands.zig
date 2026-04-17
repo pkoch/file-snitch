@@ -285,7 +285,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         try writeDebugDossier(
             allocator,
             &loaded_policy,
-            guarded_store,
+            if (guarded_store) |*backend| backend else null,
             mount_plan.paths,
             home_dir,
             report.items,
@@ -315,7 +315,7 @@ fn findEnrollmentIndexByArgument(
 fn writeDebugDossier(
     allocator: std.mem.Allocator,
     loaded_policy: *const config.PolicyFile,
-    guarded_store: ?store.Backend,
+    guarded_store: ?*store.Backend,
     mount_paths: []const []const u8,
     home_dir: []const u8,
     report: []const u8,
@@ -506,18 +506,17 @@ fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
     };
 }
 
-fn backendName(guarded_store: ?store.Backend) []const u8 {
+fn backendName(guarded_store: ?*store.Backend) []const u8 {
     if (guarded_store) |value| return value.name();
     return "none";
 }
 
 fn describeStoreRefAlloc(
     allocator: std.mem.Allocator,
-    guarded_store: ?store.Backend,
+    guarded_store: ?*store.Backend,
     object_id: []const u8,
 ) ![]u8 {
-    if (guarded_store) |backend_value| {
-        var backend = backend_value;
+    if (guarded_store) |backend| {
         return backend.describeRefAlloc(allocator, object_id);
     }
     return std.fmt.allocPrint(allocator, "unknown:{s}", .{object_id});

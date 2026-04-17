@@ -16,7 +16,8 @@ else
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const filesystem.GuardedEntryConfig,
-    guarded_store: store.Backend,
+    /// Borrowed; the caller retains ownership and is the sole `deinit` site.
+    guarded_store: *store.Backend,
     run_in_foreground: bool = true,
     default_mutation_outcome: policy.Outcome = .deny,
     policy_path: ?[]const u8 = null,
