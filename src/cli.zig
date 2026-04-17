@@ -189,17 +189,19 @@ fn parseCommand(args: []const []const u8) !Command {
 }
 
 fn parseRunCommand(args: []const []const u8) !RunCommand {
-    const policy_path = try config.defaultPolicyPathAlloc(allocator);
-    errdefer allocator.free(policy_path);
-
     var command: RunCommand = .{
-        .policy_path = policy_path,
+        .policy_path = &.{},
         .default_mutation_outcome = .deny,
-        .prompt_timeout_ms = try loadPromptTimeoutMs(),
-        .status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env),
-        .mount_path_filter = try loadOptionalInternalPath(defaults.internal_mount_path_env),
+        .prompt_timeout_ms = defaults.prompt_timeout_ms_default,
+        .status_fifo_path = null,
+        .mount_path_filter = null,
     };
     errdefer command.deinit(allocator);
+
+    command.policy_path = try config.defaultPolicyPathAlloc(allocator);
+    command.prompt_timeout_ms = try loadPromptTimeoutMs();
+    command.status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env);
+    command.mount_path_filter = try loadOptionalInternalPath(defaults.internal_mount_path_env);
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -232,7 +234,6 @@ fn parseCompletionCommand(args: []const []const u8) !completion.Shell {
 
 fn parseAgentCommand(args: []const []const u8) !AgentCommand {
     const socket_path = try agent.defaultSocketPathAlloc(allocator);
-    errdefer allocator.free(socket_path);
 
     var command: AgentCommand = .{
         .socket_path = socket_path,
@@ -285,7 +286,6 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
 
 fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
     const policy_path = try config.defaultPolicyPathAlloc(allocator);
-    errdefer allocator.free(policy_path);
 
     var command: PolicyCommand = .{
         .policy_path = policy_path,
@@ -308,7 +308,6 @@ fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
 
 fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
     const policy_path = try config.defaultPolicyPathAlloc(allocator);
-    errdefer allocator.free(policy_path);
 
     var command: DoctorCommand = .{
         .policy_path = policy_path,
@@ -348,20 +347,18 @@ fn parsePathCommand(args: []const []const u8, require_existing_target: bool) !Pa
         return error.InvalidUsage;
     }
 
-    const target_path = if (require_existing_target)
+    var command: PathCommand = .{
+        .policy_path = &.{},
+        .target_path = &.{},
+    };
+    errdefer command.deinit(allocator);
+
+    command.target_path = if (require_existing_target)
         try resolveExistingRegularFileArgument("target file", args[0])
     else
         try resolveEnrolledPathArgument(args[0]);
-    errdefer allocator.free(target_path);
 
-    const policy_path = try config.defaultPolicyPathAlloc(allocator);
-    errdefer allocator.free(policy_path);
-
-    var command: PathCommand = .{
-        .policy_path = policy_path,
-        .target_path = target_path,
-    };
-    errdefer command.deinit(allocator);
+    command.policy_path = try config.defaultPolicyPathAlloc(allocator);
 
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
