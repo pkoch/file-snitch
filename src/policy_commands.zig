@@ -149,18 +149,14 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
     const report_writer = report.writer(allocator);
 
     var has_errors = false;
-    const home_dir = enrollment.currentUserHomeAlloc(allocator) catch |err| switch (err) {
-        else => return err,
-    };
+    const home_dir = try enrollment.currentUserHomeAlloc(allocator);
     defer allocator.free(home_dir);
     const agent_socket_path = try agent.defaultSocketPathAlloc(allocator);
     defer allocator.free(agent_socket_path);
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     try report_writer.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
-    appendFuseReport(report_writer, &has_errors) catch |err| switch (err) {
-        else => return err,
-    };
+    try appendFuseReport(report_writer, &has_errors);
 
     if (loaded_policy.enrollments.len != 0) {
         const pass_command = try detectPassCommandAlloc(allocator);

@@ -410,13 +410,11 @@ fn runAgent(command: AgentCommand) !void {
     var linux_ui_context: ?agent.LinuxUiContext = null;
     const frontend = switch (command.frontend_kind) {
         .terminal_pinentry => blk: {
-            const tty_path = if (command.tty_path) |path| path else null;
-
             terminal_pinentry_context = .{
                 .allocator = allocator,
                 .timeout_ms = timeout_ms,
-                .tty_path = tty_path,
-                .inherited_cli_context = if (tty_path == null) &cli_context else null,
+                .tty_path = command.tty_path,
+                .inherited_cli_context = if (command.tty_path == null) &cli_context else null,
             };
             break :blk agent.terminalPinentryFrontend(&terminal_pinentry_context.?);
         },
@@ -621,9 +619,7 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     errdefer allocator.free(lexical_path);
 
     if (enrollment_ops.pathExists(lexical_path)) {
-        const canonical = std.fs.realpathAlloc(allocator, lexical_path) catch |err| switch (err) {
-            else => return err,
-        };
+        const canonical = try std.fs.realpathAlloc(allocator, lexical_path);
         allocator.free(lexical_path);
         return canonical;
     }
@@ -662,9 +658,7 @@ fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const 
         return error.InvalidUsage;
     }
 
-    const owned_by_current_user = enrollment_ops.pathOwnedByCurrentUser(target_path) catch |err| switch (err) {
-        else => return err,
-    };
+    const owned_by_current_user = try enrollment_ops.pathOwnedByCurrentUser(target_path);
     if (!owned_by_current_user) {
         std.debug.print(
             "error: {s} is not owned by the current user: {s}\n",
