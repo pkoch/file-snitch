@@ -546,7 +546,8 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
     const context = raw_context orelse return .{ .decision = .unavailable };
     const ui_context: *MacosUiContext = @ptrCast(@alignCast(context));
 
-    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch return .{ .decision = .unavailable };
+    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch
+        return .{ .decision = .unavailable };
     defer ui_context.allocator.free(script);
 
     const argv = [_][]const u8{
@@ -620,7 +621,7 @@ fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
 
 fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Request, timeout_ms: u32) ![]u8 {
     const title = "File Snitch";
-    const prompt_text = try buildMacosDialogPromptAlloc(allocator, request);
+    const prompt_text = try buildDialogPromptAlloc(allocator, request);
     defer allocator.free(prompt_text);
 
     const escaped_title = try appleScriptStringLiteralContentsAlloc(allocator, title);
@@ -691,10 +692,6 @@ fn buildDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request)
         "{s}\n\nProcess: {s}\nPID: {d}\nUID: {d}",
         .{ label, executable_path, request.pid, request.uid },
     );
-}
-
-fn buildMacosDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
-    return buildDialogPromptAlloc(allocator, request);
 }
 
 fn appleScriptStringLiteralContentsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {

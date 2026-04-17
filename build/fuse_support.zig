@@ -82,13 +82,6 @@ fn configureMacFuseFromEnvironment(b: *std.Build, module: *std.Build.Module) boo
     return configured;
 }
 
-fn hasPkgConfig(b: *std.Build) bool {
-    _ = b.findProgram(&.{"pkg-config"}, &.{ "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" }) catch {
-        return false;
-    };
-    return true;
-}
-
 fn findPkgConfig(b: *std.Build) ?[]const u8 {
     return b.findProgram(&.{"pkg-config"}, &.{ "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" }) catch null;
 }
