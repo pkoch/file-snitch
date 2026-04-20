@@ -45,7 +45,7 @@ runs:
         echo "ZIG_SHA256=$(jq -r ".platforms.${platform_key}.sha256" "$manifest")" >> "$GITHUB_ENV"
 
     - name: Restore Zig toolchain cache
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      uses: actions/cache@v4
       with:
         path: ${{ inputs.zig-install-dir }}
         key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest) }}
@@ -66,7 +66,7 @@ runs:
         echo "${{ inputs.zig-install-dir }}" >> "$GITHUB_PATH"
 
     - name: Restore Zig build caches
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      uses: actions/cache@v4
       with:
         path: |
           ${{ inputs.zig-cache-dir }}
