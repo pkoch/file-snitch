@@ -23,6 +23,15 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
     return updated
 
 
+def remove_bottle_block(text: str) -> str:
+    return re.sub(
+        r'\n\n  bottle do\n(?:    .*\n)+?  end\n',
+        "\n",
+        text,
+        count=1,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--formula", required=True)
@@ -56,6 +65,7 @@ def main() -> None:
         f'  depends_on "{zig_dependency}" => :build',
         "Zig build dependency",
     )
+    updated = remove_bottle_block(updated)
     path.write_text(updated, encoding="utf-8")
 
 

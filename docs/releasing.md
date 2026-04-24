@@ -61,6 +61,8 @@ The release flow is built around deterministic inputs:
 - the Homebrew formula build dependency is derived from that same
   `minimum_zig_version` by
   [scripts/release/update-formula-release.py](../scripts/release/update-formula-release.py)
+- existing Homebrew bottle metadata is removed when the stable source changes,
+  so the tap PR cannot point a new formula version at stale bottle artifacts
 - macOS release builds extract a pinned macFUSE SDK from the checksum-verified
   DMG declared in [release-inputs.json](../release-inputs.json)
 - tarballs are written with stable ordering and zeroed mtimes/owners
