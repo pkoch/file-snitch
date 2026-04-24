@@ -64,6 +64,9 @@ The release flow is built around deterministic inputs:
 - existing Homebrew bottle metadata is kept when the stable source changes, but
   its `root_url` is bumped to the new version so bottle publication can replace
   the SHA lines for that release
+- after tap test-bot builds bottles, the release script downloads the bottle
+  JSON artifacts and merges their SHA lines into the tap formula before the
+  `pr-pull` publication step
 - macOS release builds extract a pinned macFUSE SDK from the checksum-verified
   DMG declared in [release-inputs.json](../release-inputs.json)
 - tarballs are written with stable ordering and zeroed mtimes/owners

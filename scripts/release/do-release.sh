@@ -253,6 +253,42 @@ wait_for_repo_workflow_run_by_branch() {
   return 1
 }
 
+merge_tap_bottle_artifacts() {
+  local run_id="$1"
+  local version="$2"
+  local artifact_dir="$tmp_dir/tap-bottles"
+  local -a bottle_jsons
+
+  rm -rf "$artifact_dir"
+  mkdir -p "$artifact_dir"
+  gh run download "$run_id" \
+    --repo "$tap_repo_slug" \
+    --dir "$artifact_dir"
+
+  mapfile -d '' -t bottle_jsons < <(
+    find "$artifact_dir" -type f -name '*.bottle.json' -print0 | sort -z
+  )
+
+  if [[ "${#bottle_jsons[@]}" -eq 0 ]]; then
+    echo "error: no bottle JSON artifacts found for tap workflow run $run_id" >&2
+    return 1
+  fi
+
+  (
+    cd "$tap_repo"
+    brew bottle --merge --write --no-commit "${bottle_jsons[@]}"
+  )
+
+  if [[ -z "$(git -C "$tap_repo" status --porcelain -- Formula/file-snitch.rb)" ]]; then
+    echo "error: bottle merge did not update Formula/file-snitch.rb" >&2
+    return 1
+  fi
+
+  git -C "$tap_repo" add Formula/file-snitch.rb
+  git -C "$tap_repo" commit -m "file-snitch: update $version bottle."
+  git -C "$tap_repo" push
+}
+
 printf '%s\n' "$new_version" > VERSION
 python3 - "$new_version" <<'PY'
 import pathlib
@@ -349,6 +385,16 @@ run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_
 echo "watching tap test workflow run $run_id"
 if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
   echo "error: tap test workflow failed for $tap_pr_url" >&2
+  echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
+  exit 1
+fi
+
+merge_tap_bottle_artifacts "$run_id" "$new_version"
+
+run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_branch" pull_request)"
+echo "watching tap test workflow run $run_id after bottle merge"
+if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
+  echo "error: tap test workflow failed after bottle merge for $tap_pr_url" >&2
   echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
   exit 1
 fi
