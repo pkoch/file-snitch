@@ -23,13 +23,10 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
     return updated
 
 
-def remove_bottle_block(text: str) -> str:
-    return re.sub(
-        r'\n\n  bottle do\n(?:    .*\n)+?  end\n',
-        "\n",
-        text,
-        count=1,
-    )
+def sync_bottle_root_url(text: str, version: str) -> str:
+    pattern = r'(^    root_url "https://github\.com/pkoch/homebrew-tap/releases/download/file-snitch-)[^"]+(")$'
+    replacement = rf'\g<1>{version}\2'
+    return replace_once(text, pattern, replacement, "bottle root URL")
 
 
 def main() -> None:
@@ -65,7 +62,7 @@ def main() -> None:
         f'  depends_on "{zig_dependency}" => :build',
         "Zig build dependency",
     )
-    updated = remove_bottle_block(updated)
+    updated = sync_bottle_root_url(updated, args.version)
     path.write_text(updated, encoding="utf-8")
 
 
