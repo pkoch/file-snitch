@@ -58,6 +58,9 @@ The release flow is built around deterministic inputs:
   self-reference loop
 - Zig is selected by Anyzig from `minimum_zig_version` in
   [build.zig.zon](../build.zig.zon)
+- the Homebrew formula build dependency is derived from that same
+  `minimum_zig_version` by
+  [scripts/release/update-formula-release.py](../scripts/release/update-formula-release.py)
 - macOS release builds extract a pinned macFUSE SDK from the checksum-verified
   DMG declared in [release-inputs.json](../release-inputs.json)
 - tarballs are written with stable ordering and zeroed mtimes/owners
