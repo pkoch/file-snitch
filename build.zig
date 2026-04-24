@@ -83,6 +83,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/config.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     config_test_module.addImport("yaml", yaml_module);
     config_test_module.addOptions("build_options", build_options);

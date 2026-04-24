@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Changed Zig toolchain selection to use Anyzig and `build.zig.zon` instead of
   the project-specific `zig-toolchain.json` checksum manifest.
 
+### Fixed
+
+- Fixed the `config` test root to link libc when CI cross-targets Linux.
+
 ## [0.2.0] - 2026-04-11
 
 ### Changed
