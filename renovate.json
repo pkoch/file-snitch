@@ -5,16 +5,10 @@
     "helpers:pinGitHubActionDigestsToSemver"
   ],
   "customDatasources": {
-    "zig_x86_64_linux": {
+    "zig_stable": {
       "defaultRegistryUrlTemplate": "https://ziglang.org/download/index.json",
       "transformTemplates": [
-        "{ \"releases\": $map($filter($keys($), function($version) { $exists($match($version, /^\\d+\\.\\d+\\.\\d+$/)) and $exists($lookup($lookup($, $version), \"x86_64-linux\")) }), function($version) { { \"version\": $version, \"digest\": $lookup($lookup($lookup($, $version), \"x86_64-linux\"), \"shasum\"), \"isStable\": true } }) }"
-      ]
-    },
-    "zig_aarch64_macos": {
-      "defaultRegistryUrlTemplate": "https://ziglang.org/download/index.json",
-      "transformTemplates": [
-        "{ \"releases\": $map($filter($keys($), function($version) { $exists($match($version, /^\\d+\\.\\d+\\.\\d+$/)) and $exists($lookup($lookup($, $version), \"aarch64-macos\")) }), function($version) { { \"version\": $version, \"digest\": $lookup($lookup($lookup($, $version), \"aarch64-macos\"), \"shasum\"), \"isStable\": true } }) }"
+        "{ \"releases\": $map($filter($keys($), function($version) { $exists($match($version, /^\\d+\\.\\d+\\.\\d+$/)) }), function($version) { { \"version\": $version, \"isStable\": true } }) }"
       ]
     }
   },
@@ -22,37 +16,20 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/(^|/)zig-toolchain\\.json$/"
+        "/(^|/)build\\.zig\\.zon$/"
       ],
-      "matchStringsStrategy": "combination",
       "matchStrings": [
-        "\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
-        "\"linux_x86_64\"\\s*:\\s*\\{[^}]*\"sha256\"\\s*:\\s*\"(?<currentDigest>[a-f0-9]+)\""
+        "\\.minimum_zig_version\\s*=\\s*\"(?<currentValue>[^\"]+)\""
       ],
-      "datasourceTemplate": "custom.zig_x86_64_linux",
-      "depNameTemplate": "ziglang/zig-linux-x86_64",
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/(^|/)zig-toolchain\\.json$/"
-      ],
-      "matchStringsStrategy": "combination",
-      "matchStrings": [
-        "\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
-        "\"macos_aarch64\"\\s*:\\s*\\{[^}]*\"sha256\"\\s*:\\s*\"(?<currentDigest>[a-f0-9]+)\""
-      ],
-      "datasourceTemplate": "custom.zig_aarch64_macos",
-      "depNameTemplate": "ziglang/zig-macos-aarch64",
+      "datasourceTemplate": "custom.zig_stable",
+      "depNameTemplate": "ziglang/zig",
       "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
     {
       "matchDepNames": [
-        "ziglang/zig-linux-x86_64",
-        "ziglang/zig-macos-aarch64"
+        "ziglang/zig"
       ],
       "groupName": "Zig toolchain"
     }

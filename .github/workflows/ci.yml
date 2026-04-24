@@ -26,9 +26,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      ZIG_INSTALL_DIR: ${{ github.workspace }}/.zig-toolchain/linux-x86_64
       ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
       ZIG_BUILD_TARGET: x86_64-linux-gnu
 
     steps:
@@ -44,9 +42,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          zig-install-dir: ${{ env.ZIG_INSTALL_DIR }}
           zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
-          zig-global-cache-dir: ${{ env.ZIG_GLOBAL_CACHE_DIR }}
 
       - run: ./tests/build.sh
 

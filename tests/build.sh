@@ -2,8 +2,6 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-cache_dir="${ZIG_CACHE_DIR:-$repo_root/.zig-cache}"
-global_cache_dir="${ZIG_GLOBAL_CACHE_DIR:-/tmp/file-snitch-zig-global-cache}"
 target_args=()
 
 if [[ -n "${ZIG_BUILD_TARGET:-}" ]]; then
@@ -13,22 +11,13 @@ fi
 cd "$repo_root"
 
 echo "==> zig build"
-zig build \
-  "${target_args[@]}" \
-  --cache-dir "$cache_dir" \
-  --global-cache-dir "$global_cache_dir"
+zig build "${target_args[@]}"
 
 echo "==> zig build test"
-zig build test \
-  "${target_args[@]}" \
-  --cache-dir "$cache_dir" \
-  --global-cache-dir "$global_cache_dir"
+zig build test "${target_args[@]}"
 
 echo "==> zig build compile-commands"
-zig build compile-commands \
-  "${target_args[@]}" \
-  --cache-dir "$cache_dir" \
-  --global-cache-dir "$global_cache_dir"
+zig build compile-commands "${target_args[@]}"
 
 echo "==> release source tarball sanity"
 release_check_dir="$(mktemp -d "${TMPDIR:-/tmp}/file-snitch-release-source-check.XXXXXX")"

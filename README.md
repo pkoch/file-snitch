@@ -40,6 +40,12 @@ The product brief lives in
 
 ## Quick Evaluation
 
+Install Anyzig so `zig` follows this repo's pinned toolchain:
+
+```bash
+brew install anyzig
+```
+
 Build the binary:
 
 ```bash
@@ -170,18 +176,15 @@ Out of scope for the product stance:
 ## Build notes
 
 This scaffold expects:
-- Zig on `PATH`
+- Anyzig installed as `zig` on `PATH`
 - `libfuse` development headers and libraries on Linux
 - macFUSE `libfuse` compatibility libraries on macOS
 
 Toolchain pinning:
-- `zig-toolchain.json` is the source of truth for the Zig toolchain we care about today:
-  - one shared Zig version
-  - one SHA256 per pinned platform archive
-  - Linux `x86_64` for CI
-  - macOS `aarch64` for local development on Apple Silicon
-- CI reads `zig-toolchain.json` and verifies the downloaded Linux archive checksum before unpacking it
-- `renovate.json` updates the shared Zig version plus both platform SHA256 values from Zig's official download index, filtering to stable releases only and grouping the updates as one Zig toolchain change
+- `build.zig.zon` is the source of truth for the Zig version this repo uses
+- Anyzig reads `minimum_zig_version` from `build.zig.zon`, downloads that Zig release into the global Zig cache when needed, and then dispatches the requested `zig` command
+- CI installs Anyzig and runs the same `zig build` commands documented for local development
+- `renovate.json` updates `minimum_zig_version` from Zig's official download index, filtering to stable releases only
 
 FUSE discovery:
 - the Zig build now prefers `pkg-config` when available
@@ -200,7 +203,8 @@ Current packaging and release notes live at:
 Formal tagged releases publish the canonical source and binary artifacts on
 GitHub Releases, with Homebrew consuming the tagged source tarball. Those
 releases also publish `SHA256SUMS` and `release-manifest.json` so downstream
-packaging can follow the same pinned source, toolchain, and SDK inputs.
+packaging can follow the same pinned source, Zig package metadata, and SDK
+inputs.
 Installing unreleased `master` builds remains available through the tap
 formula's `--HEAD` path when needed.
 

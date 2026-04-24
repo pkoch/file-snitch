@@ -17,6 +17,9 @@ be treated skeptically.
 
 ## Development Loop
 
+Install Anyzig so the `zig` command follows this repo's `build.zig.zon`
+`minimum_zig_version` pin.
+
 Build:
 
 ```bash

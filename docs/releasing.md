@@ -6,7 +6,7 @@ Formal releases are owned by:
 - [scripts/release/build-release-artifact.sh](../scripts/release/build-release-artifact.sh)
 - [scripts/vendor/extract-macfuse-sdk.sh](../scripts/vendor/extract-macfuse-sdk.sh)
 - [.github/workflows/release.yml](../.github/workflows/release.yml)
-- [zig-toolchain.json](../zig-toolchain.json)
+- [build.zig.zon](../build.zig.zon)
 - [release-inputs.json](../release-inputs.json)
 
 The intended release shape is:
@@ -56,7 +56,8 @@ The release flow is built around deterministic inputs:
   under `Formula/`; the Homebrew formula lives in `pkoch/homebrew-tap` and
   shipping it inside the source tarball would create a checksum
   self-reference loop
-- Zig is pinned in [zig-toolchain.json](../zig-toolchain.json)
+- Zig is selected by Anyzig from `minimum_zig_version` in
+  [build.zig.zon](../build.zig.zon)
 - macOS release builds extract a pinned macFUSE SDK from the checksum-verified
   DMG declared in [release-inputs.json](../release-inputs.json)
 - tarballs are written with stable ordering and zeroed mtimes/owners
@@ -64,12 +65,12 @@ The release flow is built around deterministic inputs:
   deterministic tarball
 
 The release workflow rebuilds each binary artifact twice from the same source
-bundle, with the same pinned toolchain and SDK inputs, and compares the outputs
-byte-for-byte before publishing them.
+bundle, with the same Anyzig-selected Zig version and SDK inputs, and compares
+the outputs byte-for-byte before publishing them.
 
 This is intentionally a pinned native-runner release flow, not a hermetic Nix
-build. The current guarantee is: same source tarball, same declared toolchain
-and SDK inputs, same native runner class, same bytes out.
+build. The current guarantee is: same source tarball, same declared Zig package
+metadata and SDK inputs, same native runner class, same bytes out.
 
 ## Running a release
 
@@ -87,7 +88,7 @@ Or:
 ```
 
 That script:
-1. bumps [VERSION](../VERSION)
+1. bumps [VERSION](../VERSION) and `build.zig.zon` package metadata
 2. rolls [CHANGELOG.md](../CHANGELOG.md)
 3. runs `zig build test`
 4. creates one release commit
@@ -115,8 +116,8 @@ Every release publishes:
 - `SHA256SUMS`
 - `release-manifest.json`
 
-`release-manifest.json` includes the pinned Zig and macFUSE input metadata that
-the workflow used to produce the published artifacts.
+`release-manifest.json` includes the Anyzig-selected Zig version and macFUSE
+input metadata that the workflow used to produce the published artifacts.
 
 ## Changelog discipline
 

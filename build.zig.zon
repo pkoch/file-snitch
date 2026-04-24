@@ -1,0 +1,17 @@
+.{
+    .name = .file_snitch,
+    .version = "0.2.0",
+    .fingerprint = 0xba0e9854b2f79c58,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "VERSION",
+        "build",
+        "build.zig",
+        "build.zig.zon",
+        "c",
+        "src",
+        "tests",
+        "vendor/zig-yaml",
+    },
+}

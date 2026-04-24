@@ -60,9 +60,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
-      ZIG_INSTALL_DIR: ${{ github.workspace }}/.zig-toolchain/${{ matrix.platform }}
       ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -85,9 +83,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          zig-install-dir: ${{ env.ZIG_INSTALL_DIR }}
           zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
-          zig-global-cache-dir: ${{ env.ZIG_GLOBAL_CACHE_DIR }}
 
       - name: Download release source
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -195,17 +191,25 @@ jobs:
           import json
           import os
           import pathlib
+          import re
 
           version = os.environ["VERSION"]
           tag = os.environ["TAG"]
           release_dir = pathlib.Path(os.environ["RELEASE_DIR"])
-          zig_inputs = json.loads(pathlib.Path("zig-toolchain.json").read_text(encoding="utf-8"))
+          zig_package_manifest = pathlib.Path("build.zig.zon")
+          zig_package = zig_package_manifest.read_text(encoding="utf-8")
+          zig_version_match = re.search(r'\.minimum_zig_version\s*=\s*"([^"]+)"', zig_package)
+          if zig_version_match is None:
+              raise SystemExit("build.zig.zon is missing .minimum_zig_version")
           release_inputs = json.loads(pathlib.Path("release-inputs.json").read_text(encoding="utf-8"))
           manifest = {
               "version": version,
               "tag": tag,
               "build_inputs": {
-                  "zig": zig_inputs,
+                  "zig": {
+                      "package_manifest": str(zig_package_manifest),
+                      "minimum_zig_version": zig_version_match.group(1),
+                  },
                   "release_inputs": release_inputs,
               },
               "assets": [],

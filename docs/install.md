@@ -148,6 +148,7 @@ If you want to see the current feature set without touching your real secrets,
 use the repo demo driver:
 
 ```bash
+brew install anyzig
 zig build
 ./scripts/demo/demo-session.sh
 ```

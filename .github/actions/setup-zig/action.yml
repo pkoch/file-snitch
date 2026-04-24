@@ -1,77 +1,45 @@
 name: Setup Zig
-description: Install the pinned Zig toolchain and restore Zig caches.
+description: Install Anyzig and restore Zig caches.
 
 inputs:
-  zig-install-dir:
-    description: Directory where Zig should be installed.
-    required: true
   zig-cache-dir:
     description: Directory for Zig local build cache.
     required: true
-  zig-global-cache-dir:
-    description: Directory for Zig global cache.
-    required: true
-  toolchain-manifest:
-    description: Path to zig-toolchain.json.
-    required: false
-    default: zig-toolchain.json
 
 runs:
   using: composite
   steps:
-    - name: Read Zig toolchain
+    - name: Install Anyzig
       shell: bash
       run: |
-        manifest="${{ inputs.toolchain-manifest }}"
-        zig_version="$(jq -r '.version' "$manifest")"
-        echo "ZIG_VERSION=$zig_version" >> "$GITHUB_ENV"
+        set -euo pipefail
 
         case "${RUNNER_OS}-${RUNNER_ARCH}" in
           Linux-X64)
-            platform_key="linux_x86_64"
-            archive_name="zig-x86_64-linux-${zig_version}.tar.xz"
+            anyzig_asset="anyzig-x86_64-linux.tar.gz"
             ;;
           macOS-ARM64)
-            platform_key="macos_aarch64"
-            archive_name="zig-aarch64-macos-${zig_version}.tar.xz"
+            anyzig_asset="anyzig-aarch64-macos.tar.gz"
             ;;
           *)
-            echo "unsupported Zig host platform: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
+            echo "unsupported Anyzig host platform: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
             exit 1
             ;;
         esac
 
-        echo "ZIG_ARCHIVE_NAME=$archive_name" >> "$GITHUB_ENV"
-        echo "ZIG_SHA256=$(jq -r ".platforms.${platform_key}.sha256" "$manifest")" >> "$GITHUB_ENV"
-
-    - name: Restore Zig toolchain cache
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ${{ inputs.zig-install-dir }}
-        key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest) }}
-
-    - name: Install Zig
-      shell: bash
-      run: |
-        if [[ ! -x "${{ inputs.zig-install-dir }}/zig" ]]; then
-          curl -L \
-            "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE_NAME}" \
-            -o "$RUNNER_TEMP/zig.tar.xz"
-          actual="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$RUNNER_TEMP/zig.tar.xz")"
-          test "$actual" = "$ZIG_SHA256"
-          rm -rf "${{ inputs.zig-install-dir }}"
-          mkdir -p "${{ inputs.zig-install-dir }}"
-          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "${{ inputs.zig-install-dir }}" --strip-components=1
-        fi
-        echo "${{ inputs.zig-install-dir }}" >> "$GITHUB_PATH"
+        anyzig_dir="$RUNNER_TEMP/anyzig"
+        mkdir -p "$anyzig_dir"
+        curl -L "https://github.com/marler8997/anyzig/releases/latest/download/${anyzig_asset}" \
+          | tar -xz -C "$anyzig_dir"
+        echo "$anyzig_dir" >> "$GITHUB_PATH"
 
     - name: Restore Zig build caches
       uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: |
           ${{ inputs.zig-cache-dir }}
-          ${{ inputs.zig-global-cache-dir }}
-        key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest, 'build.zig', 'build/**/*.zig') }}
+          ~/.cache/zig
+        key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon', 'build.zig', 'build/**/*.zig') }}
         restore-keys: |
-          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.toolchain-manifest) }}-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}-
           zig-build-${{ runner.os }}-${{ runner.arch }}-

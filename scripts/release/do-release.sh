@@ -254,6 +254,24 @@ wait_for_repo_workflow_run_by_branch() {
 }
 
 printf '%s\n' "$new_version" > VERSION
+python3 - "$new_version" <<'PY'
+import pathlib
+import re
+import sys
+
+new_version = sys.argv[1]
+path = pathlib.Path("build.zig.zon")
+old = path.read_text(encoding="utf-8")
+new, replacements = re.subn(
+    r'(\.version\s*=\s*")[^"]+(")',
+    rf'\g<1>{new_version}\2',
+    old,
+    count=1,
+)
+if replacements != 1:
+    raise SystemExit("error: failed to update build.zig.zon .version")
+path.write_text(new, encoding="utf-8")
+PY
 python3 scripts/release/roll-changelog-release.py \
   --changelog CHANGELOG.md \
   --version "$new_version" \
@@ -267,7 +285,7 @@ source_sha="$(python3 scripts/release/sha256-file.py "$tmp_dir/$source_asset")"
 zig build test
 run_host_release_sanity
 
-git add VERSION CHANGELOG.md
+git add VERSION CHANGELOG.md build.zig.zon
 git commit -m "Release $new_version"
 release_commit="$(git rev-parse HEAD)"
 git push origin HEAD

@@ -46,8 +46,6 @@ cleanup() {
 trap cleanup EXIT
 
 install_prefix="$tmp_dir/install"
-cache_dir="$tmp_dir/.zig-cache"
-global_cache_dir="$tmp_dir/.zig-global-cache"
 
 mkdir -p "$install_prefix"
 
@@ -69,9 +67,7 @@ env \
   LC_ALL=C \
   zig build -Doptimize=ReleaseSafe \
     "${target_args[@]}" \
-    --prefix "$install_prefix" \
-    --cache-dir "$cache_dir" \
-    --global-cache-dir "$global_cache_dir"
+    --prefix "$install_prefix"
 
 case "$(uname -s)" in
   Darwin)
