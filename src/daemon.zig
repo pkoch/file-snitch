@@ -255,7 +255,7 @@ pub const Session = struct {
     }
 
     pub fn inspectPath(self: Session, path: [:0]const u8) !NodeInfo {
-        return self.state.filesystem.lookupPath(path).node;
+        return (try self.state.filesystem.lookupPath(path)).node;
     }
 
     pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
@@ -271,7 +271,7 @@ pub const Session = struct {
     }
 
     pub fn readPath(self: Session, allocator: std.mem.Allocator, path: [:0]const u8) ![]u8 {
-        const node = self.state.filesystem.lookupPath(path).node;
+        const node = (try self.state.filesystem.lookupPath(path)).node;
         const buffer = try allocator.alloc(u8, @intCast(node.size));
         errdefer allocator.free(buffer);
 
@@ -584,6 +584,9 @@ fn errnoCodeFromDirectoryError(err: anyerror) c_int {
         error.InvalidPath => errnoCode(.INVAL),
         error.BufferTooSmall => errnoCode(.NAMETOOLONG),
         error.EntryNotFound => errnoCode(.NOENT),
+        error.InputOutput => errnoCode(.IO),
+        error.Interrupted => errnoCode(.INTR),
+        error.OutOfMemory, error.SystemResources => errnoCode(.NOMEM),
         else => errnoCode(.IO),
     };
 }
@@ -618,7 +621,7 @@ pub export fn fsn_daemon_lookup_path(
 ) c_int {
     const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
     const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
-    const lookup = state.filesystem.lookupPath(path);
+    const lookup = state.filesystem.lookupPath(path) catch |err| return errnoCodeFromDirectoryError(err);
 
     out.* = .{
         .mode = modeForNode(lookup.node),
