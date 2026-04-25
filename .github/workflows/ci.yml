@@ -52,6 +52,44 @@ jobs:
           path: zig-out/bin/file-snitch
           if-no-files-found: error
 
+  build-macos:
+    runs-on: macos-15
+    env:
+      ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+      ZIG_BUILD_TARGET: aarch64-macos
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Extract pinned macFUSE SDK
+        run: |
+          ./scripts/vendor/extract-macfuse-sdk.sh \
+            --output "$RUNNER_TEMP/macfuse-sdk"
+
+      - uses: ./.github/actions/setup-zig
+        with:
+          zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
+
+      - name: Build and test macOS
+        run: |
+          sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+          SDKROOT="$sdkroot" \
+          FILE_SNITCH_FUSE_INCLUDE_DIR="$RUNNER_TEMP/macfuse-sdk/include" \
+          FILE_SNITCH_FUSE_LIB_DIR="$RUNNER_TEMP/macfuse-sdk/lib" \
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib" \
+          ./tests/build.sh
+
+      - name: Smoke macOS fake osascript prompt
+        run: |
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib" \
+          ./tests/smoke/run-prompt-macos-ui-agent.sh
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: file-snitch-macos-arm64
+          path: zig-out/bin/file-snitch
+          if-no-files-found: error
+
   smoke-linux:
     runs-on: ubuntu-24.04
     needs: build
