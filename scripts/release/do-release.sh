@@ -228,6 +228,7 @@ wait_for_repo_workflow_run_by_branch() {
   local workflow_name="$2"
   local branch="$3"
   local event="$4"
+  local excluded_run_id="${5:-}"
   local run_id=""
   local attempts=0
 
@@ -240,7 +241,7 @@ wait_for_repo_workflow_run_by_branch() {
       --json databaseId,status,createdAt \
       --jq 'map(select(.status != "")) | sort_by(.createdAt) | last | .databaseId // ""')"
 
-    if [[ -n "$run_id" ]]; then
+    if [[ -n "$run_id" && "$run_id" != "$excluded_run_id" ]]; then
       printf '%s\n' "$run_id"
       return 0
     fi
@@ -476,21 +477,28 @@ tap_pr_url="$(
 )"
 tap_pr_number="$(gh pr view "$tap_pr_url" --repo "$tap_repo_slug" --json number --jq '.number')"
 
-run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_branch" pull_request)"
-echo "watching tap test workflow run $run_id"
-if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
+tap_test_run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_branch" pull_request)"
+echo "watching tap test workflow run $tap_test_run_id"
+if ! gh run watch "$tap_test_run_id" --repo "$tap_repo_slug" --compact --exit-status; then
   echo "error: tap test workflow failed for $tap_pr_url" >&2
-  echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
+  echo "inspect: gh run view $tap_test_run_id --repo $tap_repo_slug --log-failed" >&2
   exit 1
 fi
 
-merge_tap_bottle_artifacts "$run_id" "$new_version"
+merge_tap_bottle_artifacts "$tap_test_run_id" "$new_version"
 
-run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" tests.yml "$tap_branch" pull_request)"
-echo "watching tap test workflow run $run_id after bottle merge"
-if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
+tap_test_run_id="$(
+  wait_for_repo_workflow_run_by_branch \
+    "$tap_repo_slug" \
+    tests.yml \
+    "$tap_branch" \
+    pull_request \
+    "$tap_test_run_id"
+)"
+echo "watching tap test workflow run $tap_test_run_id after bottle merge"
+if ! gh run watch "$tap_test_run_id" --repo "$tap_repo_slug" --compact --exit-status; then
   echo "error: tap test workflow failed after bottle merge for $tap_pr_url" >&2
-  echo "inspect: gh run view $run_id --repo $tap_repo_slug --log-failed" >&2
+  echo "inspect: gh run view $tap_test_run_id --repo $tap_repo_slug --log-failed" >&2
   exit 1
 fi
 
