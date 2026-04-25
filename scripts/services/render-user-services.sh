@@ -18,6 +18,7 @@ notes:
   - Linux renders both `file-snitch-agent.service` and `file-snitch-run.service`
   - the binary path is embedded directly into the rendered files
   - the pass binary path is embedded into the run service; defaults to FILE_SNITCH_PASS_BIN or `command -v pass`
+  - the run service gets an explicit PATH because launchd does not inherit an interactive shell environment
 EOF
 }
 
@@ -56,8 +57,9 @@ render_template() {
   local log_dir="$3"
   local resolved_bin_path="$4"
   local resolved_pass_bin_path="$5"
+  local service_path="$6"
 
-  python3 - "$template_path" "$destination_path" "$log_dir" "$resolved_bin_path" "$resolved_pass_bin_path" <<'PY'
+  python3 - "$template_path" "$destination_path" "$log_dir" "$resolved_bin_path" "$resolved_pass_bin_path" "$service_path" <<'PY'
 import pathlib
 import sys
 
@@ -66,13 +68,55 @@ destination_path = pathlib.Path(sys.argv[2])
 log_dir = sys.argv[3]
 binary_path = sys.argv[4]
 pass_binary_path = sys.argv[5]
+service_path = sys.argv[6]
 
 rendered = template_path.read_text(encoding="utf-8")
 rendered = rendered.replace("{{LOG_DIR}}", log_dir)
 rendered = rendered.replace("{{FILE_SNITCH_BIN}}", binary_path)
 rendered = rendered.replace("{{PASS_BIN}}", pass_binary_path)
+rendered = rendered.replace("{{SERVICE_PATH}}", service_path)
 destination_path.write_text(rendered, encoding="utf-8")
 PY
+}
+
+append_path_component() {
+  local current="$1"
+  local component="$2"
+
+  [[ -n "$component" ]] || {
+    printf '%s\n' "$current"
+    return
+  }
+
+  case ":$current:" in
+    *":$component:"*) printf '%s\n' "$current" ;;
+    *)
+      if [[ -n "$current" ]]; then
+        printf '%s:%s\n' "$current" "$component"
+      else
+        printf '%s\n' "$component"
+      fi
+      ;;
+  esac
+}
+
+build_service_path() {
+  local resolved_bin_path="$1"
+  local resolved_pass_bin_path="$2"
+  local service_path=""
+
+  service_path="$(append_path_component "$service_path" "$(dirname "$resolved_bin_path")")"
+  service_path="$(append_path_component "$service_path" "$(dirname "$resolved_pass_bin_path")")"
+  service_path="$(append_path_component "$service_path" "/opt/homebrew/opt/gnu-getopt/bin")"
+  service_path="$(append_path_component "$service_path" "/usr/local/opt/gnu-getopt/bin")"
+  service_path="$(append_path_component "$service_path" "/opt/homebrew/bin")"
+  service_path="$(append_path_component "$service_path" "/usr/local/bin")"
+  service_path="$(append_path_component "$service_path" "/usr/bin")"
+  service_path="$(append_path_component "$service_path" "/bin")"
+  service_path="$(append_path_component "$service_path" "/usr/sbin")"
+  service_path="$(append_path_component "$service_path" "/sbin")"
+
+  printf '%s\n' "$service_path"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -126,6 +170,7 @@ if [[ -z "$pass_bin_path" ]]; then
   pass_bin_path="${FILE_SNITCH_PASS_BIN:-pass}"
 fi
 resolved_pass_bin_path="$(resolve_bin_path "$pass_bin_path" "pass binary")"
+service_path="$(build_service_path "$resolved_bin_path" "$resolved_pass_bin_path")"
 log_dir="$HOME/.local/state/file-snitch/log"
 
 mkdir -p "$output_dir" "$log_dir"
@@ -137,13 +182,15 @@ case "$platform" in
       "$output_dir/dev.file-snitch.agent.plist" \
       "$log_dir" \
       "$resolved_bin_path" \
-      "$resolved_pass_bin_path"
+      "$resolved_pass_bin_path" \
+      "$service_path"
     render_template \
       "$repo_root/packaging/launchd/dev.file-snitch.run.plist.in" \
       "$output_dir/dev.file-snitch.run.plist" \
       "$log_dir" \
       "$resolved_bin_path" \
-      "$resolved_pass_bin_path"
+      "$resolved_pass_bin_path" \
+      "$service_path"
     ;;
   linux)
     render_template \
@@ -151,12 +198,14 @@ case "$platform" in
       "$output_dir/file-snitch-agent.service" \
       "$log_dir" \
       "$resolved_bin_path" \
-      "$resolved_pass_bin_path"
+      "$resolved_pass_bin_path" \
+      "$service_path"
     render_template \
       "$repo_root/packaging/systemd/file-snitch-run.service.in" \
       "$output_dir/file-snitch-run.service" \
       "$log_dir" \
       "$resolved_bin_path" \
-      "$resolved_pass_bin_path"
+      "$resolved_pass_bin_path" \
+      "$service_path"
     ;;
 esac

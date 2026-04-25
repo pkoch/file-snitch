@@ -17,6 +17,8 @@
     <dict>
       <key>FILE_SNITCH_PASS_BIN</key>
       <string>{{PASS_BIN}}</string>
+      <key>PATH</key>
+      <string>{{SERVICE_PATH}}</string>
     </dict>
 
     <key>RunAtLoad</key>

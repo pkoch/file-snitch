@@ -60,6 +60,8 @@ assert_file_contains "$macos_output_dir/dev.file-snitch.agent.plist" "<string>ma
 assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<string>prompt</string>"
 assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<key>FILE_SNITCH_PASS_BIN</key>"
 assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<string>$tmp_dir/bin/pass</string>"
+assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<key>PATH</key>"
+assert_file_contains "$macos_output_dir/dev.file-snitch.run.plist" "<string>$tmp_dir/bin:/opt/homebrew/opt/gnu-getopt/bin:/usr/local/opt/gnu-getopt/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>"
 assert_file_contains "$linux_output_dir/file-snitch-agent.service" "ExecStart=$tmp_dir/bin/file-snitch agent --frontend linux-ui"
 assert_file_contains "$linux_output_dir/file-snitch-run.service" "Environment=FILE_SNITCH_PASS_BIN=$tmp_dir/bin/pass"
 assert_file_contains "$linux_output_dir/file-snitch-run.service" "ExecStart=$tmp_dir/bin/file-snitch run prompt"
