@@ -54,6 +54,9 @@ case "\$response" in
   allow|deny|timeout|always-allow|always-deny)
     printf '%s\n' "\$response"
     ;;
+  hang)
+    sleep 30
+    ;;
   "")
     printf 'allow\n'
     ;;
@@ -64,7 +67,7 @@ esac
 EOF
 chmod +x "$fake_bin_dir/osascript"
 
-printf '%s\n' allow deny timeout >"$queue_path"
+printf '%s\n' allow deny timeout hang >"$queue_path"
 
 PATH="$fake_bin_dir:$PATH" \
   HOME="$home_dir" \
@@ -147,6 +150,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     expected = [
         ("allow", "once"),
         ("deny", "once"),
+        ("timeout", "none"),
         ("timeout", "none"),
     ]
     for index, (outcome, remember_kind) in enumerate(expected, start=1):

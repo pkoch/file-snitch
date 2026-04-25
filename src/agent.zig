@@ -24,6 +24,7 @@ const protocol_name = "file-snitch-agent";
 const protocol_version = "1.0";
 const max_frame_len: usize = 999_999;
 const max_length_digits: usize = 6;
+const decision_response_grace_ms: u32 = 5_000;
 
 pub const RequesterContext = struct {
     allocator: std.mem.Allocator,
@@ -263,8 +264,9 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
 
     try sendDecide(context.allocator, stream, request_id, request, display_path, timeout_at_rfc3339);
 
+    const response_timeout_ms = decisionResponseTimeoutMs(context.timeout_ms);
     while (true) {
-        const frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
+        const frame = try readFrameAlloc(context.allocator, stream, response_timeout_ms);
         defer context.allocator.free(frame);
 
         const message_type = try frameTypeFromJson(context.allocator, frame);
@@ -281,6 +283,10 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
         }
         return .{ .decision = .unavailable };
     }
+}
+
+fn decisionResponseTimeoutMs(timeout_ms: u32) u32 {
+    return std.math.add(u32, timeout_ms, decision_response_grace_ms) catch std.math.maxInt(u32);
 }
 
 fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
@@ -573,15 +579,35 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
         .argv = &argv,
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
-    }) catch return .{ .decision = .unavailable };
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(ui_context.timeout_ms),
+            .clock = .awake,
+        } },
+    }) catch |err| {
+        if (err == error.Timeout) {
+            std.log.warn("macos-ui prompt helper timed out after {d} ms", .{ui_context.timeout_ms});
+            return .{ .decision = .timeout };
+        }
+        std.log.warn("macos-ui prompt helper failed to start: {}", .{err});
+        return .{ .decision = .unavailable };
+    };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
 
     switch (result.term) {
-        .exited => |code| if (code != 0) return .{ .decision = .unavailable },
-        else => return .{ .decision = .unavailable },
+        .exited => |code| if (code != 0) {
+            std.log.warn("macos-ui prompt helper exited with code {d}: {s}", .{ code, result.stderr });
+            return .{ .decision = .unavailable };
+        },
+        else => {
+            std.log.warn("macos-ui prompt helper ended unexpectedly: {}", .{result.term});
+            return .{ .decision = .unavailable };
+        },
     }
-    return parseMacosUiResponse(result.stdout) catch .{ .decision = .unavailable };
+    return parseMacosUiResponse(result.stdout) catch |err| {
+        std.log.warn("macos-ui prompt helper returned an invalid response: {}", .{err});
+        return .{ .decision = .unavailable };
+    };
 }
 
 fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
@@ -675,7 +701,9 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         \\try
         \\  set prompt_text to "{s}"
         \\  set choices to {{"Allow once", "Deny once", "Allow 5 min", "Always allow", "Always deny"}}
-        \\  set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once" giving up after {d}
+        \\  with timeout of {d} seconds
+        \\    set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once"
+        \\  end timeout
         \\  if selected is false then
         \\    return "deny"
         \\  end if
@@ -686,11 +714,13 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         \\  if answer is "Always allow" then return "always-allow"
         \\  if answer is "Always deny" then return "always-deny"
         \\  return "deny"
-        \\on error number -128
+        \\on error number error_number
+        \\  if error_number is -1712 then return "timeout"
+        \\  if error_number is -128 then return "deny"
         \\  return "deny"
         \\end try
     ,
-        .{ escaped_prompt, escaped_title, timeout_seconds },
+        .{ escaped_prompt, timeout_seconds, escaped_title },
     );
 }
 
@@ -1436,6 +1466,26 @@ test "parse macos ui response accepts known values" {
     try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
 }
 
+test "macos ui remembered dialog uses compilable timeout block" {
+    const allocator = std.testing.allocator;
+    const script = try buildMacosDialogScriptAlloc(allocator, .{
+        .path = "/Users/test/secrets/gist",
+        .access_class = .read,
+        .label = "open O_RDONLY /gist",
+        .can_remember = true,
+        .pid = 42,
+        .uid = 501,
+        .gid = 20,
+        .executable_path = "/bin/cat",
+    }, 5_000);
+    defer allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "with timeout of 5 seconds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "giving up after") == null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "on error number error_number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "if error_number is -1712 then return \"timeout\"") != null);
+}
+
 test "parse linux ui response accepts known exit codes" {
     try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .exited = 0 }, "Allow once")).decision);
     try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .exited = 1 }, "")).decision);
@@ -1656,6 +1706,11 @@ test "decideFromFrame returns an owned request id" {
     defer for (reuse_allocations) |allocation| allocator.free(allocation);
 
     try std.testing.expectEqualStrings("req-copy-check", decision.request_id);
+}
+
+test "requester waits beyond frontend timeout for final decision delivery" {
+    try std.testing.expectEqual(@as(u32, defaults.prompt_timeout_ms_default + decision_response_grace_ms), decisionResponseTimeoutMs(defaults.prompt_timeout_ms_default));
+    try std.testing.expectEqual(std.math.maxInt(u32), decisionResponseTimeoutMs(std.math.maxInt(u32)));
 }
 
 const DelayedDecisionServerContext = struct {
