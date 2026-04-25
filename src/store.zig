@@ -1,5 +1,6 @@
 const std = @import("std");
 const defaults = @import("defaults.zig");
+const runtime = @import("runtime.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -112,7 +113,7 @@ pub const PassBackend = struct {
     };
 
     fn init(allocator: Allocator) !PassBackend {
-        const command = std.process.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
+        const command = runtime.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
             error.EnvironmentVariableNotFound => try allocator.dupe(u8, "pass"),
             else => return err,
         };
@@ -226,25 +227,52 @@ pub const PassBackend = struct {
         stdout_limit_kind: OutputLimitKind,
     ) ![]u8 {
         _ = self;
-        const result = std.process.Child.run(.{
-            .allocator = allocator,
+        var child = std.process.spawn(runtime.io(), .{
             .argv = argv,
-            .max_output_bytes = pass_payload_limit_bytes,
+            .stdin = .ignore,
+            .stdout = .pipe,
+            .stderr = .pipe,
         }) catch |err| switch (err) {
             error.FileNotFound => return error.StoreUnavailable,
-            error.StdoutStreamTooLong => switch (stdout_limit_kind) {
-                .payload => return error.StorePayloadTooLarge,
-                .command => return error.StoreCommandOutputTooLarge,
-            },
-            error.StderrStreamTooLong => return error.StoreCommandOutputTooLarge,
             else => return err,
         };
-        defer allocator.free(result.stderr);
-        errdefer allocator.free(result.stdout);
+        var child_done = false;
+        errdefer if (!child_done) child.kill(runtime.io());
 
-        return switch (result.term) {
-            .Exited => |code| switch (code) {
-                0 => result.stdout,
+        var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+        var multi_reader: std.Io.File.MultiReader = undefined;
+        multi_reader.init(allocator, runtime.io(), multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+        defer multi_reader.deinit();
+
+        const stdout_reader = multi_reader.reader(0);
+        const stderr_reader = multi_reader.reader(1);
+        while (multi_reader.fill(64, .none)) |_| {
+            if (stdout_reader.buffered().len > pass_payload_limit_bytes) {
+                return switch (stdout_limit_kind) {
+                    .payload => error.StorePayloadTooLarge,
+                    .command => error.StoreCommandOutputTooLarge,
+                };
+            }
+            if (stderr_reader.buffered().len > pass_payload_limit_bytes) {
+                return error.StoreCommandOutputTooLarge;
+            }
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            else => |e| return e,
+        }
+        try multi_reader.checkAnyError();
+
+        const term = try child.wait(runtime.io());
+        child_done = true;
+
+        const stdout = try multi_reader.toOwnedSlice(0);
+        errdefer allocator.free(stdout);
+        const stderr = try multi_reader.toOwnedSlice(1);
+        defer allocator.free(stderr);
+
+        return switch (term) {
+            .exited => |code| switch (code) {
+                0 => stdout,
                 else => error.StoreCommandFailed,
             },
             else => error.StoreCommandFailed,
@@ -258,36 +286,45 @@ pub const PassBackend = struct {
         input: []const u8,
     ) !void {
         _ = self;
-        var child = std.process.Child.init(argv, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        child.spawn() catch |err| switch (err) {
+        var child = std.process.spawn(runtime.io(), .{
+            .argv = argv,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch |err| switch (err) {
             error.FileNotFound => return error.StoreUnavailable,
             else => return err,
         };
-        errdefer _ = child.kill() catch {};
+        errdefer child.kill(runtime.io());
 
         if (child.stdin) |stdin_pipe| {
-            try stdin_pipe.writeAll(input);
-            stdin_pipe.close();
+            try stdin_pipe.writeStreamingAll(runtime.io(), input);
+            stdin_pipe.close(runtime.io());
             child.stdin = null;
         }
 
-        var stdout = std.ArrayList(u8).empty;
-        defer stdout.deinit(allocator);
-        var stderr = std.ArrayList(u8).empty;
-        defer stderr.deinit(allocator);
-        child.collectOutput(allocator, &stdout, &stderr, pass_payload_limit_bytes) catch |err| switch (err) {
-            error.StdoutStreamTooLong => return error.StoreCommandOutputTooLarge,
-            error.StderrStreamTooLong => return error.StoreCommandOutputTooLarge,
-            else => return err,
-        };
+        var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+        var multi_reader: std.Io.File.MultiReader = undefined;
+        multi_reader.init(allocator, runtime.io(), multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+        defer multi_reader.deinit();
 
-        const term = try child.wait();
+        const stdout_reader = multi_reader.reader(0);
+        const stderr_reader = multi_reader.reader(1);
+        while (multi_reader.fill(64, .none)) |_| {
+            if (stdout_reader.buffered().len > pass_payload_limit_bytes or
+                stderr_reader.buffered().len > pass_payload_limit_bytes)
+            {
+                return error.StoreCommandOutputTooLarge;
+            }
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            else => |e| return e,
+        }
+        try multi_reader.checkAnyError();
+
+        const term = try child.wait(runtime.io());
         switch (term) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code != 0) {
                     return error.StoreCommandFailed;
                 }
@@ -311,22 +348,22 @@ pub const PassBackend = struct {
             entry_name,
         };
 
-        var child = std.process.Child.init(&argv, allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-
-        child.spawn() catch |err| switch (err) {
+        var child = std.process.spawn(runtime.io(), .{
+            .argv = &argv,
+            .stdin = .ignore,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        }) catch |err| switch (err) {
             error.FileNotFound => return error.StoreUnavailable,
             else => return err,
         };
-        errdefer _ = child.kill() catch {};
+        errdefer child.kill(runtime.io());
 
         var stdout_pipe = child.stdout.?;
-        defer stdout_pipe.close();
+        defer stdout_pipe.close(runtime.io());
 
         var read_buffer: [8192]u8 = undefined;
-        var file_reader = stdout_pipe.readerStreaming(&read_buffer);
+        var file_reader = stdout_pipe.readerStreaming(runtime.io(), &read_buffer);
         var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
         defer json_reader.deinit();
 
@@ -334,14 +371,17 @@ pub const PassBackend = struct {
         try atomic_file.init(target_path, 0o600);
         defer atomic_file.deinit();
 
-        const metadata = decodeStoredObjectToWriter(allocator, &json_reader, &atomic_file.file.file_writer.interface) catch |err| {
-            _ = child.kill() catch {};
+        var write_buffer: [8192]u8 = undefined;
+        var file_writer = atomic_file.file.file.writer(runtime.io(), &write_buffer);
+        const metadata = decodeStoredObjectToWriter(allocator, &json_reader, &file_writer.interface) catch |err| {
+            child.kill(runtime.io());
             return err;
         };
+        try file_writer.interface.flush();
 
-        const term = try child.wait();
+        const term = try child.wait(runtime.io());
         switch (term) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code != 0) {
                     return error.ObjectNotFound;
                 }
@@ -720,51 +760,48 @@ fn writeObjectToFileAtomic(path: []const u8, object: ObjectView) !void {
     try atomic_file.init(path, @intCast(object.metadata.mode & 0o777));
     defer atomic_file.deinit();
 
+    var write_buffer: [8192]u8 = undefined;
+    var file_writer = atomic_file.file.file.writer(runtime.io(), &write_buffer);
     if (object.content.len != 0) {
-        try atomic_file.file.file_writer.interface.writeAll(object.content);
+        try file_writer.interface.writeAll(object.content);
     }
+    try file_writer.interface.flush();
 
     try finishAtomicObjectFile(&atomic_file.file, object.metadata);
 }
 
 const AtomicObjectFile = struct {
-    buffer: [4096]u8 = undefined,
-    file: std.fs.AtomicFile = undefined,
+    file: std.Io.File.Atomic = undefined,
     initialized: bool = false,
 
-    fn init(self: *AtomicObjectFile, path: []const u8, mode: std.fs.File.Mode) !void {
-        const parent_dir_path = std.fs.path.dirname(path) orelse return error.InvalidPath;
-        try std.fs.cwd().makePath(parent_dir_path);
-
-        var parent_dir = try std.fs.openDirAbsolute(parent_dir_path, .{});
-        errdefer parent_dir.close();
-
-        self.file = try std.fs.AtomicFile.init(
-            std.fs.path.basename(path),
-            mode,
-            parent_dir,
-            true,
-            &self.buffer,
-        );
+    fn init(self: *AtomicObjectFile, path: []const u8, mode: std.posix.mode_t) !void {
+        if (std.fs.path.dirname(path) == null) return error.InvalidPath;
+        self.file = try std.Io.Dir.cwd().createFileAtomic(runtime.io(), path, .{
+            .permissions = .fromMode(mode),
+            .make_path = true,
+            .replace = true,
+        });
         self.initialized = true;
     }
 
     fn deinit(self: *AtomicObjectFile) void {
         if (self.initialized) {
-            self.file.deinit();
+            self.file.deinit(runtime.io());
             self.initialized = false;
         }
         self.* = undefined;
     }
 };
 
-fn finishAtomicObjectFile(atomic_file: *std.fs.AtomicFile, metadata: Metadata) !void {
-    try atomic_file.file_writer.interface.flush();
-    try atomic_file.file_writer.file.chmod(@intCast(metadata.mode & 0o777));
-    try atomic_file.file_writer.file.chown(metadata.uid, metadata.gid);
-    try atomic_file.file_writer.file.updateTimes(metadata.atime_nsec, metadata.mtime_nsec);
-    try atomic_file.file_writer.file.sync();
-    try atomic_file.finish();
+fn finishAtomicObjectFile(atomic_file: *std.Io.File.Atomic, metadata: Metadata) !void {
+    try atomic_file.file.setPermissions(runtime.io(), .fromMode(@intCast(metadata.mode & 0o777)));
+    try atomic_file.file.setOwner(runtime.io(), @intCast(metadata.uid), @intCast(metadata.gid));
+    try atomic_file.file.setTimestamps(runtime.io(), .{
+        .access_timestamp = .{ .new = .fromNanoseconds(@intCast(metadata.atime_nsec)) },
+        .modify_timestamp = .{ .new = .fromNanoseconds(@intCast(metadata.mtime_nsec)) },
+    });
+    try atomic_file.file.sync(runtime.io());
+    try atomic_file.replace(runtime.io());
 }
 
 test "mock backend round-trips objects" {
@@ -882,13 +919,12 @@ test "streaming object decode can restore payloads beyond the pass capture limit
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var payload_file = try tmp.dir.createFile("payload.json", .{ .read = true });
-    defer payload_file.close();
-    try payload_file.writeAll(encoded);
-    try payload_file.seekTo(0);
+    var payload_file = try tmp.dir.createFile(runtime.io(), "payload.json", .{ .read = true });
+    defer payload_file.close(runtime.io());
+    try payload_file.writeStreamingAll(runtime.io(), encoded);
 
     var read_buffer: [4096]u8 = undefined;
-    var file_reader = payload_file.readerStreaming(&read_buffer);
+    var file_reader = payload_file.reader(runtime.io(), &read_buffer);
     var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
     defer json_reader.deinit();
 

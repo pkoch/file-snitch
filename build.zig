@@ -72,6 +72,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/store.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     store_test_module.addOptions("build_options", build_options);
     const store_tests = b.addTest(.{
@@ -98,6 +99,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/enrollment.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     enrollment_test_module.addOptions("build_options", build_options);
     const enrollment_tests = b.addTest(.{
@@ -183,7 +185,7 @@ pub fn build(b: *std.Build) void {
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
-    const raw = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 64) catch |err| {
+    const raw = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "VERSION", b.allocator, .limited(64)) catch |err| {
         std.debug.panic("failed to read VERSION: {}", .{err});
     };
     return std.mem.trim(u8, raw, " \t\r\n");

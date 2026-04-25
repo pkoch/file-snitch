@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 pub const Shell = enum {
     bash,
@@ -14,7 +15,7 @@ pub fn parseShell(raw: []const u8) ?Shell {
 }
 
 pub fn print(shell: Shell) !void {
-    try std.fs.File.stdout().writeAll(scriptFor(shell));
+    try runtime.stdoutWriteAll(scriptFor(shell));
 }
 
 pub fn scriptFor(shell: Shell) []const u8 {

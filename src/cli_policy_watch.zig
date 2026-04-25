@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 
 pub const Outcome = enum {
     timeout,
@@ -14,8 +15,8 @@ pub const LinuxWatcher = if (builtin.os.tag == .linux) struct {
 
     pub fn deinit(self: *LinuxWatcher) void {
         if (builtin.os.tag == .linux) {
-            std.posix.inotify_rm_watch(self.fd, self.watch_descriptor);
-            std.posix.close(self.fd);
+            _ = std.c.inotify_rm_watch(self.fd, self.watch_descriptor);
+            (std.Io.File{ .handle = self.fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
         }
         self.allocator.free(self.filename);
         self.* = undefined;
@@ -68,15 +69,16 @@ pub const DarwinWatcher = if (builtin.os.tag == .macos) struct {
     directory_fd: std.posix.fd_t,
 
     pub fn deinit(self: *DarwinWatcher) void {
-        std.posix.close(self.directory_fd);
-        std.posix.close(self.kqueue_fd);
+        (std.Io.File{ .handle = self.directory_fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
+        (std.Io.File{ .handle = self.kqueue_fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
         self.* = undefined;
     }
 
     pub fn wait(self: *DarwinWatcher, timeout_ns: u64) !Outcome {
         var timespec = nanosToTimespec(timeout_ns);
-        var event_buffer: [1]std.posix.Kevent = undefined;
-        const count = try std.posix.kevent(self.kqueue_fd, &.{}, &event_buffer, &timespec);
+        var event_buffer: [1]std.c.Kevent = undefined;
+        const count = std.c.kevent(self.kqueue_fd, &.{}, 0, &event_buffer, event_buffer.len, &timespec);
+        if (count < 0) return error.InputOutput;
         if (count == 0) return .timeout;
         return .changed;
     }
@@ -123,21 +125,21 @@ pub const ChangeSource = union(enum) {
     pub fn wait(self: *ChangeSource, timeout_ns: u64) Outcome {
         return switch (self.*) {
             .polling => {
-                std.Thread.sleep(timeout_ns);
+                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
                 return .timeout;
             },
             .linux_inotify => |*watcher| watcher.wait(timeout_ns) catch |err| {
                 std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
                 watcher.deinit();
                 self.* = .polling;
-                std.Thread.sleep(timeout_ns);
+                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
                 return .timeout;
             },
             .darwin_kqueue => |*watcher| watcher.wait(timeout_ns) catch |err| {
                 std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
                 watcher.deinit();
                 self.* = .polling;
-                std.Thread.sleep(timeout_ns);
+                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
                 return .timeout;
             },
         };
@@ -150,8 +152,9 @@ fn initLinuxWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !Chan
     const watch_path = try splitWatchPath(allocator, policy_path);
     defer allocator.free(watch_path.directory_path);
 
-    const fd = try std.posix.inotify_init1(std.os.linux.IN.CLOEXEC);
-    errdefer std.posix.close(fd);
+    const fd = std.c.inotify_init1(std.os.linux.IN.CLOEXEC);
+    if (fd < 0) return error.SystemResources;
+    errdefer (std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
 
     const watch_mask =
         std.os.linux.IN.CLOSE_WRITE |
@@ -160,8 +163,11 @@ fn initLinuxWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !Chan
         std.os.linux.IN.MOVED_TO |
         std.os.linux.IN.MOVE_SELF |
         std.os.linux.IN.DELETE_SELF;
-    const watch_descriptor = try std.posix.inotify_add_watch(fd, watch_path.directory_path, watch_mask);
-    errdefer std.posix.inotify_rm_watch(fd, watch_descriptor);
+    const directory_path_z = try allocator.dupeZ(u8, watch_path.directory_path);
+    defer allocator.free(directory_path_z);
+    const watch_descriptor = std.c.inotify_add_watch(fd, directory_path_z.ptr, watch_mask);
+    if (watch_descriptor < 0) return error.InputOutput;
+    errdefer _ = std.c.inotify_rm_watch(fd, watch_descriptor);
 
     return .{ .linux_inotify = .{
         .allocator = allocator,
@@ -175,8 +181,9 @@ fn initDarwinWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !Cha
     const watch_path = try splitWatchPath(allocator, policy_path);
     defer allocator.free(watch_path.directory_path);
 
-    const kqueue_fd = try std.posix.kqueue();
-    errdefer std.posix.close(kqueue_fd);
+    const kqueue_fd = std.c.kqueue();
+    if (kqueue_fd < 0) return error.SystemResources;
+    errdefer (std.Io.File{ .handle = kqueue_fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
 
     const directory_flags = comptime flags: {
         var open_flags = std.posix.O{
@@ -188,10 +195,13 @@ fn initDarwinWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !Cha
         if (@hasField(std.posix.O, "PATH")) open_flags.PATH = true;
         break :flags open_flags;
     };
-    const directory_fd = try std.posix.open(watch_path.directory_path, directory_flags, 0);
-    errdefer std.posix.close(directory_fd);
+    const directory_path_z = try allocator.dupeZ(u8, watch_path.directory_path);
+    defer allocator.free(directory_path_z);
+    const directory_fd = std.c.open(directory_path_z.ptr, directory_flags, @as(std.c.mode_t, 0));
+    if (directory_fd < 0) return error.FileNotFound;
+    errdefer (std.Io.File{ .handle = directory_fd, .flags = .{ .nonblocking = false } }).close(runtime.io());
 
-    const changes = [_]std.posix.Kevent{.{
+    const changes = [_]std.c.Kevent{.{
         .ident = @bitCast(@as(isize, directory_fd)),
         .filter = std.c.EVFILT.VNODE,
         .flags = std.c.EV.ADD | std.c.EV.ENABLE | std.c.EV.CLEAR,
@@ -199,7 +209,7 @@ fn initDarwinWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !Cha
         .data = 0,
         .udata = 0,
     }};
-    _ = try std.posix.kevent(kqueue_fd, &changes, &.{}, null);
+    if (std.c.kevent(kqueue_fd, &changes, changes.len, undefined, 0, null) < 0) return error.InputOutput;
 
     return .{ .darwin_kqueue = .{
         .kqueue_fd = kqueue_fd,

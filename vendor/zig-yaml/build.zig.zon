@@ -1,0 +1,13 @@
+.{
+    .name = .zig_yaml,
+    .version = "0.2.0",
+    .fingerprint = 0x225b4a67d67a5d0b,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE",
+        "README.md",
+    },
+}

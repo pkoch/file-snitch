@@ -1,6 +1,7 @@
 const std = @import("std");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
+const runtime = @import("runtime.zig");
 
 pub const Request = struct {
     path: []const u8,
@@ -45,9 +46,9 @@ pub const Broker = struct {
 pub const CliContext = struct {
     allocator: std.mem.Allocator = std.heap.page_allocator,
     timeout_ms: u32 = defaults.prompt_timeout_ms_default,
-    stdin_file: std.fs.File = .stdin(),
-    stderr_file: std.fs.File = .stderr(),
-    mutex: std.Thread.Mutex = .{},
+    stdin_file: std.Io.File = .stdin(),
+    stderr_file: std.Io.File = .stderr(),
+    mutex: std.Io.Mutex = .init,
     pending_input: [256]u8 = [_]u8{0} ** 256,
     pending_len: usize = 0,
 };
@@ -82,8 +83,8 @@ fn resolveCli(raw_context: ?*anyopaque, request: Request) Response {
 }
 
 pub fn resolveCliWithContext(context: *CliContext, request: Request) Response {
-    context.mutex.lock();
-    defer context.mutex.unlock();
+    context.mutex.lockUncancelable(runtime.io());
+    defer context.mutex.unlock(runtime.io());
 
     const label = promptLabel(context.allocator, request) catch return .{ .decision = .unavailable };
     defer if (request.label == null) context.allocator.free(label);
@@ -115,14 +116,14 @@ fn resolveScripted(raw_context: ?*anyopaque, request: Request) Response {
 fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void {
     try writePromptJson(context, request, label, null);
 
-    if (context.stderr_file.isTty()) {
+    if (context.stderr_file.isTty(runtime.io()) catch false) {
         const human = try std.fmt.allocPrint(
             context.allocator,
             "{s}Authorize:{s} {s}{s}{s}\n",
             .{ ansi_bold, ansi_reset, ansi_bold, label, ansi_reset },
         );
         defer context.allocator.free(human);
-        try context.stderr_file.writeAll(human);
+        try context.stderr_file.writeStreamingAll(runtime.io(), human);
     }
 
     const message = if (request.can_remember)
@@ -139,12 +140,12 @@ fn writePrompt(context: *CliContext, request: Request, label: []const u8) !void 
         );
     defer context.allocator.free(message);
 
-    try context.stderr_file.writeAll(message);
+    try context.stderr_file.writeStreamingAll(runtime.io(), message);
 }
 
 fn finishPrompt(context: *CliContext, request: Request, label: []const u8, response: Response) !void {
-    try context.stderr_file.writeAll("\n");
-    if (context.stderr_file.isTty()) {
+    try context.stderr_file.writeStreamingAll(runtime.io(), "\n");
+    if (context.stderr_file.isTty(runtime.io()) catch false) {
         const human = try std.fmt.allocPrint(
             context.allocator,
             "{s}Decision:{s} {s}{s}{s}{s} for {s}{s}{s}\n",
@@ -161,7 +162,7 @@ fn finishPrompt(context: *CliContext, request: Request, label: []const u8, respo
             },
         );
         defer context.allocator.free(human);
-        try context.stderr_file.writeAll(human);
+        try context.stderr_file.writeStreamingAll(runtime.io(), human);
     }
     try writePromptJson(context, request, label, response);
 }
@@ -172,7 +173,7 @@ fn writePromptJson(
     label: []const u8,
     response: ?Response,
 ) !void {
-    var output: std.io.Writer.Allocating = .init(context.allocator);
+    var output: std.Io.Writer.Allocating = .init(context.allocator);
     defer output.deinit();
 
     try std.json.Stringify.value(.{
@@ -190,7 +191,7 @@ fn writePromptJson(
         .expires_at_unix_seconds = if (response) |value| value.expires_at_unix_seconds else null,
     }, .{}, &output.writer);
     try output.writer.writeByte('\n');
-    try context.stderr_file.writeAll(output.written());
+    try context.stderr_file.writeStreamingAll(runtime.io(), output.written());
 }
 
 fn promptLabel(allocator: std.mem.Allocator, request: Request) ![]const u8 {
@@ -247,7 +248,7 @@ fn readResponseWithTimeout(context: *CliContext, can_remember: bool) ReadLineErr
             return if (context.pending_len == 0) error.EndOfStream else parseResponse(context.pending_input[0..context.pending_len], can_remember);
         }
 
-        const read_count = context.stdin_file.read(context.pending_input[context.pending_len..]) catch return error.InputOutput;
+        const read_count = context.stdin_file.readStreaming(runtime.io(), &.{context.pending_input[context.pending_len..]}) catch return error.InputOutput;
         if (read_count == 0) {
             return if (context.pending_len == 0) error.EndOfStream else parseResponse(context.pending_input[0..context.pending_len], can_remember);
         }
@@ -291,7 +292,7 @@ fn parseResponse(line: []const u8, can_remember: bool) Response {
             return .{
                 .decision = .allow,
                 .remember_kind = .temporary,
-                .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
+                .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
             };
         }
         if (std.ascii.eqlIgnoreCase(trimmed, "a") or std.ascii.eqlIgnoreCase(trimmed, "always")) {
@@ -303,6 +304,19 @@ fn parseResponse(line: []const u8, can_remember: bool) Response {
     }
 
     return .{ .decision = .deny, .remember_kind = .once };
+}
+
+fn makePipe() ![2]std.posix.fd_t {
+    var fds: [2]std.posix.fd_t = undefined;
+    if (std.c.pipe(&fds) != 0) {
+        return error.SystemResources;
+    }
+    return fds;
+}
+
+fn closeFd(fd: std.posix.fd_t) void {
+    var file = std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } };
+    file.close(runtime.io());
 }
 
 fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
@@ -358,22 +372,22 @@ test "scripted broker returns configured decisions in order" {
 }
 
 test "cli broker allows yes" {
-    const fds = try std.posix.pipe();
-    defer std.posix.close(fds[0]);
-    defer std.posix.close(fds[1]);
+    const fds = try makePipe();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
-    const stderr_fds = try std.posix.pipe();
-    defer std.posix.close(stderr_fds[0]);
-    defer std.posix.close(stderr_fds[1]);
+    const stderr_fds = try makePipe();
+    defer closeFd(stderr_fds[0]);
+    defer closeFd(stderr_fds[1]);
 
-    const writer = std.fs.File{ .handle = fds[1] };
-    try writer.writeAll("yes\n");
+    const writer = std.Io.File{ .handle = fds[1], .flags = .{ .nonblocking = false } };
+    try writer.writeStreamingAll(runtime.io(), "yes\n");
 
     var context = CliContext{
         .allocator = std.testing.allocator,
         .timeout_ms = 50,
-        .stdin_file = .{ .handle = fds[0] },
-        .stderr_file = .{ .handle = stderr_fds[1] },
+        .stdin_file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
+        .stderr_file = .{ .handle = stderr_fds[1], .flags = .{ .nonblocking = false } },
     };
     const broker = cliBroker(&context);
 
@@ -390,22 +404,22 @@ test "cli broker allows yes" {
 }
 
 test "cli broker allows empty response by default" {
-    const fds = try std.posix.pipe();
-    defer std.posix.close(fds[0]);
-    defer std.posix.close(fds[1]);
+    const fds = try makePipe();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
-    const stderr_fds = try std.posix.pipe();
-    defer std.posix.close(stderr_fds[0]);
-    defer std.posix.close(stderr_fds[1]);
+    const stderr_fds = try makePipe();
+    defer closeFd(stderr_fds[0]);
+    defer closeFd(stderr_fds[1]);
 
-    const writer = std.fs.File{ .handle = fds[1] };
-    try writer.writeAll("\n");
+    const writer = std.Io.File{ .handle = fds[1], .flags = .{ .nonblocking = false } };
+    try writer.writeStreamingAll(runtime.io(), "\n");
 
     var context = CliContext{
         .allocator = std.testing.allocator,
         .timeout_ms = 50,
-        .stdin_file = .{ .handle = fds[0] },
-        .stderr_file = .{ .handle = stderr_fds[1] },
+        .stdin_file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
+        .stderr_file = .{ .handle = stderr_fds[1], .flags = .{ .nonblocking = false } },
     };
     const broker = cliBroker(&context);
 
@@ -422,19 +436,19 @@ test "cli broker allows empty response by default" {
 }
 
 test "cli broker times out to deny path" {
-    const fds = try std.posix.pipe();
-    defer std.posix.close(fds[0]);
-    defer std.posix.close(fds[1]);
+    const fds = try makePipe();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
-    const stderr_fds = try std.posix.pipe();
-    defer std.posix.close(stderr_fds[0]);
-    defer std.posix.close(stderr_fds[1]);
+    const stderr_fds = try makePipe();
+    defer closeFd(stderr_fds[0]);
+    defer closeFd(stderr_fds[1]);
 
     var context = CliContext{
         .allocator = std.testing.allocator,
         .timeout_ms = 10,
-        .stdin_file = .{ .handle = fds[0] },
-        .stderr_file = .{ .handle = stderr_fds[1] },
+        .stdin_file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
+        .stderr_file = .{ .handle = stderr_fds[1], .flags = .{ .nonblocking = false } },
     };
     const broker = cliBroker(&context);
 
@@ -450,22 +464,22 @@ test "cli broker times out to deny path" {
 }
 
 test "cli broker can request remembered allow" {
-    const fds = try std.posix.pipe();
-    defer std.posix.close(fds[0]);
-    defer std.posix.close(fds[1]);
+    const fds = try makePipe();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
-    const stderr_fds = try std.posix.pipe();
-    defer std.posix.close(stderr_fds[0]);
-    defer std.posix.close(stderr_fds[1]);
+    const stderr_fds = try makePipe();
+    defer closeFd(stderr_fds[0]);
+    defer closeFd(stderr_fds[1]);
 
-    const writer = std.fs.File{ .handle = fds[1] };
-    try writer.writeAll("a\n");
+    const writer = std.Io.File{ .handle = fds[1], .flags = .{ .nonblocking = false } };
+    try writer.writeStreamingAll(runtime.io(), "a\n");
 
     var context = CliContext{
         .allocator = std.testing.allocator,
         .timeout_ms = 50,
-        .stdin_file = .{ .handle = fds[0] },
-        .stderr_file = .{ .handle = stderr_fds[1] },
+        .stdin_file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
+        .stderr_file = .{ .handle = stderr_fds[1], .flags = .{ .nonblocking = false } },
     };
     const broker = cliBroker(&context);
 

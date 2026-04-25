@@ -11,4 +11,5 @@ pub const cli = @import("cli.zig");
 pub const filesystem = @import("filesystem.zig");
 pub const policy = @import("policy.zig");
 pub const prompt = @import("prompt.zig");
+pub const runtime = @import("runtime.zig");
 pub const store = @import("store.zig");

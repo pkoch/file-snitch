@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const defaults = @import("defaults.zig");
 const enrollment = @import("enrollment.zig");
 const fuse = @import("fuse/shim.zig");
+const runtime = @import("runtime.zig");
 const store = @import("store.zig");
 
 pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
@@ -146,7 +147,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
-    const report_writer = report.writer(allocator);
+    var report_allocating_writer: std.Io.Writer.Allocating = .fromArrayList(allocator, &report);
+    const report_writer = &report_allocating_writer.writer;
 
     var has_errors = false;
     const home_dir = try enrollment.currentUserHomeAlloc(allocator);
@@ -298,7 +300,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         }
     }
 
-    try std.fs.File.stdout().writeAll(report.items);
+    report = report_allocating_writer.toArrayList();
+    try runtime.stdoutWriteAll(report.items);
 
     if (options.export_debug_dossier_path) |path| {
         try writeDebugDossier(
@@ -326,7 +329,10 @@ fn findEnrollmentIndexByArgument(
         return index;
     }
 
-    const canonical = std.fs.realpathAlloc(allocator, requested_path) catch return null;
+    const canonical = if (std.fs.path.isAbsolute(requested_path))
+        std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), requested_path, allocator) catch return null
+    else
+        std.Io.Dir.cwd().realPathFileAlloc(runtime.io(), requested_path, allocator) catch return null;
     defer allocator.free(canonical);
     return loaded_policy.findEnrollmentIndex(canonical);
 }
@@ -341,17 +347,18 @@ fn writeDebugDossier(
     output_path: []const u8,
 ) !void {
     const output_dir = std.fs.path.dirname(output_path) orelse ".";
-    try std.fs.cwd().makePath(output_dir);
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), output_dir);
 
     var dossier = std.ArrayList(u8).empty;
     defer dossier.deinit(allocator);
-    const writer = dossier.writer(allocator);
+    var dossier_allocating_writer: std.Io.Writer.Allocating = .fromArrayList(allocator, &dossier);
+    const writer = &dossier_allocating_writer.writer;
 
-    var file = try std.fs.cwd().createFile(output_path, .{ .truncate = true });
-    defer file.close();
+    var file = try std.Io.Dir.cwd().createFile(runtime.io(), output_path, .{ .truncate = true });
+    defer file.close(runtime.io());
 
-    const generated_at = std.time.timestamp();
-    const executable_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
+    const generated_at = runtime.timestamp();
+    const executable_path = std.process.executablePathAlloc(runtime.io(), allocator) catch try allocator.dupe(u8, "unknown");
     defer allocator.free(executable_path);
     const pass_command = try detectPassCommandAlloc(allocator);
     defer allocator.free(pass_command);
@@ -439,11 +446,12 @@ fn writeDebugDossier(
         try writer.writeByte('\n');
     }
     try writer.writeAll("```\n");
-    try file.writeAll(dossier.items);
+    dossier = dossier_allocating_writer.toArrayList();
+    try file.writeStreamingAll(runtime.io(), dossier.items);
 }
 
 fn detectPassCommandAlloc(allocator: std.mem.Allocator) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
+    return runtime.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, "pass"),
         else => return err,
     };
@@ -454,17 +462,17 @@ fn detectGuiHelperCommandAlloc(
     env_name: []const u8,
     default_value: []const u8,
 ) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+    return runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, default_value),
         else => return err,
     };
 }
 
 fn summarizeCommandVersionAlloc(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = &.{ command, "--version" },
-        .max_output_bytes = 4096,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
     }) catch |err| switch (err) {
         error.FileNotFound => return allocator.dupe(u8, "not found"),
         else => return err,
@@ -473,7 +481,7 @@ fn summarizeCommandVersionAlloc(allocator: std.mem.Allocator, command: []const u
     defer allocator.free(result.stdout);
 
     switch (result.term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code != 0) {
                 return allocator.dupe(u8, "unavailable");
             }
@@ -491,10 +499,10 @@ fn summarizeCommandVersionAlloc(allocator: std.mem.Allocator, command: []const u
 }
 
 fn passBackendIsUsable(allocator: std.mem.Allocator, command: []const u8) !bool {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = &.{ command, "ls" },
-        .max_output_bytes = 4096,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
     }) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
@@ -503,16 +511,16 @@ fn passBackendIsUsable(allocator: std.mem.Allocator, command: []const u8) !bool 
     defer allocator.free(result.stderr);
 
     return switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
 
 fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = &.{ "sh", "-lc", "command -v \"$1\" >/dev/null 2>&1", "sh", command },
-        .max_output_bytes = 1,
+        .stdout_limit = .limited(1),
+        .stderr_limit = .limited(1),
     }) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
@@ -521,7 +529,7 @@ fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
     defer allocator.free(result.stderr);
 
     return switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }

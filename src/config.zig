@@ -2,6 +2,7 @@ const std = @import("std");
 const yaml = @import("yaml");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
+const runtime = @import("runtime.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
 });
@@ -64,11 +65,11 @@ pub const CompiledRuleViews = struct {
 pub const PolicyLock = struct {
     allocator: std.mem.Allocator,
     lock_path: []u8,
-    file: std.fs.File,
+    file: std.Io.File,
 
     pub fn deinit(self: *PolicyLock) void {
-        self.file.unlock();
-        self.file.close();
+        self.file.unlock(runtime.io());
+        self.file.close(runtime.io());
         self.allocator.free(self.lock_path);
         self.* = undefined;
     }
@@ -280,7 +281,7 @@ pub const PolicyFile = struct {
     }
 
     pub fn deriveMountPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !MountPlan {
-        var parents: std.ArrayListUnmanaged([]u8) = .{};
+        var parents: std.ArrayListUnmanaged([]u8) = .empty;
         defer {
             for (parents.items) |path| {
                 allocator.free(path);
@@ -295,7 +296,7 @@ pub const PolicyFile = struct {
 
         std.mem.sort([]u8, parents.items, {}, lessThanPathLength);
 
-        var planned: std.ArrayListUnmanaged([]u8) = .{};
+        var planned: std.ArrayListUnmanaged([]u8) = .empty;
         errdefer {
             for (planned.items) |path| {
                 allocator.free(path);
@@ -317,7 +318,7 @@ pub const PolicyFile = struct {
     }
 
     pub fn compilePolicyRuleViews(self: *const PolicyFile, allocator: std.mem.Allocator) !CompiledRuleViews {
-        var compiled: std.ArrayListUnmanaged(policy.RuleView) = .{};
+        var compiled: std.ArrayListUnmanaged(policy.RuleView) = .empty;
         errdefer compiled.deinit(allocator);
 
         for (self.decisions) |decision| {
@@ -345,24 +346,25 @@ pub const PolicyFile = struct {
 
     pub fn saveToFile(self: *const PolicyFile) !void {
         const parent_dir_path = std.fs.path.dirname(self.source_path) orelse return error.InvalidPolicyPath;
-        try std.fs.cwd().makePath(parent_dir_path);
+        try ensureDirectoryPath(parent_dir_path);
 
-        var parent_dir = try std.fs.openDirAbsolute(parent_dir_path, .{});
-        defer parent_dir.close();
+        var parent_dir = try std.Io.Dir.openDirAbsolute(runtime.io(), parent_dir_path, .{});
+        defer parent_dir.close(runtime.io());
 
-        var buffer: std.ArrayList(u8) = .{};
+        var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(self.allocator);
-        try self.writeYaml(buffer.writer(self.allocator));
+        var allocating_writer: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &buffer);
+        try self.writeYaml(&allocating_writer.writer);
+        buffer = allocating_writer.toArrayList();
 
-        var atomic_buffer: [4096]u8 = undefined;
-        var atomic_file = try parent_dir.atomicFile(std.fs.path.basename(self.source_path), .{
-            .mode = 0o600,
-            .write_buffer = &atomic_buffer,
+        var atomic_file = try parent_dir.createFileAtomic(runtime.io(), std.fs.path.basename(self.source_path), .{
+            .permissions = .fromMode(0o600),
+            .replace = true,
         });
-        defer atomic_file.deinit();
+        defer atomic_file.deinit(runtime.io());
 
-        try atomic_file.file_writer.interface.writeAll(buffer.items);
-        try atomic_file.finish();
+        try atomic_file.file.writeStreamingAll(runtime.io(), buffer.items);
+        try atomic_file.replace(runtime.io());
     }
 
     fn writeYaml(self: *const PolicyFile, writer: anytype) !void {
@@ -415,30 +417,31 @@ pub const PolicyFile = struct {
 
 pub fn currentPolicyMarker(allocator: std.mem.Allocator, policy_path: []const u8) !PolicyMarker {
     _ = allocator;
-    var file = std.fs.cwd().openFile(policy_path, .{ .mode = .read_only }) catch |err| switch (err) {
+    var file = std.Io.Dir.cwd().openFile(runtime.io(), policy_path, .{ .mode = .read_only }) catch |err| switch (err) {
         error.FileNotFound => return .{ .exists = false },
         else => return err,
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const stat = try file.stat();
+    const stat = try file.stat(runtime.io());
 
     return .{
         .exists = true,
         .size = stat.size,
-        .mtime = stat.mtime,
+        .mtime = stat.mtime.toNanoseconds(),
         .content_hash = try hashPolicyContents(&file),
     };
 }
 
-fn hashPolicyContents(file: *std.fs.File) !u64 {
-    try file.seekTo(0);
+fn hashPolicyContents(file: *std.Io.File) !u64 {
     var hasher = std.hash.Wyhash.init(0);
     var buffer: [4096]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const bytes_read = try file.read(&buffer);
+        const bytes_read = try file.readPositionalAll(runtime.io(), &buffer, offset);
         if (bytes_read == 0) break;
         hasher.update(buffer[0..bytes_read]);
+        offset += bytes_read;
     }
     return hasher.final();
 }
@@ -468,25 +471,35 @@ pub fn acquirePolicyLock(allocator: std.mem.Allocator, policy_path: []const u8) 
     errdefer allocator.free(lock_path);
 
     const parent_dir_path = std.fs.path.dirname(lock_path) orelse return error.InvalidPolicyPath;
-    try std.fs.cwd().makePath(parent_dir_path);
+    try ensureDirectoryPath(parent_dir_path);
 
-    const lock_file = std.fs.createFileAbsolute(lock_path, .{
+    const lock_file = std.Io.Dir.createFileAbsolute(runtime.io(), lock_path, .{
         .read = true,
         .truncate = false,
-        .mode = 0o600,
+        .permissions = .fromMode(0o600),
+        .lock = .exclusive,
     }) catch |err| switch (err) {
-        error.PathAlreadyExists => try std.fs.openFileAbsolute(lock_path, .{ .mode = .read_write }),
+        error.PathAlreadyExists => try std.Io.Dir.openFileAbsolute(runtime.io(), lock_path, .{ .mode = .read_write, .lock = .exclusive }),
         else => return err,
     };
-    errdefer lock_file.close();
-
-    try lock_file.lock(.exclusive);
+    errdefer lock_file.close(runtime.io());
 
     return .{
         .allocator = allocator,
         .lock_path = lock_path,
         .file = lock_file,
     };
+}
+
+fn ensureDirectoryPath(path: []const u8) !void {
+    if (std.Io.Dir.cwd().statFile(runtime.io(), path, .{})) |stat| {
+        if (stat.kind == .directory) return;
+        return error.NotDir;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), path);
 }
 
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile {
@@ -509,9 +522,7 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
     document.load(allocator) catch |err| switch (err) {
         error.ParseFailure => {
             if (document.parse_errors.errorMessageCount() > 0) {
-                document.parse_errors.renderToStdErr(.{
-                    .ttyconf = std.io.tty.detectConfig(std.fs.File.stderr()),
-                });
+                try document.parse_errors.renderToStderr(runtime.io(), .{}, .off);
             }
             return error.InvalidPolicyFile;
         },
@@ -544,7 +555,7 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
 }
 
 pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, defaults.policy_path_env)) |policy_path| {
+    if (runtime.getEnvVarOwned(allocator, defaults.policy_path_env)) |policy_path| {
         return policy_path;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -557,9 +568,10 @@ pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn loadPolicySource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
-    defer file.close();
-    return file.readToEndAlloc(allocator, 1024 * 1024);
+    var file = try std.Io.Dir.openFileAbsolute(runtime.io(), path, .{ .mode = .read_only });
+    defer file.close(runtime.io());
+    var file_reader = file.reader(runtime.io(), &.{});
+    return file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
 }
 
 fn emptyPolicy(allocator: std.mem.Allocator, source_path: []u8) !PolicyFile {
@@ -573,11 +585,11 @@ fn emptyPolicy(allocator: std.mem.Allocator, source_path: []u8) !PolicyFile {
 }
 
 fn parseRawPolicyDocument(arena: std.mem.Allocator, root: yaml.Yaml.Value) !RawPolicyFile {
-    const map = try valueAsMap(root);
+    const map = try root.asMap();
 
     var raw = RawPolicyFile{};
     if (mapGet(map, "version")) |value| {
-        raw.version = @intCast(try valueAsInt(value));
+        raw.version = @intCast(try value.asInt());
     }
     if (mapGet(map, "enrollments")) |value| {
         raw.enrollments = try parseRawEnrollments(arena, value);
@@ -589,10 +601,10 @@ fn parseRawPolicyDocument(arena: std.mem.Allocator, root: yaml.Yaml.Value) !RawP
 }
 
 fn parseRawEnrollments(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawEnrollment {
-    const list = try valueAsList(value);
+    const list = try value.asList();
     var enrollments = try arena.alloc(RawEnrollment, list.len);
     for (list, 0..) |entry, index| {
-        const map = try valueAsMap(entry);
+        const map = try entry.asMap();
         enrollments[index] = .{
             .path = try requiredStringField(arena, map, "path"),
             .object_id = try requiredStringField(arena, map, "object_id"),
@@ -602,10 +614,10 @@ fn parseRawEnrollments(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]cons
 }
 
 fn parseRawDecisions(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawDecision {
-    const list = try valueAsList(value);
+    const list = try value.asList();
     var decisions = try arena.alloc(RawDecision, list.len);
     for (list, 0..) |entry, index| {
-        const map = try valueAsMap(entry);
+        const map = try entry.asMap();
         decisions[index] = .{
             .executable_path = try requiredStringField(arena, map, "executable_path"),
             .uid = @intCast(try requiredIntField(map, "uid")),
@@ -625,7 +637,7 @@ fn requiredStringField(arena: std.mem.Allocator, map: yaml.Yaml.Map, field_name:
 
 fn requiredIntField(map: yaml.Yaml.Map, field_name: []const u8) !i64 {
     const value = mapGet(map, field_name) orelse return error.StructFieldMissing;
-    return try valueAsInt(value);
+    return try value.asInt();
 }
 
 fn optionalScalarField(
@@ -641,31 +653,19 @@ fn optionalScalarField(
 fn optionalExpirationField(map: yaml.Yaml.Map, field_name: []const u8, default_value: []const u8) ![]const u8 {
     const value = mapGet(map, field_name) orelse return default_value;
     return switch (value) {
-        .scalar => |scalar| scalar,
+        .string => |string| string,
         .empty => default_value,
         else => error.TypeMismatch,
     };
 }
 
-fn scalarFieldToString(_: std.mem.Allocator, value: yaml.Yaml.Value) ![]const u8 {
+fn scalarFieldToString(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const u8 {
     return switch (value) {
-        .scalar => |scalar| scalar,
+        .string => |string| string,
+        .int => |int| try std.fmt.allocPrint(arena, "{d}", .{int}),
         .empty => "null",
         else => error.TypeMismatch,
     };
-}
-
-fn valueAsMap(value: yaml.Yaml.Value) !yaml.Yaml.Map {
-    return value.asMap() orelse error.TypeMismatch;
-}
-
-fn valueAsList(value: yaml.Yaml.Value) !yaml.Yaml.List {
-    return value.asList() orelse error.TypeMismatch;
-}
-
-fn valueAsInt(value: yaml.Yaml.Value) !i64 {
-    const scalar = value.asScalar() orelse return error.TypeMismatch;
-    return try std.fmt.parseInt(i64, scalar, 0);
 }
 
 fn mapGet(map: yaml.Yaml.Map, field_name: []const u8) ?yaml.Yaml.Value {
