@@ -347,6 +347,97 @@ print(
 PY
 }
 
+verify_published_tap_bottles() {
+  local version="$1"
+  local release_json="$tmp_dir/tap-release-assets.json"
+
+  gh release view \
+    "file-snitch-$version" \
+    --repo "$tap_repo_slug" \
+    --json assets \
+    > "$release_json"
+
+  python3 - "$tap_formula" "$version" "$release_json" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+formula_path = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+release_json_path = pathlib.Path(sys.argv[3])
+expected_root_url = (
+    f"https://github.com/pkoch/homebrew-tap/releases/download/file-snitch-{version}"
+)
+asset_prefix = f"file-snitch-{version}."
+asset_suffix = ".bottle.tar.gz"
+
+assets = json.loads(release_json_path.read_text(encoding="utf-8"))["assets"]
+asset_tags = {}
+for asset in assets:
+    name = asset.get("name", "")
+    digest = asset.get("digest", "")
+    if not name.startswith(asset_prefix) or not name.endswith(asset_suffix):
+        continue
+    tag = name.removeprefix(asset_prefix).removesuffix(asset_suffix)
+    if not digest.startswith("sha256:"):
+        raise SystemExit(f"error: release asset {name} has no sha256 digest")
+    sha256 = digest.removeprefix("sha256:")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise SystemExit(f"error: release asset {name} has invalid digest {digest!r}")
+    asset_tags[tag] = sha256
+
+if not asset_tags:
+    raise SystemExit(f"error: no bottle assets found for file-snitch-{version}")
+
+formula = formula_path.read_text(encoding="utf-8")
+bottle_match = re.search(r"^\s*bottle do\n(?P<body>.*?)^\s*end\n", formula, re.M | re.S)
+if not bottle_match:
+    raise SystemExit(f"error: no bottle block found in {formula_path}")
+
+bottle_body = bottle_match.group("body")
+root_match = re.search(r'^\s*root_url\s+"([^"]+)"', bottle_body, re.M)
+if not root_match:
+    raise SystemExit(f"error: no bottle root_url found in {formula_path}")
+if root_match.group(1) != expected_root_url:
+    raise SystemExit(
+        f"error: formula bottle root_url is {root_match.group(1)!r}, "
+        f"expected {expected_root_url!r}"
+    )
+
+formula_tags = dict(
+    re.findall(
+        r'^\s*sha256(?:\s+cellar:\s*[^,]+,)?\s+([a-z0-9_]+):\s+"([0-9a-f]{64})"',
+        bottle_body,
+        re.M,
+    )
+)
+if formula_tags != asset_tags:
+    missing = sorted(set(asset_tags) - set(formula_tags))
+    stale = sorted(set(formula_tags) - set(asset_tags))
+    mismatched = sorted(
+        tag
+        for tag in set(asset_tags) & set(formula_tags)
+        if asset_tags[tag] != formula_tags[tag]
+    )
+    details = []
+    if missing:
+        details.append(f"missing tags: {', '.join(missing)}")
+    if stale:
+        details.append(f"stale tags: {', '.join(stale)}")
+    if mismatched:
+        details.append(f"mismatched tags: {', '.join(mismatched)}")
+    raise SystemExit(
+        "error: published bottle assets do not match formula; " + "; ".join(details)
+    )
+
+print(
+    "verified published bottles: "
+    + ", ".join(f"{tag}={sha256}" for tag, sha256 in sorted(formula_tags.items()))
+)
+PY
+}
+
 merge_tap_bottle_artifacts() {
   local run_id="$1"
   local version="$2"
@@ -505,7 +596,7 @@ fi
 ensure_tap_publish_label "$tap_repo_slug"
 gh pr edit "$tap_pr_number" --repo "$tap_repo_slug" --add-label pr-pull >/dev/null
 
-run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" publish.yml "$tap_branch" pull_request)"
+run_id="$(wait_for_repo_workflow_run_by_branch "$tap_repo_slug" publish.yml "$tap_branch" pull_request_target)"
 echo "watching tap publish workflow run $run_id"
 if ! gh run watch "$run_id" --repo "$tap_repo_slug" --compact --exit-status; then
   echo "error: tap publish workflow failed for $tap_pr_url" >&2
@@ -516,6 +607,7 @@ fi
 git -C "$tap_repo" fetch origin main >/dev/null
 git -C "$tap_repo" switch main >/dev/null
 git -C "$tap_repo" pull --ff-only origin main >/dev/null
+verify_published_tap_bottles "$new_version"
 git -C "$tap_repo" branch -D "$tap_branch" >/dev/null 2>&1 || true
 
 echo "updated Homebrew tap through PR:"
