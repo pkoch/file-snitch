@@ -28,7 +28,7 @@ cleanup() {
 }
 
 start_prompt_run() {
-  prompt_fifo="$(mktemp -u "$TMP_ROOT/file-snitch.prompt-fifo.XXXXXX")"
+  prompt_fifo="$runtime_dir/prompt.fifo"
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
   agent_input_fd=3

@@ -59,14 +59,6 @@ fn deleteTreeAbsolute(path: []const u8) !void {
     try std.Io.Dir.cwd().deleteTree(runtime.io(), path);
 }
 
-fn deleteFileAbsolute(path: []const u8) !void {
-    try std.Io.Dir.deleteFileAbsolute(runtime.io(), path);
-}
-
-fn deleteFile(path: []const u8) !void {
-    try std.Io.Dir.cwd().deleteFile(runtime.io(), path);
-}
-
 fn createFileAbsolute(path: []const u8, options: std.Io.Dir.CreateFileOptions) !TestFile {
     return .{ .file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, options) };
 }
@@ -80,19 +72,91 @@ const CountingPromptContext = struct {
     response: prompt.Response,
 };
 
+const TempDir = struct {
+    allocator: std.mem.Allocator,
+    path: []u8,
+
+    fn init(allocator: std.mem.Allocator, name: []const u8) !TempDir {
+        var attempts: usize = 0;
+        while (attempts < 32) : (attempts += 1) {
+            var random_bytes: [16]u8 = undefined;
+            runtime.io().random(&random_bytes);
+            const suffix = std.fmt.bytesToHex(random_bytes, .lower);
+            const path = try std.fmt.allocPrint(
+                allocator,
+                "/tmp/file-snitch.test-{s}-{s}",
+                .{ name, suffix },
+            );
+            errdefer allocator.free(path);
+
+            std.Io.Dir.createDirAbsolute(runtime.io(), path, .default_dir) catch |err| switch (err) {
+                error.PathAlreadyExists => {
+                    allocator.free(path);
+                    continue;
+                },
+                else => return err,
+            };
+
+            return .{
+                .allocator = allocator,
+                .path = path,
+            };
+        }
+
+        return error.TempDirCollision;
+    }
+
+    fn deinit(self: *TempDir) void {
+        deleteTreeAbsolute(self.path) catch {};
+        self.allocator.free(self.path);
+        self.* = undefined;
+    }
+
+    fn childPathAlloc(self: *TempDir, name: []const u8) ![]u8 {
+        return std.fs.path.join(self.allocator, &.{ self.path, name });
+    }
+};
+
+const TempPolicyFile = struct {
+    dir: TempDir,
+    path: []u8,
+
+    fn init(allocator: std.mem.Allocator, name: []const u8) !TempPolicyFile {
+        var dir = try TempDir.init(allocator, name);
+        errdefer dir.deinit();
+
+        const path = try dir.childPathAlloc("policy.yml");
+        errdefer allocator.free(path);
+
+        return .{
+            .dir = dir,
+            .path = path,
+        };
+    }
+
+    fn deinit(self: *TempPolicyFile) void {
+        const allocator = self.dir.allocator;
+        allocator.free(self.path);
+        self.dir.deinit();
+        self.* = undefined;
+    }
+};
+
 const Fixture = struct {
     allocator: std.mem.Allocator,
+    temp_dir: TempDir,
     mount_path: []u8,
     mock_state: store.MockState = .{},
     backend: store.Backend = undefined,
 
     fn init(allocator: std.mem.Allocator) !Fixture {
-        const run_id = runtime.nanoTimestamp();
-        const mount_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-mount-{d}", .{run_id});
+        var temp_dir = try TempDir.init(allocator, "fixture");
+        errdefer temp_dir.deinit();
+
+        const mount_path = try temp_dir.childPathAlloc("mount");
         errdefer allocator.free(mount_path);
 
         try makeDirAbsolute(mount_path);
-        errdefer deleteTreeAbsolute(mount_path) catch {};
 
         const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_path, seed_name });
         defer allocator.free(seed_host_path);
@@ -103,19 +167,25 @@ const Fixture = struct {
 
         return .{
             .allocator = allocator,
+            .temp_dir = temp_dir,
             .mount_path = mount_path,
         };
     }
 
     fn deinit(self: *Fixture) void {
         self.mock_state.deinit(self.allocator);
-        deleteTreeAbsolute(self.mount_path) catch {};
         self.allocator.free(self.mount_path);
+        self.temp_dir.deinit();
+        self.* = undefined;
     }
 
     fn guardedStore(self: *Fixture) *store.Backend {
         self.backend = store.Backend.initMock(&self.mock_state);
         return &self.backend;
+    }
+
+    fn childPathAlloc(self: *Fixture, name: []const u8) ![]u8 {
+        return self.temp_dir.childPathAlloc(name);
     }
 };
 
@@ -265,9 +335,8 @@ test "directory entry composition is owned by Zig" {
         .content = "synthetic secret\n",
     });
 
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.ghost-lock-{d}", .{runtime.nanoTimestamp()});
+    const lock_anchor_path = try fixture.childPathAlloc("ghost.lock");
     defer allocator.free(lock_anchor_path);
-    defer deleteFileAbsolute(lock_anchor_path) catch {};
 
     const guarded_entries = &.{filesystem.GuardedEntryConfig{
         .relative_path = "ghost/secret.txt",
@@ -322,9 +391,8 @@ test "policy and prompt paths are covered by core assertions" {
     defer fixture.deinit();
 
     const guarded_note_path = "/guarded-note.txt";
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guard-policy-lock-{d}", .{runtime.nanoTimestamp()});
+    const lock_anchor_path = try fixture.childPathAlloc("guard-policy.lock");
     defer allocator.free(lock_anchor_path);
-    defer deleteFileAbsolute(lock_anchor_path) catch {};
 
     var preseed_store = fixture.guardedStore();
     try preseed_store.putObject(allocator, "guarded-note", .{
@@ -465,11 +533,9 @@ test "directory operations fail explicitly in the file-only spike" {
 
 test "policy file loader treats empty file as a no-op" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "empty");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "empty");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     var file = try createFileAbsolute(path, .{ .truncate = true });
     file.close();
@@ -488,11 +554,9 @@ test "policy file loader treats empty file as a no-op" {
 
 test "policy file loader parses enrollments and collapses mount plan" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "planned");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "planned");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -537,11 +601,9 @@ test "policy file loader parses enrollments and collapses mount plan" {
 
 test "policy file save round-trips appended enrollments" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "roundtrip");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "roundtrip");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
@@ -563,11 +625,9 @@ test "policy file save round-trips appended enrollments" {
 
 test "policy file save removes enrollment and attached decisions" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "remove");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "remove");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -605,11 +665,9 @@ test "policy file save removes enrollment and attached decisions" {
 
 test "compiled durable decisions respect executable path and uid" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "compiled-rules");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "compiled-rules");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -683,11 +741,9 @@ test "compiled durable decisions respect executable path and uid" {
 
 test "compiled durable decisions ignore expired entries" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "compiled-rules-expiration");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "compiled-rules-expiration");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -743,11 +799,9 @@ test "compiled durable decisions ignore expired entries" {
 
 test "policy loader rejects invalid decision expiration" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "invalid-decision-expiration");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "invalid-decision-expiration");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -772,11 +826,9 @@ test "policy loader rejects invalid decision expiration" {
 
 test "policy file prunes expired decisions in place" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "prune-expired-decisions");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "prune-expired-decisions");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -811,11 +863,9 @@ test "policy file prunes expired decisions in place" {
 
 test "upsertDecision replaces matching durable decision" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "upsert-decision");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "upsert-decision");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     const source =
         \\version: 1
@@ -854,16 +904,9 @@ test "upsertDecision replaces matching durable decision" {
 
 test "policy lock prevents a second concurrent writer" {
     const allocator = std.testing.allocator;
-    const path = try tempPolicyPath(allocator, "policy-lock");
-    defer {
-        deleteFileAbsolute(path) catch {};
-        const lock_path = std.fmt.allocPrint(allocator, "{s}.lock", .{path}) catch null;
-        if (lock_path) |owned| {
-            deleteFileAbsolute(owned) catch {};
-            allocator.free(owned);
-        }
-        allocator.free(path);
-    }
+    var temp_policy = try TempPolicyFile.init(allocator, "policy-lock");
+    defer temp_policy.deinit();
+    const path = temp_policy.path;
 
     var first_lock = try config.acquirePolicyLock(allocator, path);
     defer first_lock.deinit();
@@ -876,7 +919,9 @@ test "policy lock prevents a second concurrent writer" {
 
 test "current policy marker treats missing file as absent" {
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-missing-{d}.yml", .{runtime.nanoTimestamp()});
+    var temp_dir = try TempDir.init(allocator, "cli-marker-missing");
+    defer temp_dir.deinit();
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
 
     const marker = try config.currentPolicyMarker(allocator, policy_path);
@@ -887,9 +932,10 @@ test "current policy marker preserves access errors" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-denied-{d}.yml", .{runtime.nanoTimestamp()});
+    var temp_dir = try TempDir.init(allocator, "cli-marker-denied");
+    defer temp_dir.deinit();
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
-    defer deleteFile(policy_path) catch {};
 
     var file = try createFileAbsolute(policy_path, .{ .truncate = true });
     defer file.close();
@@ -903,9 +949,10 @@ test "current policy marker preserves access errors" {
 
 test "current policy marker hashes policy contents beyond one megabyte" {
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-large-{d}.yml", .{runtime.nanoTimestamp()});
+    var temp_dir = try TempDir.init(allocator, "cli-marker-large");
+    defer temp_dir.deinit();
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
-    defer deleteFile(policy_path) catch {};
 
     {
         var file = try createFileAbsolute(policy_path, .{ .truncate = true });
@@ -938,19 +985,18 @@ test "current policy marker hashes policy contents beyond one megabyte" {
 
 test "live policy reload suppresses repeated prompt without remount" {
     const allocator = std.testing.allocator;
-    const run_id = runtime.nanoTimestamp();
-    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-reload-{d}", .{run_id});
+    var temp_dir = try TempDir.init(allocator, "live-policy-reload");
+    defer temp_dir.deinit();
+    const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
     defer allocator.free(source_guarded_path);
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-{d}.yml", .{run_id});
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-lock-{d}", .{run_id});
+    const lock_anchor_path = try temp_dir.childPathAlloc("live-policy.lock");
     defer allocator.free(lock_anchor_path);
 
     try makeDirAbsolute(source_parent);
-    defer deleteTreeAbsolute(source_parent) catch {};
-    defer deleteFile(policy_path) catch {};
 
     {
         var file = try createFileAbsolute(source_guarded_path, .{ .truncate = true });
@@ -1038,11 +1084,9 @@ test "generated policy engine behavior survives source teardown" {
     const random = prng.random();
 
     for (0..24) |case_index| {
-        const path = try tempPolicyPath(allocator, "generated-engine-teardown");
-        defer {
-            deleteFileAbsolute(path) catch {};
-            allocator.free(path);
-        }
+        var temp_policy = try TempPolicyFile.init(allocator, "generated-engine-teardown");
+        defer temp_policy.deinit();
+        const path = temp_policy.path;
 
         try writeGeneratedPolicyFile(allocator, path, random, 1 + (case_index % 6));
 
@@ -1075,11 +1119,9 @@ test "generated policy save load preserves engine behavior" {
     const random = prng.random();
 
     for (0..24) |case_index| {
-        const path = try tempPolicyPath(allocator, "generated-policy-roundtrip");
-        defer {
-            deleteFileAbsolute(path) catch {};
-            allocator.free(path);
-        }
+        var temp_policy = try TempPolicyFile.init(allocator, "generated-policy-roundtrip");
+        defer temp_policy.deinit();
+        const path = temp_policy.path;
 
         var file = try createFileAbsolute(path, .{ .truncate = true });
         file.close();
@@ -1167,10 +1209,11 @@ test "audit event snapshots remain immutable after later writes" {
 
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
-    const run_id = runtime.nanoTimestamp();
-    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-{d}", .{run_id});
+    var temp_dir = try TempDir.init(allocator, "enrolled-parent");
+    defer temp_dir.deinit();
+    const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-{d}", .{run_id});
+    const lock_anchor_path = try temp_dir.childPathAlloc("guarded.lock");
     defer allocator.free(lock_anchor_path);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
     defer allocator.free(source_guarded_path);
@@ -1178,7 +1221,6 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     defer allocator.free(sibling_path);
 
     try makeDirAbsolute(source_parent);
-    defer deleteTreeAbsolute(source_parent) catch {};
 
     var source_guarded_file = try createFileAbsolute(source_guarded_path, .{ .truncate = true });
     defer source_guarded_file.close();
@@ -1249,12 +1291,13 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
 
 test "enrolled parent can shadow multiple guarded siblings under one mount" {
     const allocator = std.testing.allocator;
-    const run_id = runtime.nanoTimestamp();
-    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-multi-{d}", .{run_id});
+    var temp_dir = try TempDir.init(allocator, "enrolled-parent-multi");
+    defer temp_dir.deinit();
+    const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
-    const first_lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-a-{d}", .{run_id});
+    const first_lock_anchor_path = try temp_dir.childPathAlloc("first.lock");
     defer allocator.free(first_lock_anchor_path);
-    const second_lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-b-{d}", .{run_id});
+    const second_lock_anchor_path = try temp_dir.childPathAlloc("second.lock");
     defer allocator.free(second_lock_anchor_path);
     const first_source_path = try std.fmt.allocPrint(allocator, "{s}/a.key", .{source_parent});
     defer allocator.free(first_source_path);
@@ -1264,7 +1307,6 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     defer allocator.free(sibling_path);
 
     try makeDirAbsolute(source_parent);
-    defer deleteTreeAbsolute(source_parent) catch {};
 
     {
         var file = try createFileAbsolute(first_source_path, .{ .truncate = true });
@@ -1372,10 +1414,11 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
 
 test "enrolled parent can project a guarded file below a synthetic subdirectory" {
     const allocator = std.testing.allocator;
-    const run_id = runtime.nanoTimestamp();
-    const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-nested-{d}", .{run_id});
+    var temp_dir = try TempDir.init(allocator, "enrolled-parent-nested");
+    defer temp_dir.deinit();
+    const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-nested-{d}", .{run_id});
+    const lock_anchor_path = try temp_dir.childPathAlloc("nested.lock");
     defer allocator.free(lock_anchor_path);
     const real_dir_path = try std.fmt.allocPrint(allocator, "{s}/extensions/foo", .{source_parent});
     defer allocator.free(real_dir_path);
@@ -1384,7 +1427,6 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
 
     try makeDirAbsolute(source_parent);
     try makePath(real_dir_path);
-    defer deleteTreeAbsolute(source_parent) catch {};
 
     {
         var file = try createFileAbsolute(real_sibling_path, .{ .truncate = true });
@@ -1446,14 +1488,6 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
         defer allocator.free(contents);
         try std.testing.expectEqualStrings("updated hosts\n", contents);
     }
-}
-
-fn tempPolicyPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "/tmp/file-snitch.policy-{s}-{d}.yml",
-        .{ name, runtime.nanoTimestamp() },
-    );
 }
 
 const GeneratedEnrollment = struct {
