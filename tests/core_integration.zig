@@ -8,6 +8,9 @@ const policy = app_src.policy;
 const prompt = app_src.prompt;
 const runtime = app_src.runtime;
 const store = app_src.store;
+const c = @cImport({
+    @cInclude("fcntl.h");
+});
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -497,6 +500,64 @@ test "policy and prompt paths are covered by core assertions" {
     defer default_prompt_audit.deinit();
     try expectAuditEvent(default_prompt_audit.items, "prompt", "read /guarded-note.txt", 1);
     try expectAuditEvent(default_prompt_audit.items, "read", guarded_note_path, 21);
+}
+
+test "open write handle grants mutation access until release" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const guarded_note_path = "/handle-granted-note.txt";
+    const lock_anchor_path = try fixture.childPathAlloc("handle-granted-note.lock");
+    defer allocator.free(lock_anchor_path);
+
+    var preseed_store = fixture.guardedStore();
+    try preseed_store.putObject(allocator, "handle-granted-note", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded note\n",
+    });
+
+    const guarded_entries = &.{filesystem.GuardedEntryConfig{
+        .relative_path = "handle-granted-note.txt",
+        .object_id = "handle-granted-note",
+        .lock_anchor_path = lock_anchor_path,
+    }};
+
+    var prompt_context = CountingPromptContext{
+        .response = .{ .decision = .allow },
+    };
+    var session = try initSession(
+        allocator,
+        &fixture,
+        guarded_entries,
+        .prompt,
+        &.{},
+        countingPromptBroker(&prompt_context),
+    );
+    defer session.deinit();
+
+    const context: filesystem.AccessContext = .{ .pid = 1234, .uid = 1000, .gid = 1000 };
+    const request: filesystem.FileRequestInfo = .{
+        .flags = c.O_RDWR,
+        .handle_id = 0xfeed,
+    };
+
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile(guarded_note_path, request, context));
+    session.state.filesystem.recordOpen(guarded_note_path, context, request, 0, null);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.truncateFile(guarded_note_path, 7, context));
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+
+    session.state.filesystem.recordRelease(guarded_note_path, context, request, 0, null);
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.truncateFile(guarded_note_path, 4, context));
+    try std.testing.expectEqual(@as(usize, 2), prompt_context.count);
 }
 
 test "directory operations fail explicitly in the file-only spike" {

@@ -130,8 +130,73 @@ const HandleGrant = struct {
     pid: u32,
     path: []u8,
 
+    fn initOpen(
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        pid: u32,
+        flags: i32,
+    ) !HandleGrant {
+        const can_read, const can_write = switch (flags & c.O_ACCMODE) {
+            c.O_WRONLY => .{ false, true },
+            c.O_RDWR => .{ true, true },
+            else => .{ true, false },
+        };
+        return .{
+            .can_read = can_read,
+            .can_write = can_write,
+            .pid = pid,
+            .path = try allocator.dupe(u8, path),
+        };
+    }
+
     fn deinit(self: *HandleGrant, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
+const HandleGrantTable = struct {
+    entries: std.AutoHashMapUnmanaged(u64, HandleGrant) = .empty,
+
+    fn grantOpen(
+        self: *HandleGrantTable,
+        allocator: std.mem.Allocator,
+        handle_id: u64,
+        grant: HandleGrant,
+    ) !void {
+        var owned_grant = grant;
+        errdefer owned_grant.deinit(allocator);
+
+        const entry = try self.entries.getOrPut(allocator, handle_id);
+        if (entry.found_existing) {
+            entry.value_ptr.deinit(allocator);
+        }
+        entry.value_ptr.* = owned_grant;
+    }
+
+    fn release(self: *HandleGrantTable, allocator: std.mem.Allocator, handle_id: u64) void {
+        if (self.entries.fetchRemove(handle_id)) |entry| {
+            var grant = entry.value;
+            grant.deinit(allocator);
+        }
+    }
+
+    fn hasActiveWriteGrant(self: *const HandleGrantTable, path: []const u8, pid: u32) bool {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |grant| {
+            if (grant.can_write and grant.pid == pid and std.mem.eql(u8, grant.path, path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn deinit(self: *HandleGrantTable, allocator: std.mem.Allocator) void {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |grant| {
+            grant.deinit(allocator);
+        }
+        self.entries.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -176,7 +241,7 @@ pub const Model = struct {
     audit_output_file: ?std.Io.File,
     files: std.ArrayListUnmanaged(StoredFile) = .empty,
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .empty,
-    handle_grants: std.AutoHashMapUnmanaged(u64, HandleGrant) = .empty,
+    handle_grants: HandleGrantTable = .{},
     next_inode: u64 = first_dynamic_inode,
     runtime_stats: RuntimeStats = .{},
     root_timestamp: Timestamp,
@@ -251,10 +316,6 @@ pub const Model = struct {
             event.deinit(self.allocator);
         }
         self.audit_events.deinit(self.allocator);
-        var grant_iterator = self.handle_grants.valueIterator();
-        while (grant_iterator.next()) |grant| {
-            grant.deinit(self.allocator);
-        }
         self.handle_grants.deinit(self.allocator);
 
         self.policy_engine.deinit();
@@ -920,21 +981,14 @@ pub const Model = struct {
     ) void {
         if (result == 0) {
             if (file_request.handle_id) |handle_id| {
-                const base_grant = grantForOpenFlags(file_request.flags);
-                const grant: HandleGrant = .{
-                    .can_read = base_grant.can_read,
-                    .can_write = base_grant.can_write,
-                    .pid = context.pid,
-                    .path = self.allocator.dupe(u8, path) catch {
-                        self.recordAudit("open", path, result, .{
-                            .context = context,
-                            .file_info = file_info,
-                        }) catch {};
-                        return;
-                    },
+                const grant = HandleGrant.initOpen(self.allocator, path, context.pid, file_request.flags) catch {
+                    self.recordAudit("open", path, result, .{
+                        .context = context,
+                        .file_info = file_info,
+                    }) catch {};
+                    return;
                 };
-                self.handle_grants.put(self.allocator, handle_id, grant) catch {
-                    self.allocator.free(grant.path);
+                self.handle_grants.grantOpen(self.allocator, handle_id, grant) catch {
                     self.recordAudit("open", path, result, .{
                         .context = context,
                         .file_info = file_info,
@@ -958,10 +1012,7 @@ pub const Model = struct {
         file_info: ?AuditFileInfo,
     ) void {
         if (file_request.handle_id) |handle_id| {
-            if (self.handle_grants.fetchRemove(handle_id)) |entry| {
-                var grant = entry.value;
-                grant.deinit(self.allocator);
-            }
+            self.handle_grants.release(self.allocator, handle_id);
         }
         self.recordAudit("release", path, result, .{
             .context = context,
@@ -1136,7 +1187,7 @@ pub const Model = struct {
             return self.truncatePassthroughFile(path, size);
         }
 
-        const auth_result = if (hasActiveWriteGrant(self, path, context.pid))
+        const auth_result = if (self.handle_grants.hasActiveWriteGrant(path, context.pid))
             0
         else
             self.authorizeAccess(path, .write, context);
@@ -2043,22 +2094,4 @@ fn touchFileContent(file: *StoredFile) void {
     const now = currentTimestamp();
     file.mtime = now;
     file.ctime = now;
-}
-
-fn grantForOpenFlags(flags: i32) HandleGrant {
-    return switch (flags & c.O_ACCMODE) {
-        c.O_WRONLY => .{ .can_read = false, .can_write = true, .pid = 0, .path = undefined },
-        c.O_RDWR => .{ .can_read = true, .can_write = true, .pid = 0, .path = undefined },
-        else => .{ .can_read = true, .can_write = false, .pid = 0, .path = undefined },
-    };
-}
-
-fn hasActiveWriteGrant(self: *const Model, path: []const u8, pid: u32) bool {
-    var iterator = self.handle_grants.valueIterator();
-    while (iterator.next()) |grant| {
-        if (grant.can_write and grant.pid == pid and std.mem.eql(u8, grant.path, path)) {
-            return true;
-        }
-    }
-    return false;
 }
