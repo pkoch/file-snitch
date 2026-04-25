@@ -54,6 +54,9 @@ case "\$response" in
   allow|deny|timeout|always-allow|always-deny)
     printf '%s\n' "\$response"
     ;;
+  hang)
+    sleep 30
+    ;;
   "")
     printf 'allow\n'
     ;;
@@ -64,7 +67,7 @@ esac
 EOF
 chmod +x "$fake_bin_dir/osascript"
 
-printf '%s\n' allow deny timeout >"$queue_path"
+printf '%s\n' allow deny timeout hang >"$queue_path"
 
 PATH="$fake_bin_dir:$PATH" \
   HOME="$home_dir" \
@@ -148,6 +151,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         ("allow", "once"),
         ("deny", "once"),
         ("timeout", "none"),
+        ("timeout", "none"),
     ]
     for index, (outcome, remember_kind) in enumerate(expected, start=1):
         request_id = f"macos-ui-agent-{index}"
@@ -168,13 +172,18 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 "mode": "read",
             },
             "policy_context": {
-                "default_timeout": "2026-04-10T12:00:00Z",
                 "can_remember": True,
             },
             "details": {
                 "display_path": "open O_RDONLY /Users/test/.kube/config",
             },
         })
+        event = read_frame(sock)
+        assert event["type"] == "event", event
+        assert event["request_id"] == request_id, event
+        assert event["event"] == "user-interaction-started", event
+        assert "deadline" in event["user_interaction"], event
+
         decision = read_frame(sock)
         assert decision["type"] == "decision", decision
         assert decision["request_id"] == request_id, decision

@@ -209,14 +209,14 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
     var command: RunCommand = .{
         .policy_path = &.{},
         .default_mutation_outcome = .deny,
-        .prompt_timeout_ms = defaults.prompt_timeout_ms_default,
+        .protocol_timeout_ms = defaults.protocol_timeout_ms_default,
         .status_fifo_path = null,
         .mount_path_filter = null,
     };
     errdefer command.deinit(allocator);
 
     command.policy_path = try config.defaultPolicyPathAlloc(allocator);
-    command.prompt_timeout_ms = try loadPromptTimeoutMs();
+    command.protocol_timeout_ms = try loadProtocolTimeoutMs();
     command.status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env);
     command.mount_path_filter = try loadOptionalInternalPath(defaults.internal_mount_path_env);
 
@@ -524,7 +524,7 @@ fn runStaticPolicy(command: RunCommand) !void {
             .allocator = allocator,
             .socket_path = try agent.defaultSocketPathAlloc(allocator),
             .policy_path = command.policy_path,
-            .timeout_ms = command.prompt_timeout_ms,
+            .protocol_timeout_ms = command.protocol_timeout_ms,
         }
     else
         null;
@@ -700,6 +700,20 @@ fn loadPromptTimeoutMs() !u32 {
         );
 }
 
+fn loadProtocolTimeoutMs() !u32 {
+    const raw_value = runtime.getEnvVarOwned(allocator, defaults.protocol_timeout_ms_env) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return defaults.protocol_timeout_ms_default,
+        else => return err,
+    };
+    defer allocator.free(raw_value);
+
+    return std.fmt.parseInt(u32, raw_value, 10) catch
+        return invalidUsage(
+            "error: {s} must be a non-negative integer (milliseconds), got: {s}\n",
+            .{ defaults.protocol_timeout_ms_env, raw_value },
+        );
+}
+
 fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
     const raw_value = runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return null,
@@ -796,6 +810,9 @@ fn printUsage() void {
         \\      terminal-pinentry
         \\    --tty <path>
         \\      inherited stdio
+        \\    user interaction timeout
+        \\      5000 ms
+        \\      override with $FILE_SNITCH_PROMPT_TIMEOUT_MS
         \\
         \\  run:
         \\    [allow|deny|prompt]
@@ -804,9 +821,9 @@ fn printUsage() void {
         \\      $FILE_SNITCH_POLICY_PATH
         \\      else $XDG_CONFIG_HOME/file-snitch/policy.yml
         \\      else $HOME/.config/file-snitch/policy.yml
-        \\    prompt timeout
-        \\      5000 ms
-        \\      override with $FILE_SNITCH_PROMPT_TIMEOUT_MS
+        \\    agent protocol timeout
+        \\      1000 ms
+        \\      override with $FILE_SNITCH_PROTOCOL_TIMEOUT_MS
         \\
         \\  enroll | unenroll | status:
         \\    --policy <path>

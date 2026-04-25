@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Split requester/agent protocol liveness timeouts from agent-owned
+  user-interaction timeouts.
+
+### Fixed
+
+- Fixed macOS prompt dialogs so remembered-decision prompts compile, time out
+  cleanly, and do not leave stale `osascript` windows behind.
+
 ## [0.3.2] - 2026-04-25
 
 ### Fixed

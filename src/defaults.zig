@@ -31,6 +31,9 @@ pub const pass_bin_env = "FILE_SNITCH_PASS_BIN";
 /// Override the prompt timeout in milliseconds. Parsed as an unsigned integer.
 pub const prompt_timeout_ms_env = "FILE_SNITCH_PROMPT_TIMEOUT_MS";
 
+/// Override requester/agent socket liveness timeout in milliseconds.
+pub const protocol_timeout_ms_env = "FILE_SNITCH_PROTOCOL_TIMEOUT_MS";
+
 /// Internal: per-mount-child override of which mount path the spawned `run`
 /// process is responsible for. Set by the supervisor, never by users.
 pub const internal_mount_path_env = "FILE_SNITCH_INTERNAL_MOUNT_PATH";
@@ -40,6 +43,9 @@ pub const internal_status_fifo_env = "FILE_SNITCH_INTERNAL_STATUS_FIFO";
 
 /// Default prompt timeout when `FILE_SNITCH_PROMPT_TIMEOUT_MS` is unset.
 pub const prompt_timeout_ms_default: u32 = 5_000;
+
+/// Default protocol timeout for local agent socket messages.
+pub const protocol_timeout_ms_default: u32 = 1_000;
 
 /// Duration of the "allow 5 min" remembered decision, in seconds. Shared
 /// across the terminal, macOS, and Linux frontends so the label and the

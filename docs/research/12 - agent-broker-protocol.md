@@ -347,7 +347,6 @@ This is the main authorization request from a requester to an agent.
     "mode": "read"
   },
   "policy_context": {
-    "default_timeout": "2026-04-09T12:00:05Z",
     "can_remember": true
   },
   "forwarding": {
@@ -384,15 +383,22 @@ Required semantics:
     - `write`
     - `read_write`
     - `metadata`
-- `default_timeout` is an absolute RFC3339 UTC timestamp, not a relative
-  number
+- the requester is authoritative for protocol liveness timeouts
+- the agent is authoritative for user-interaction timeout behavior
 
-The requester is authoritative for timeout behavior:
+After accepting a `decide` request, the agent must promptly send a
+`user-interaction-started` event with the user-interaction deadline before
+presenting or waiting on the user-facing prompt. The requester uses its normal
+protocol timeout until that event arrives. After the event arrives, the
+requester waits until the event deadline plus one protocol timeout for the
+final `decision`.
 
-- the requester supplies the timeout deadline
-- the agent may answer earlier with `timeout`
-- the requester must still treat a missing answer past the deadline as a
-  deny-like timeout
+If the agent does not send any frame before the protocol timeout, the requester
+must treat the agent as unavailable. If the agent accepts user interaction but
+does not send a final `decision` by the user-interaction deadline plus one
+protocol timeout, the requester must also treat the agent as unavailable. A
+user-interaction timeout is represented by a final `decision` whose outcome is
+`timeout`.
 
 ### `decision`
 
@@ -504,18 +510,23 @@ Example:
   "version": "1.0",
   "type": "event",
   "request_id": "01HXYZ...",
-  "event": "prompt-presented"
+  "event": "user-interaction-started",
+  "user_interaction": {
+    "deadline": "2026-04-09T12:00:35Z"
+  }
 }
 ```
 
 Initial event names:
 
+- `user-interaction-started`
 - `prompt-presented`
 - `prompt-dismissed`
 - `forwarded`
 
-These are informational only. Clients must not require them for
-correctness.
+`user-interaction-started` is part of the core `decide` timeout semantics.
+The other events are informational only. Clients must not require informational
+events for correctness.
 
 ## Request IDs
 

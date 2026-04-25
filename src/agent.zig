@@ -29,7 +29,7 @@ pub const RequesterContext = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
     policy_path: []const u8,
-    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
+    protocol_timeout_ms: u32 = defaults.protocol_timeout_ms_default,
 };
 
 pub const FrontendKind = enum {
@@ -41,6 +41,7 @@ pub const FrontendKind = enum {
 pub const Frontend = struct {
     context: ?*anyopaque,
     resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Response,
+    user_interaction_timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     supports_concurrent_requests: bool = true,
 
     pub fn resolve(self: Frontend, request: prompt.Request) prompt.Response {
@@ -110,6 +111,7 @@ pub fn terminalPinentryFrontend(context: *TerminalPinentryContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveTerminalPinentry,
+        .user_interaction_timeout_ms = context.timeout_ms,
         .supports_concurrent_requests = true,
     };
 }
@@ -118,6 +120,7 @@ pub fn macosUiFrontend(context: *MacosUiContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveMacosUi,
+        .user_interaction_timeout_ms = context.timeout_ms,
         .supports_concurrent_requests = false,
     };
 }
@@ -126,6 +129,7 @@ pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
     return .{
         .context = context,
         .resolve_fn = resolveLinuxUi,
+        .user_interaction_timeout_ms = context.timeout_ms,
         .supports_concurrent_requests = false,
     };
 }
@@ -223,7 +227,7 @@ fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Respo
     const context = raw_context orelse return .{ .decision = .unavailable };
     const requester_context: *RequesterContext = @ptrCast(@alignCast(context));
     return resolveViaAgent(requester_context, request) catch |err| switch (err) {
-        error.TimedOut => .{ .decision = .timeout },
+        error.TimedOut => .{ .decision = .unavailable },
         else => .{ .decision = .unavailable },
     };
 }
@@ -234,7 +238,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     defer stream.close(runtime.io());
     try assertSameUidPeer(stream);
 
-    const hello_frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
+    const hello_frame = try readFrameAlloc(context.allocator, stream, context.protocol_timeout_ms);
     defer context.allocator.free(hello_frame);
 
     try validateHelloFrame(context.allocator, hello_frame);
@@ -246,11 +250,6 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     const request_id = try generateUlidAlloc(context.allocator);
     defer context.allocator.free(request_id);
 
-    const timeout_seconds = @divTrunc(@as(i64, @intCast(context.timeout_ms)) + 999, 1000);
-    const timeout_at = runtime.timestamp() + timeout_seconds;
-    const timeout_at_rfc3339 = try formatRfc3339UtcAlloc(context.allocator, timeout_at);
-    defer context.allocator.free(timeout_at_rfc3339);
-
     const display_path = request.label orelse blk: {
         const generated = try std.fmt.allocPrint(
             context.allocator,
@@ -261,16 +260,26 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     };
     defer if (request.label == null) context.allocator.free(display_path);
 
-    try sendDecide(context.allocator, stream, request_id, request, display_path, timeout_at_rfc3339);
+    try sendDecide(context.allocator, stream, request_id, request, display_path);
 
+    var user_interaction_deadline_ms: ?i64 = null;
     while (true) {
-        const frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
+        const frame_timeout_ms = if (user_interaction_deadline_ms) |deadline_ms|
+            timeoutUntilDeadlinePlusProtocolMs(deadline_ms, context.protocol_timeout_ms)
+        else
+            context.protocol_timeout_ms;
+        const frame = try readFrameAlloc(context.allocator, stream, frame_timeout_ms);
         defer context.allocator.free(frame);
 
         const message_type = try frameTypeFromJson(context.allocator, frame);
         defer context.allocator.free(message_type);
 
-        if (std.mem.eql(u8, message_type, "event")) continue;
+        if (std.mem.eql(u8, message_type, "event")) {
+            if (try userInteractionDeadlineMsFromEventFrame(context.allocator, frame, request_id)) |deadline_ms| {
+                user_interaction_deadline_ms = deadline_ms;
+            }
+            continue;
+        }
         if (std.mem.eql(u8, message_type, "decision")) {
             const response = try responseFromFrame(context.allocator, frame);
             try persistRememberedDecision(context, request, response);
@@ -281,6 +290,37 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
         }
         return .{ .decision = .unavailable };
     }
+}
+
+fn timeoutUntilDeadlinePlusProtocolMs(deadline_ms: i64, protocol_timeout_ms: u32) u32 {
+    const latest_response_ms = std.math.add(i64, deadline_ms, @intCast(protocol_timeout_ms)) catch std.math.maxInt(i64);
+    const remaining_ms = latest_response_ms - runtime.milliTimestamp();
+    if (remaining_ms <= 0) return 0;
+    return @intCast(@min(remaining_ms, std.math.maxInt(u32)));
+}
+
+fn userInteractionDeadlineMsFromEventFrame(
+    allocator: std.mem.Allocator,
+    frame: []const u8,
+    expected_request_id: []const u8,
+) !?i64 {
+    const parsed = try std.json.parseFromSlice(EventMessage, allocator, frame, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (!std.mem.eql(u8, parsed.value.protocol, protocol_name)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.version, protocol_version)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.type, "event")) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.request_id, expected_request_id)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.event, "user-interaction-started")) return null;
+
+    const user_interaction = parsed.value.user_interaction orelse return error.InvalidProtocolMessage;
+    const deadline_seconds = try parseRfc3339Utc(user_interaction.deadline);
+    return try std.math.mul(i64, deadline_seconds, 1_000);
+}
+
+fn userInteractionDeadlineFromNowAlloc(allocator: std.mem.Allocator, timeout_ms: u32) ![]u8 {
+    const timeout_seconds = @divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000);
+    return try formatRfc3339UtcAlloc(allocator, runtime.timestamp() + timeout_seconds);
 }
 
 fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
@@ -310,12 +350,7 @@ fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
         }
 
         if (std.mem.eql(u8, message_type, "decide")) {
-            const decision = try decideFromFrame(context.allocator, frame, context.frontend);
-            defer context.allocator.free(decision.request_id);
-            sendDecision(context.allocator, stream, decision.request_id, decision.response) catch |err| {
-                if (isPeerClosedError(err)) return;
-                return err;
-            };
+            try handleDecideFrame(context, stream, frame);
             continue;
         }
 
@@ -360,7 +395,6 @@ const DecideMessage = struct {
         mode: []const u8,
     },
     policy_context: struct {
-        default_timeout: []const u8,
         can_remember: bool,
     },
     forwarding: ?struct {
@@ -383,6 +417,17 @@ const DecisionMessage = struct {
     remember: ?struct {
         kind: []const u8,
         expires_at: ?[]const u8 = null,
+    } = null,
+};
+
+const EventMessage = struct {
+    protocol: []const u8,
+    version: []const u8,
+    type: []const u8,
+    request_id: []const u8,
+    event: []const u8,
+    user_interaction: ?struct {
+        deadline: []const u8,
     } = null,
 };
 
@@ -427,13 +472,30 @@ fn sendQueryResult(allocator: std.mem.Allocator, stream: net.Stream, request_id:
     });
 }
 
+fn sendUserInteractionStarted(
+    allocator: std.mem.Allocator,
+    stream: net.Stream,
+    request_id: []const u8,
+    deadline_rfc3339: []const u8,
+) !void {
+    try sendJsonFrame(allocator, stream, .{
+        .protocol = protocol_name,
+        .version = protocol_version,
+        .type = "event",
+        .request_id = request_id,
+        .event = "user-interaction-started",
+        .user_interaction = .{
+            .deadline = deadline_rfc3339,
+        },
+    });
+}
+
 fn sendDecide(
     allocator: std.mem.Allocator,
     stream: net.Stream,
     request_id: []const u8,
     request: prompt.Request,
     display_path: []const u8,
-    timeout_at_rfc3339: []const u8,
 ) !void {
     try sendJsonFrame(allocator, stream, .{
         .protocol = protocol_name,
@@ -452,7 +514,6 @@ fn sendDecide(
             .mode = modeLabel(request.access_class),
         },
         .policy_context = .{
-            .default_timeout = timeout_at_rfc3339,
             .can_remember = request.executable_path != null,
         },
         .forwarding = .{
@@ -533,6 +594,36 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Fr
     };
 }
 
+fn handleDecideFrame(context: *AgentServiceContext, stream: net.Stream, frame: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(DecideMessage, context.allocator, frame, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const request: prompt.Request = .{
+        .path = parsed.value.request.enrolled_path,
+        .access_class = try accessClassFromLabel(parsed.value.request.approval_class),
+        .label = if (parsed.value.details) |details| details.display_path else null,
+        .can_remember = parsed.value.policy_context.can_remember,
+        .pid = parsed.value.subject.pid,
+        .uid = parsed.value.subject.uid,
+        .gid = 0,
+        .executable_path = parsed.value.subject.executable_path,
+    };
+
+    const interaction_deadline = try userInteractionDeadlineFromNowAlloc(
+        context.allocator,
+        context.frontend.user_interaction_timeout_ms,
+    );
+    defer context.allocator.free(interaction_deadline);
+
+    try sendUserInteractionStarted(context.allocator, stream, parsed.value.request_id, interaction_deadline);
+
+    const response = context.frontend.resolve(request);
+    sendDecision(context.allocator, stream, parsed.value.request_id, response) catch |err| {
+        if (isPeerClosedError(err)) return;
+        return err;
+    };
+}
+
 fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
     const context = raw_context orelse return .{ .decision = .unavailable };
     const pinentry_context: *TerminalPinentryContext = @ptrCast(@alignCast(context));
@@ -573,15 +664,35 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
         .argv = &argv,
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
-    }) catch return .{ .decision = .unavailable };
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(ui_context.timeout_ms),
+            .clock = .awake,
+        } },
+    }) catch |err| {
+        if (err == error.Timeout) {
+            std.log.warn("macos-ui prompt helper timed out after {d} ms", .{ui_context.timeout_ms});
+            return .{ .decision = .timeout };
+        }
+        std.log.warn("macos-ui prompt helper failed to start: {}", .{err});
+        return .{ .decision = .unavailable };
+    };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
 
     switch (result.term) {
-        .exited => |code| if (code != 0) return .{ .decision = .unavailable },
-        else => return .{ .decision = .unavailable },
+        .exited => |code| if (code != 0) {
+            std.log.warn("macos-ui prompt helper exited with code {d}: {s}", .{ code, result.stderr });
+            return .{ .decision = .unavailable };
+        },
+        else => {
+            std.log.warn("macos-ui prompt helper ended unexpectedly: {}", .{result.term});
+            return .{ .decision = .unavailable };
+        },
     }
-    return parseMacosUiResponse(result.stdout) catch .{ .decision = .unavailable };
+    return parseMacosUiResponse(result.stdout) catch |err| {
+        std.log.warn("macos-ui prompt helper returned an invalid response: {}", .{err});
+        return .{ .decision = .unavailable };
+    };
 }
 
 fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
@@ -675,7 +786,9 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         \\try
         \\  set prompt_text to "{s}"
         \\  set choices to {{"Allow once", "Deny once", "Allow 5 min", "Always allow", "Always deny"}}
-        \\  set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once" giving up after {d}
+        \\  with timeout of {d} seconds
+        \\    set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once"
+        \\  end timeout
         \\  if selected is false then
         \\    return "deny"
         \\  end if
@@ -686,11 +799,13 @@ fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Req
         \\  if answer is "Always allow" then return "always-allow"
         \\  if answer is "Always deny" then return "always-deny"
         \\  return "deny"
-        \\on error number -128
+        \\on error number error_number
+        \\  if error_number is -1712 then return "timeout"
+        \\  if error_number is -128 then return "deny"
         \\  return "deny"
         \\end try
     ,
-        .{ escaped_prompt, escaped_title, timeout_seconds },
+        .{ escaped_prompt, timeout_seconds, escaped_title },
     );
 }
 
@@ -1436,6 +1551,26 @@ test "parse macos ui response accepts known values" {
     try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
 }
 
+test "macos ui remembered dialog uses compilable timeout block" {
+    const allocator = std.testing.allocator;
+    const script = try buildMacosDialogScriptAlloc(allocator, .{
+        .path = "/Users/test/secrets/gist",
+        .access_class = .read,
+        .label = "open O_RDONLY /gist",
+        .can_remember = true,
+        .pid = 42,
+        .uid = 501,
+        .gid = 20,
+        .executable_path = "/bin/cat",
+    }, 5_000);
+    defer allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "with timeout of 5 seconds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "giving up after") == null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "on error number error_number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "if error_number is -1712 then return \"timeout\"") != null);
+}
+
 test "parse linux ui response accepts known exit codes" {
     try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .exited = 0 }, "Allow once")).decision);
     try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .exited = 1 }, "")).decision);
@@ -1639,7 +1774,7 @@ test "decideFromFrame returns an owned request id" {
     const allocator = gpa.allocator();
 
     const frame =
-        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"default_timeout":"2026-04-10T12:00:00Z","can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
     ;
 
     const decision = try decideFromFrame(allocator, frame, .{
@@ -1656,6 +1791,16 @@ test "decideFromFrame returns an owned request id" {
     defer for (reuse_allocations) |allocation| allocator.free(allocation);
 
     try std.testing.expectEqualStrings("req-copy-check", decision.request_id);
+}
+
+test "requester waits through user interaction deadline and protocol timeout" {
+    const deadline_ms = runtime.milliTimestamp() + 30_000;
+    const timeout_ms = timeoutUntilDeadlinePlusProtocolMs(deadline_ms, 1_000);
+    try std.testing.expect(timeout_ms > 29_000);
+    try std.testing.expect(timeout_ms <= 31_000);
+
+    const expired_deadline_ms = runtime.milliTimestamp() - 2_000;
+    try std.testing.expectEqual(@as(u32, 0), timeoutUntilDeadlinePlusProtocolMs(expired_deadline_ms, 1_000));
 }
 
 const DelayedDecisionServerContext = struct {
@@ -1742,7 +1887,12 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         .gid = 0,
         .executable_path = "/bin/cat",
     };
-    try sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?, "2026-04-10T12:00:00Z");
+    try sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?);
+
+    const event_frame = try readFrameAlloc(allocator, client_stream, 1_000);
+    defer allocator.free(event_frame);
+    try std.testing.expect((try userInteractionDeadlineMsFromEventFrame(allocator, event_frame, "disconnect-check")) != null);
+
     client_stream.close(runtime.io());
 
     var wait_attempts: usize = 0;
@@ -1809,7 +1959,7 @@ test "agent accepts later connections while one prompt is blocked" {
         .allocator = allocator,
         .socket_path = socket_path,
         .policy_path = policy_path,
-        .timeout_ms = 1_000,
+        .protocol_timeout_ms = 1_000,
     };
     const second_requester = try allocator.create(RequesterContext);
     defer allocator.destroy(second_requester);
