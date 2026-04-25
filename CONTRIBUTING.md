@@ -5,6 +5,7 @@
 - read [README.md](./README.md)
 - read [docs/threat-model.md](./docs/threat-model.md)
 - read [docs/operations.md](./docs/operations.md)
+- read [docs/error-handling.md](./docs/error-handling.md)
 
 This project is intentionally:
 - single-user

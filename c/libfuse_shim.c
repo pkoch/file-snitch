@@ -296,13 +296,15 @@ fsn_fuse_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi
 fsn_fuse_getattr(const char *path, struct stat *stbuf) {
 #endif
     struct fsn_bridge_lookup lookup;
+    int result;
 
     if (path == NULL || stbuf == NULL) {
         return -EINVAL;
     }
 
-    if (fsn_lookup_path(fuse_get_context()->private_data, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(fuse_get_context()->private_data, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     if (lookup.open_kind == FSN_OPEN_MISSING) {
@@ -315,6 +317,7 @@ fsn_fuse_getattr(const char *path, struct stat *stbuf) {
 
 static int fsn_fuse_opendir(const char *path, struct fuse_file_info *fi) {
     struct fsn_bridge_lookup lookup;
+    int result;
 
     (void)fi;
 
@@ -322,8 +325,9 @@ static int fsn_fuse_opendir(const char *path, struct fuse_file_info *fi) {
         return -EINVAL;
     }
 
-    if (fsn_lookup_path(fuse_get_context()->private_data, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(fuse_get_context()->private_data, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     return lookup.open_kind == FSN_OPEN_DIRECTORY ? 0 : -ENOENT;
@@ -357,8 +361,9 @@ static int fsn_fuse_readdir(
     }
 
     session = fuse_get_context()->private_data;
-    if (fsn_lookup_path(session, path, &directory_lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(session, path, &directory_lookup);
+    if (result != 0) {
+        return result;
     }
 
     if (directory_lookup.open_kind != FSN_OPEN_DIRECTORY) {
@@ -409,6 +414,7 @@ static int fsn_emit_readdir_entry(void *raw_context, const char *name) {
     struct fsn_bridge_lookup lookup;
     struct fsn_readdir_emit_context *context;
     struct stat stbuf;
+    int result;
 
     if (raw_context == NULL || name == NULL) {
         return -EINVAL;
@@ -419,8 +425,9 @@ static int fsn_emit_readdir_entry(void *raw_context, const char *name) {
         return -ENAMETOOLONG;
     }
 
-    if (fsn_lookup_path(context->session, virtual_path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(context->session, virtual_path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     memset(&stbuf, 0, sizeof(stbuf));
@@ -438,6 +445,7 @@ static int fsn_emit_readdir_entry(void *raw_context, const char *name) {
 
 static int fsn_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
     struct fsn_bridge_lookup lookup;
+    int result;
 
     (void)fi;
 
@@ -445,8 +453,9 @@ static int fsn_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
         return -EINVAL;
     }
 
-    if (fsn_lookup_path(fuse_get_context()->private_data, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(fuse_get_context()->private_data, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     return lookup.open_kind == FSN_OPEN_DIRECTORY ? 0 : -ENOENT;
@@ -457,6 +466,7 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
     struct fsn_bridge_request request;
     struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
+    int result;
 
     if (path == NULL || fi == NULL) {
         return -EINVAL;
@@ -466,8 +476,9 @@ static int fsn_fuse_open(const char *path, struct fuse_file_info *fi) {
     if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(session, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     switch (lookup.open_kind) {
@@ -539,8 +550,9 @@ static int fsn_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
         return result;
     }
 
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(session, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     if (lookup.guarded != 0 || !fsn_is_transient_sidecar_path(path)) {
@@ -736,8 +748,9 @@ static int fsn_fuse_lock(const char *path, struct fuse_file_info *fi, int cmd, s
         return -EINVAL;
     }
     fsn_capture_lock(cmd, lock, &raw_lock);
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(session, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     if (lookup.open_kind != FSN_OPEN_USER_FILE) {
@@ -775,8 +788,9 @@ static int fsn_fuse_flock(const char *path, struct fuse_file_info *fi, int op) {
     if (fsn_build_request(&request, path, 1) != 0) {
         return -EINVAL;
     }
-    if (fsn_lookup_path(session, path, &lookup) != 0) {
-        return -EIO;
+    result = fsn_lookup_path(session, path, &lookup);
+    if (result != 0) {
+        return result;
     }
 
     if (lookup.open_kind != FSN_OPEN_USER_FILE) {

@@ -342,25 +342,25 @@ pub const Model = struct {
         return self.policy_engine.default_mutation_outcome;
     }
 
-    pub fn lookupPath(self: *const Model, path: []const u8) Lookup {
+    pub fn lookupPath(self: *const Model, path: []const u8) !Lookup {
         return self.lookupEnrolledParentPath(path);
     }
 
-    pub fn syntheticEntryCount(self: *const Model, directory_path: []const u8) u32 {
+    pub fn syntheticEntryCount(self: *const Model, directory_path: []const u8) !u32 {
         var count: u32 = 0;
         for (self.files.items, 0..) |file, index| {
-            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
-            if (self.syntheticChildAlreadySeen(directory_path, child_name, index)) continue;
+            const child_name = (try self.syntheticChildNameForFile(directory_path, &file)) orelse continue;
+            if (try self.syntheticChildAlreadySeen(directory_path, child_name, index)) continue;
             count += 1;
         }
         return count;
     }
 
-    pub fn syntheticEntryNameAt(self: *const Model, directory_path: []const u8, index: u32, buffer: []u8) ?usize {
+    pub fn syntheticEntryNameAt(self: *const Model, directory_path: []const u8, index: u32, buffer: []u8) !?usize {
         var visible_index: u32 = 0;
         for (self.files.items, 0..) |file, file_index| {
-            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
-            if (self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
+            const child_name = (try self.syntheticChildNameForFile(directory_path, &file)) orelse continue;
+            if (try self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
             if (visible_index != index) {
                 visible_index += 1;
                 continue;
@@ -397,8 +397,8 @@ pub const Model = struct {
         }
 
         for (self.files.items, 0..) |file, file_index| {
-            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
-            if (self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
+            const child_name = (try self.syntheticChildNameForFile(directory_path, &file)) orelse continue;
+            if (try self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
             if (!try emit(context, child_name)) return;
         }
     }
@@ -413,14 +413,14 @@ pub const Model = struct {
     }
 
     fn requireDirectoryPath(self: *const Model, path: []const u8) !void {
-        return switch (self.lookupPath(path).open_kind) {
+        return switch ((try self.lookupPath(path)).open_kind) {
             .directory => {},
             .missing => error.FileNotFound,
             else => error.NotDir,
         };
     }
 
-    fn lookupEnrolledParentPath(self: *const Model, path: []const u8) Lookup {
+    fn lookupEnrolledParentPath(self: *const Model, path: []const u8) !Lookup {
         if (isRootPath(path)) {
             return self.lookupSourceDirectoryNode(path);
         }
@@ -453,10 +453,10 @@ pub const Model = struct {
         return self.lookupPassthroughPath(path);
     }
 
-    fn lookupSourceDirectoryNode(self: *const Model, path: []const u8) Lookup {
-        const dir = self.source_dir orelse return missingLookup();
-        const stat = dir.stat(runtime.io()) catch return missingLookup();
-        const posix_stat = fstatFd(dir.handle) catch return missingLookup();
+    fn lookupSourceDirectoryNode(self: *const Model, path: []const u8) !Lookup {
+        const dir = self.source_dir orelse return error.FileNotFound;
+        const stat = try dir.stat(runtime.io());
+        const posix_stat = try fstatFd(dir.handle);
         _ = path;
         return .{
             .node = .{
@@ -478,14 +478,14 @@ pub const Model = struct {
         };
     }
 
-    fn lookupPassthroughPath(self: *const Model, path: []const u8) Lookup {
-        const dir = self.source_dir orelse return missingLookup();
-        const relative_path = relativeMountedPath(path) orelse return missingLookup();
+    fn lookupPassthroughPath(self: *const Model, path: []const u8) !Lookup {
+        const dir = self.source_dir orelse return error.FileNotFound;
+        const relative_path = relativeMountedPath(path) orelse return error.InvalidPath;
         const stat = dir.statFile(runtime.io(), relative_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return missingLookup(),
-            else => return missingLookup(),
+            else => return err,
         };
-        const posix_stat = fstatatDir(dir, relative_path) catch return missingLookup();
+        const posix_stat = try fstatatDir(dir, relative_path);
 
         const kind: NodeKind = switch (stat.kind) {
             .directory => .directory,
@@ -520,8 +520,8 @@ pub const Model = struct {
         };
     }
 
-    fn lookupGuardedDirectoryPath(self: *const Model, path: []const u8) Lookup {
-        const passthrough = self.lookupPassthroughPath(path);
+    fn lookupGuardedDirectoryPath(self: *const Model, path: []const u8) !Lookup {
+        const passthrough = try self.lookupPassthroughPath(path);
         if (passthrough.node.kind == .directory) {
             return passthrough;
         }
@@ -555,9 +555,9 @@ pub const Model = struct {
         return false;
     }
 
-    fn syntheticChildNameForFile(self: *const Model, directory_path: []const u8, file: *const StoredFile) ?[]const u8 {
+    fn syntheticChildNameForFile(self: *const Model, directory_path: []const u8, file: *const StoredFile) !?[]const u8 {
         const child_name = directChildName(directory_path, file.path) orelse return null;
-        if (self.realChildExists(directory_path, child_name)) {
+        if (try self.realChildExists(directory_path, child_name)) {
             return null;
         }
         return child_name;
@@ -568,9 +568,9 @@ pub const Model = struct {
         directory_path: []const u8,
         child_name: []const u8,
         before_index: usize,
-    ) bool {
+    ) !bool {
         for (self.files.items[0..before_index]) |file| {
-            const previous = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
+            const previous = (try self.syntheticChildNameForFile(directory_path, &file)) orelse continue;
             if (std.mem.eql(u8, previous, child_name)) {
                 return true;
             }
@@ -578,12 +578,15 @@ pub const Model = struct {
         return false;
     }
 
-    fn realChildExists(self: *const Model, directory_path: []const u8, child_name: []const u8) bool {
+    fn realChildExists(self: *const Model, directory_path: []const u8, child_name: []const u8) !bool {
         const dir = self.source_dir orelse return false;
-        const child_path = joinVirtualPath(self.allocator, directory_path, child_name) catch return false;
+        const child_path = try joinVirtualPath(self.allocator, directory_path, child_name);
         defer self.allocator.free(child_path);
         const relative_path = relativeMountedPath(child_path) orelse return false;
-        _ = fstatatDir(dir, relative_path) catch return false;
+        _ = fstatatDir(dir, relative_path) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
         return true;
     }
 
@@ -603,7 +606,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         if (!self.isGuardedPath(path) and !isTransientVirtualPath(path)) {
-            const lookup = self.lookupPath(path);
+            const lookup = self.lookupPath(path) catch |err| return mapFsError(err);
             return switch (lookup.open_kind) {
                 .directory => errnoCode(.ISDIR),
                 .missing => errnoCode(.NOENT),
@@ -803,10 +806,10 @@ pub const Model = struct {
         file_info: ?AuditFileInfo,
     ) i32 {
         const result = self.syncPathInternal(path);
-        self.recordAudit("flush", path, result, .{
+        self.recordAuditOrFallback("flush", path, result, .{
             .context = context,
             .file_info = file_info,
-        }) catch {};
+        });
         return result;
     }
 
@@ -818,11 +821,11 @@ pub const Model = struct {
         file_info: ?AuditFileInfo,
     ) i32 {
         const result = self.syncPathInternal(path);
-        self.recordAudit("fsync", path, result, .{
+        self.recordAuditOrFallback("fsync", path, result, .{
             .context = context,
             .file_info = file_info,
             .fsync = .{ .datasync = datasync },
-        }) catch {};
+        });
         return result;
     }
 
@@ -859,7 +862,7 @@ pub const Model = struct {
                 touchFileChange(file);
             }
         }
-        self.recordAudit("setxattr", path, result, .{
+        self.recordAuditOrFallback("setxattr", path, result, .{
             .context = context,
             .xattr = .{
                 .name = name,
@@ -867,7 +870,7 @@ pub const Model = struct {
                 .flags = flags,
                 .position = position,
             },
-        }) catch {};
+        });
         return result;
     }
 
@@ -927,10 +930,10 @@ pub const Model = struct {
             touchFileAtime(file);
         }
 
-        self.recordAudit("listxattr", path, @intCast(result), .{
+        self.recordAuditOrFallback("listxattr", path, @intCast(result), .{
             .context = context,
             .xattr = .{ .size = list.len },
-        }) catch {};
+        });
         return @intCast(result);
     }
 
@@ -964,10 +967,10 @@ pub const Model = struct {
                 touchFileChange(file);
             }
         }
-        self.recordAudit("removexattr", path, result, .{
+        self.recordAuditOrFallback("removexattr", path, result, .{
             .context = context,
             .xattr = .{ .name = name },
-        }) catch {};
+        });
         return result;
     }
 
@@ -982,25 +985,25 @@ pub const Model = struct {
         if (result == 0) {
             if (file_request.handle_id) |handle_id| {
                 const grant = HandleGrant.initOpen(self.allocator, path, context.pid, file_request.flags) catch {
-                    self.recordAudit("open", path, result, .{
+                    self.recordAuditOrFallback("open", path, result, .{
                         .context = context,
                         .file_info = file_info,
-                    }) catch {};
+                    });
                     return;
                 };
                 self.handle_grants.grantOpen(self.allocator, handle_id, grant) catch {
-                    self.recordAudit("open", path, result, .{
+                    self.recordAuditOrFallback("open", path, result, .{
                         .context = context,
                         .file_info = file_info,
-                    }) catch {};
+                    });
                     return;
                 };
             }
         }
-        self.recordAudit("open", path, result, .{
+        self.recordAuditOrFallback("open", path, result, .{
             .context = context,
             .file_info = file_info,
-        }) catch {};
+        });
     }
 
     pub fn recordRelease(
@@ -1014,10 +1017,10 @@ pub const Model = struct {
         if (file_request.handle_id) |handle_id| {
             self.handle_grants.release(self.allocator, handle_id);
         }
-        self.recordAudit("release", path, result, .{
+        self.recordAuditOrFallback("release", path, result, .{
             .context = context,
             .file_info = file_info,
-        }) catch {};
+        });
     }
 
     pub fn removeFile(
@@ -1095,7 +1098,7 @@ pub const Model = struct {
         result: i32,
         metadata: AuditMetadata,
     ) void {
-        self.recordAudit(action, path, result, metadata) catch {};
+        self.recordAuditOrFallback(action, path, result, metadata);
     }
 
     fn createFileInternal(
@@ -1791,7 +1794,7 @@ pub const Model = struct {
         ok: [:0]u8,
         err: i32,
     } {
-        const lookup = self.lookupPath(path);
+        const lookup = self.lookupPath(path) catch |err| return .{ .err = mapFsError(err) };
         if (lookup.open_kind != .user_file or !lookup.guarded) {
             return .{ .err = missing_result };
         }
@@ -1844,9 +1847,9 @@ pub const Model = struct {
             ) catch return;
         };
         defer if (label == null) self.allocator.free(audit_event_path);
-        self.recordAudit("policy", audit_event_path, @intCast(@intFromEnum(outcome)), .{
+        self.recordAuditOrFallback("policy", audit_event_path, @intCast(@intFromEnum(outcome)), .{
             .context = context,
-        }) catch {};
+        });
     }
 
     fn resolvePromptDecision(self: *Model, request: policy.Request, context: AccessContext, label: ?[]const u8) i32 {
@@ -1873,9 +1876,9 @@ pub const Model = struct {
         else
             prompt.Response{ .decision = .unavailable };
 
-        self.recordAudit("prompt", audit_event_path, @intFromEnum(response.decision), .{
+        self.recordAuditOrFallback("prompt", audit_event_path, @intFromEnum(response.decision), .{
             .context = context,
-        }) catch {};
+        });
         return switch (response.decision) {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
@@ -1919,17 +1922,27 @@ pub const Model = struct {
     }
 
     fn recordRenameAudit(self: *Model, from: []const u8, to: []const u8, result: i32, context: AccessContext) void {
-        self.recordAudit("rename", from, result, .{
+        self.recordAuditOrFallback("rename", from, result, .{
             .context = context,
             .rename = .{
                 .from = from,
                 .to = to,
             },
-        }) catch {};
+        });
     }
 
     fn recordAuditLiteral(self: *Model, action: []const u8, path: []const u8, result: i32, context: AccessContext) void {
-        self.recordAudit(action, path, result, .{ .context = context }) catch {};
+        self.recordAuditOrFallback(action, path, result, .{ .context = context });
+    }
+
+    /// Best-effort audit recording. On failure, falls back to emitAuditLine, then std.log.err.
+    fn recordAuditOrFallback(self: *Model, action: []const u8, path: []const u8, result: i32, metadata: AuditMetadata) void {
+        self.recordAudit(action, path, result, metadata) catch |err| {
+            const timestamp = currentTimestamp();
+            if (!self.emitAuditLineNoAlloc(action, path, result, timestamp, metadata)) {
+                std.log.err("failed to record audit event action={s} path={s} result={d}: {}", .{ action, path, result, err });
+            }
+        };
     }
 
     fn recordAudit(
@@ -1940,31 +1953,59 @@ pub const Model = struct {
         metadata: AuditMetadata,
     ) !void {
         const timestamp = currentTimestamp();
-        try self.audit_events.append(self.allocator, .{
-            .action = try self.allocator.dupe(u8, action),
-            .path = try self.allocator.dupe(u8, path),
+        const owned_action = try self.allocator.dupe(u8, action);
+        var action_owned = true;
+        errdefer if (action_owned) self.allocator.free(owned_action);
+
+        const owned_path = try self.allocator.dupe(u8, path);
+        var path_owned = true;
+        errdefer if (path_owned) self.allocator.free(owned_path);
+
+        var event: StoredAuditEvent = .{
+            .action = owned_action,
+            .path = owned_path,
             .result = result,
             .timestamp = timestamp,
             .pid = metadata.context.pid,
             .uid = metadata.context.uid,
             .gid = metadata.context.gid,
-            .executable_path = if (metadata.context.executable_path) |value| try self.allocator.dupe(u8, value) else null,
+            .executable_path = null,
             .file_info = metadata.file_info,
             .lock = metadata.lock,
             .flock = metadata.flock,
-            .xattr = if (metadata.xattr) |xattr| .{
+            .xattr = null,
+            .rename = null,
+            .fsync = metadata.fsync,
+        };
+        action_owned = false;
+        path_owned = false;
+        errdefer event.deinit(self.allocator);
+
+        if (metadata.context.executable_path) |value| {
+            event.executable_path = try self.allocator.dupe(u8, value);
+        }
+        if (metadata.xattr) |xattr| {
+            event.xattr = .{
                 .name = if (xattr.name) |name| try self.allocator.dupe(u8, name) else null,
                 .size = xattr.size,
                 .flags = xattr.flags,
                 .position = xattr.position,
-            } else null,
-            .rename = if (metadata.rename) |rename| .{
-                .from = try self.allocator.dupe(u8, rename.from),
-                .to = try self.allocator.dupe(u8, rename.to),
-            } else null,
-            .fsync = metadata.fsync,
-        });
-        self.emitAuditLine(action, path, result, timestamp, metadata);
+            };
+        }
+        if (metadata.rename) |rename| {
+            const from = try self.allocator.dupe(u8, rename.from);
+            var from_owned = true;
+            errdefer if (from_owned) self.allocator.free(from);
+            const to = try self.allocator.dupe(u8, rename.to);
+            event.rename = .{
+                .from = from,
+                .to = to,
+            };
+            from_owned = false;
+        }
+
+        try self.audit_events.append(self.allocator, event);
+        _ = self.emitAuditLine(action, path, result, timestamp, metadata);
     }
 
     fn touchStatus(self: *Model) void {
@@ -1989,7 +2030,7 @@ pub const Model = struct {
 
         self.output_mutex.lockUncancelable(runtime.io());
         defer self.output_mutex.unlock(runtime.io());
-        output_file.writeStreamingAll(runtime.io(), line.written()) catch {};
+        output_file.writeStreamingAll(runtime.io(), line.written()) catch return;
     }
 
     fn emitAuditLine(
@@ -1999,8 +2040,8 @@ pub const Model = struct {
         result: i32,
         timestamp: Timestamp,
         metadata: AuditMetadata,
-    ) void {
-        const output_file = self.audit_output_file orelse return;
+    ) bool {
+        const output_file = self.audit_output_file orelse return false;
 
         var line: std.Io.Writer.Allocating = .init(self.allocator);
         defer line.deinit();
@@ -2020,12 +2061,50 @@ pub const Model = struct {
             .xattr = metadata.xattr,
             .rename = metadata.rename,
             .fsync = metadata.fsync,
-        }, .{}, &line.writer) catch return;
-        line.writer.writeByte('\n') catch return;
+        }, .{}, &line.writer) catch return false;
+        line.writer.writeByte('\n') catch return false;
 
         self.output_mutex.lockUncancelable(runtime.io());
         defer self.output_mutex.unlock(runtime.io());
-        output_file.writeStreamingAll(runtime.io(), line.written()) catch {};
+        output_file.writeStreamingAll(runtime.io(), line.written()) catch return false;
+        return true;
+    }
+
+    fn emitAuditLineNoAlloc(
+        self: *Model,
+        action: []const u8,
+        path: []const u8,
+        result: i32,
+        timestamp: Timestamp,
+        metadata: AuditMetadata,
+    ) bool {
+        const output_file = self.audit_output_file orelse return false;
+
+        var buffer: [16 * 1024]u8 = undefined;
+        var line: std.Io.Writer = .fixed(&buffer);
+
+        std.json.Stringify.value(.{
+            .action = action,
+            .path = path,
+            .result = result,
+            .timestamp = timestamp,
+            .pid = metadata.context.pid,
+            .uid = metadata.context.uid,
+            .gid = metadata.context.gid,
+            .executable_path = metadata.context.executable_path,
+            .file_info = metadata.file_info,
+            .lock = metadata.lock,
+            .flock = metadata.flock,
+            .xattr = metadata.xattr,
+            .rename = metadata.rename,
+            .fsync = metadata.fsync,
+        }, .{}, &line) catch return false;
+        line.writeByte('\n') catch return false;
+
+        self.output_mutex.lockUncancelable(runtime.io());
+        defer self.output_mutex.unlock(runtime.io());
+        output_file.writeStreamingAll(runtime.io(), line.buffered()) catch return false;
+        return true;
     }
 };
 
@@ -2040,7 +2119,7 @@ const timestampFromStatNanos = util.timestampFromStatNanos;
 
 fn fstatFd(fd: std.posix.fd_t) !c.struct_stat {
     var stat: c.struct_stat = undefined;
-    if (c.fstat(fd, &stat) != 0) return error.InputOutput;
+    if (c.fstat(fd, &stat) != 0) return posixStatError(std.posix.errno(-1));
     return stat;
 }
 
@@ -2048,8 +2127,21 @@ fn fstatatDir(dir: std.Io.Dir, path: []const u8) !c.struct_stat {
     const path_z = try std.heap.page_allocator.dupeZ(u8, path);
     defer std.heap.page_allocator.free(path_z);
     var stat: c.struct_stat = undefined;
-    if (c.fstatat(dir.handle, path_z.ptr, &stat, 0) != 0) return error.FileNotFound;
+    if (c.fstatat(dir.handle, path_z.ptr, &stat, 0) != 0) return posixStatError(std.posix.errno(-1));
     return stat;
+}
+
+fn posixStatError(err: std.posix.E) anyerror {
+    return switch (err) {
+        .NOENT => error.FileNotFound,
+        .ACCES, .PERM => error.AccessDenied,
+        .NAMETOOLONG => error.NameTooLong,
+        .NOTDIR => error.NotDir,
+        .INTR => error.Interrupted,
+        .IO => error.InputOutput,
+        .NOMEM => error.OutOfMemory,
+        else => error.Unexpected,
+    };
 }
 
 fn truncateIoFile(file: std.Io.File, size: u64) !void {

@@ -280,7 +280,9 @@ pub fn mapFsError(err: anyerror) i32 {
         error.StorePayloadTooLarge,
         error.StoreCommandOutputTooLarge,
         error.GuardedSourceFileTooLarge,
+        error.InputOutput,
         => errnoCode(.IO),
+        error.Interrupted => errnoCode(.INTR),
         error.FileBusy, error.Locked => errnoCode(.BUSY),
         error.ReadOnlyFileSystem => errnoCode(.ROFS),
         error.NoSpaceLeft => errnoCode(.NOSPC),
@@ -379,6 +381,8 @@ test "mapFsError routes every enumerated branch and falls back to EIO" {
     try testing.expectEqual(errnoCode(.IO), mapFsError(error.InvalidStoredObject));
     try testing.expectEqual(errnoCode(.IO), mapFsError(error.StoreCommandFailed));
     try testing.expectEqual(errnoCode(.IO), mapFsError(error.StoreUnavailable));
+    try testing.expectEqual(errnoCode(.IO), mapFsError(error.InputOutput));
+    try testing.expectEqual(errnoCode(.INTR), mapFsError(error.Interrupted));
     try testing.expectEqual(errnoCode(.BUSY), mapFsError(error.FileBusy));
     try testing.expectEqual(errnoCode(.BUSY), mapFsError(error.Locked));
     try testing.expectEqual(errnoCode(.ROFS), mapFsError(error.ReadOnlyFileSystem));
