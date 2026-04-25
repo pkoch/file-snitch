@@ -34,6 +34,17 @@ detect_platform() {
   esac
 }
 
+build_render_args() {
+  local render_platform="$1"
+  local render_output_dir="$2"
+
+  render_args=(--platform "$render_platform" --bin "$bin_path")
+  if [[ -n "$pass_bin_path" ]]; then
+    render_args+=(--pass-bin "$pass_bin_path")
+  fi
+  render_args+=(--output-dir "$render_output_dir")
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --platform)
@@ -76,11 +87,7 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    render_args=(--platform macos --bin "$bin_path")
-    if [[ -n "$pass_bin_path" ]]; then
-      render_args+=(--pass-bin "$pass_bin_path")
-    fi
-    render_args+=(--output-dir "$temp_dir")
+    build_render_args macos "$temp_dir"
     "$repo_root/scripts/services/render-user-services.sh" "${render_args[@]}"
 
     cp "$temp_dir/dev.file-snitch.agent.plist" "$launch_agents_dir/"
@@ -108,11 +115,7 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    render_args=(--platform linux --bin "$bin_path")
-    if [[ -n "$pass_bin_path" ]]; then
-      render_args+=(--pass-bin "$pass_bin_path")
-    fi
-    render_args+=(--output-dir "$temp_dir")
+    build_render_args linux "$temp_dir"
     "$repo_root/scripts/services/render-user-services.sh" "${render_args[@]}"
 
     cp "$temp_dir/file-snitch-agent.service" "$unit_dir/"

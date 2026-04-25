@@ -604,7 +604,18 @@ fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
     };
     if (!service_exists) return;
 
-    var probe = try macosRunServicePassProbeAlloc(allocator, run_service_path);
+    var probe = macosRunServicePassProbeAlloc(allocator, run_service_path) catch |err| {
+        std.debug.print(
+            "error: launchd run service pass probe failed: {s}: {}\n",
+            .{ run_service_path, err },
+        );
+        std.debug.print("hint: enrollment was aborted before moving the file into the guarded store\n", .{});
+        std.debug.print(
+            "hint: reinstall the service with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
+            .{},
+        );
+        return error.InvalidUsage;
+    };
     defer probe.deinit(allocator);
     if (probe.available) return;
 
@@ -634,7 +645,15 @@ fn appendMacosRunServicePassReport(
     };
     if (!service_exists) return;
 
-    var probe = try macosRunServicePassProbeAlloc(allocator, run_service_path);
+    var probe = macosRunServicePassProbeAlloc(allocator, run_service_path) catch |err| {
+        has_errors.* = true;
+        try writer.print(
+            "error: launchd run service pass probe failed: {s}: {}\n",
+            .{ run_service_path, err },
+        );
+        try writer.writeAll("hint: reinstall the services to refresh the run LaunchAgent\n");
+        return;
+    };
     defer probe.deinit(allocator);
 
     if (probe.available) {
