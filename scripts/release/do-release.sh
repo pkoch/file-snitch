@@ -253,6 +253,99 @@ wait_for_repo_workflow_run_by_branch() {
   return 1
 }
 
+verify_tap_bottle_merge() {
+  local formula="$1"
+  local version="$2"
+  shift 2
+
+  python3 - "$formula" "$version" "$@" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+formula_path = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+bottle_json_paths = [pathlib.Path(path) for path in sys.argv[3:]]
+expected_root_url = (
+    f"https://github.com/pkoch/homebrew-tap/releases/download/file-snitch-{version}"
+)
+expected_tags = {}
+
+for path in bottle_json_paths:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        bottle = data["pkoch/tap/file-snitch"]["bottle"]
+    except KeyError as exc:
+        raise SystemExit(f"error: malformed bottle JSON {path}: missing {exc}") from exc
+
+    root_url = bottle.get("root_url")
+    if root_url != expected_root_url:
+        raise SystemExit(
+            f"error: bottle JSON {path} root_url is {root_url!r}, "
+            f"expected {expected_root_url!r}"
+        )
+
+    for tag, metadata in bottle.get("tags", {}).items():
+        sha256 = metadata.get("sha256")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise SystemExit(f"error: bottle JSON {path} has invalid sha256 for {tag}")
+        previous = expected_tags.setdefault(tag, sha256)
+        if previous != sha256:
+            raise SystemExit(
+                f"error: bottle JSON artifacts disagree for {tag}: "
+                f"{previous} != {sha256}"
+            )
+
+if not expected_tags:
+    raise SystemExit("error: bottle JSON artifacts did not contain any tags")
+
+formula = formula_path.read_text(encoding="utf-8")
+bottle_match = re.search(r"^\s*bottle do\n(?P<body>.*?)^\s*end\n", formula, re.M | re.S)
+if not bottle_match:
+    raise SystemExit(f"error: no bottle block found in {formula_path}")
+
+bottle_body = bottle_match.group("body")
+root_match = re.search(r'^\s*root_url\s+"([^"]+)"', bottle_body, re.M)
+if not root_match:
+    raise SystemExit(f"error: no bottle root_url found in {formula_path}")
+if root_match.group(1) != expected_root_url:
+    raise SystemExit(
+        f"error: formula bottle root_url is {root_match.group(1)!r}, "
+        f"expected {expected_root_url!r}"
+    )
+
+formula_tags = dict(
+    re.findall(
+        r'^\s*sha256(?:\s+cellar:\s*[^,]+,)?\s+([a-z0-9_]+):\s+"([0-9a-f]{64})"',
+        bottle_body,
+        re.M,
+    )
+)
+if formula_tags != expected_tags:
+    missing = sorted(set(expected_tags) - set(formula_tags))
+    stale = sorted(set(formula_tags) - set(expected_tags))
+    mismatched = sorted(
+        tag
+        for tag in set(expected_tags) & set(formula_tags)
+        if expected_tags[tag] != formula_tags[tag]
+    )
+    details = []
+    if missing:
+        details.append(f"missing tags: {', '.join(missing)}")
+    if stale:
+        details.append(f"stale tags: {', '.join(stale)}")
+    if mismatched:
+        details.append(f"mismatched tags: {', '.join(mismatched)}")
+    raise SystemExit("error: formula bottle SHAs do not match artifacts; " + "; ".join(details))
+
+print(
+    "verified bottle SHAs: "
+    + ", ".join(f"{tag}={sha256}" for tag, sha256 in sorted(formula_tags.items()))
+)
+PY
+}
+
 merge_tap_bottle_artifacts() {
   local run_id="$1"
   local version="$2"
@@ -283,6 +376,8 @@ merge_tap_bottle_artifacts() {
     echo "error: bottle merge did not update Formula/file-snitch.rb" >&2
     return 1
   fi
+
+  verify_tap_bottle_merge "$tap_formula" "$version" "${bottle_jsons[@]}"
 
   git -C "$tap_repo" add Formula/file-snitch.rb
   git -C "$tap_repo" commit -m "file-snitch: update $version bottle."
