@@ -244,6 +244,7 @@ pub const Model = struct {
     files: std.ArrayListUnmanaged(StoredFile) = .empty,
     audit_events: std.ArrayListUnmanaged(StoredAuditEvent) = .empty,
     handle_grants: HandleGrantTable = .{},
+    source_dir_iteration_mutex: std.Io.Mutex = .init,
     next_inode: u64 = first_dynamic_inode,
     runtime_stats: RuntimeStats = .{},
     root_timestamp: Timestamp,
@@ -385,6 +386,13 @@ pub const Model = struct {
     ) !void {
         try self.requireDirectoryPath(directory_path);
 
+        const root_iteration = isRootPath(directory_path);
+        if (root_iteration) {
+            const mutex: *std.Io.Mutex = @constCast(&self.source_dir_iteration_mutex);
+            mutex.lockUncancelable(runtime.io());
+            defer mutex.unlock(runtime.io());
+        }
+
         if (self.openSourceDirectory(directory_path)) |dir_handle| {
             var dir = dir_handle;
             defer dir.close(runtime.io());
@@ -408,7 +416,7 @@ pub const Model = struct {
     fn openSourceDirectory(self: *const Model, path: []const u8) !std.Io.Dir {
         const dir = self.source_dir orelse return error.FileNotFound;
         if (isRootPath(path)) {
-            return dir.openDir(runtime.io(), ".", .{ .iterate = true });
+            return duplicateDirHandle(dir.handle);
         }
         const relative_path = relativeMountedPath(path) orelse return error.InvalidPath;
         return dir.openDir(runtime.io(), relative_path, .{ .iterate = true });
@@ -2131,6 +2139,12 @@ fn fstatatDir(dir: std.Io.Dir, path: []const u8) !c.struct_stat {
     var stat: c.struct_stat = undefined;
     if (c.fstatat(dir.handle, path_z.ptr, &stat, 0) != 0) return posixStatError(std.posix.errno(-1));
     return stat;
+}
+
+fn duplicateDirHandle(handle: std.posix.fd_t) !std.Io.Dir {
+    const duplicated = c.dup(handle);
+    if (duplicated < 0) return posixStatError(std.posix.errno(-1));
+    return .{ .handle = @intCast(duplicated) };
 }
 
 fn posixStatError(err: std.posix.E) anyerror {
