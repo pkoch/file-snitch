@@ -73,16 +73,16 @@ pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u
 }
 
 pub fn pathKind(path: []const u8) !PathKind {
-    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return .missing,
-        else => return err,
-    };
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(path_z);
 
-    return switch (stat.kind) {
-        .file => .file,
-        .directory => .directory,
-        else => .other,
-    };
+    var stat: c.struct_stat = undefined;
+    if (c.stat(path_z.ptr, &stat) != 0) return pathKindError(std.posix.errno(-1));
+
+    const mode: u32 = @intCast(stat.st_mode);
+    if (std.c.S.ISREG(mode)) return .file;
+    if (std.c.S.ISDIR(mode)) return .directory;
+    return .other;
 }
 
 pub fn pathExists(path: []const u8) !bool {
@@ -91,6 +91,20 @@ pub fn pathExists(path: []const u8) !bool {
 
 pub fn directoryExists(path: []const u8) !bool {
     return try pathKind(path) == .directory;
+}
+
+fn pathKindError(err: std.posix.E) !PathKind {
+    return switch (err) {
+        .NOENT => .missing,
+        .ACCES, .PERM => return error.AccessDenied,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NOTDIR => return error.NotDir,
+        .INTR => return error.Interrupted,
+        .IO => return error.InputOutput,
+        .NXIO => return error.NoDevice,
+        .NOMEM => return error.OutOfMemory,
+        else => return error.Unexpected,
+    };
 }
 
 pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {
