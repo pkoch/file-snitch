@@ -61,7 +61,7 @@ Then choose one of these:
   - [docs/install.md](./docs/install.md)
 - user service examples:
   - [docs/services.md](./docs/services.md)
-  - `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"`
+  - `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
 
 ## Recorded Demo
 
