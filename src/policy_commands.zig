@@ -675,32 +675,110 @@ fn appendMacosRunServicePassReport(
 }
 
 fn macosRunServicePassProbeAlloc(allocator: std.mem.Allocator, run_service_path: []const u8) !ServicePassProbe {
+    if (try macosRunServicePassProbeFromLaunchctlAlloc(allocator)) |probe| {
+        return probe;
+    }
+    return macosRunServicePassProbeFromPlistAlloc(allocator, run_service_path);
+}
+
+fn macosRunServicePassProbeFromLaunchctlAlloc(allocator: std.mem.Allocator) !?ServicePassProbe {
+    const result = std.process.run(allocator, runtime.io(), .{
+        .argv = &.{ "sh", "-lc", "launchctl print \"gui/$(id -u)/dev.file-snitch.run\"" },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(4096),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| {
+            if (code != 0) return null;
+        },
+        else => return null,
+    }
+
+    return try macosRunServicePassProbeFromTextAlloc(
+        allocator,
+        result.stdout,
+        launchctlStringValueAlloc,
+        .{
+            .pass_bin = "loaded launchd FILE_SNITCH_PASS_BIN",
+            .path = "loaded launchd PATH",
+            .default_path = "loaded launchd default PATH",
+        },
+    );
+}
+
+fn macosRunServicePassProbeFromPlistAlloc(allocator: std.mem.Allocator, run_service_path: []const u8) !ServicePassProbe {
     const contents = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), run_service_path, allocator, .limited(64 * 1024));
     defer allocator.free(contents);
 
-    if (try plistStringValueAlloc(allocator, contents, defaults.pass_bin_env)) |command| {
+    return (try macosRunServicePassProbeFromTextAlloc(
+        allocator,
+        contents,
+        plistStringValueAlloc,
+        .{
+            .pass_bin = defaults.pass_bin_env,
+            .path = "launchd PATH",
+            .default_path = "launchd default PATH",
+        },
+    )).?;
+}
+
+const ServicePassProbeSources = struct {
+    pass_bin: []const u8,
+    path: []const u8,
+    default_path: []const u8,
+};
+
+fn macosRunServicePassProbeFromTextAlloc(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    comptime stringValueAlloc: fn (std.mem.Allocator, []const u8, []const u8) anyerror!?[]u8,
+    sources: ServicePassProbeSources,
+) !?ServicePassProbe {
+    if (try stringValueAlloc(allocator, contents, defaults.pass_bin_env)) |command| {
         errdefer allocator.free(command);
         const available = if (std.fs.path.isAbsolute(command))
             try commandExists(allocator, command)
         else blk: {
-            const service_path = (try plistStringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+            const service_path = (try stringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
             defer allocator.free(service_path);
             break :blk try commandExistsInPath(allocator, command, service_path);
         };
         return .{
             .command = command,
             .available = available,
-            .source = defaults.pass_bin_env,
+            .source = sources.pass_bin,
         };
     }
 
-    const service_path = (try plistStringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+    const service_path = (try stringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
     defer allocator.free(service_path);
     return .{
         .command = try allocator.dupe(u8, "pass"),
         .available = try commandExistsInPath(allocator, "pass", service_path),
-        .source = if (std.mem.eql(u8, service_path, launchd_default_path)) "launchd default PATH" else "launchd PATH",
+        .source = if (std.mem.eql(u8, service_path, launchd_default_path)) sources.default_path else sources.path,
     };
+}
+
+fn launchctlStringValueAlloc(allocator: std.mem.Allocator, contents: []const u8, key: []const u8) !?[]u8 {
+    var value: ?[]u8 = null;
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (!std.mem.startsWith(u8, trimmed, key)) continue;
+
+        const after_key = std.mem.trim(u8, trimmed[key.len..], " \t");
+        if (!std.mem.startsWith(u8, after_key, "=>")) continue;
+
+        if (value) |previous| allocator.free(previous);
+        value = try allocator.dupe(u8, std.mem.trim(u8, after_key[2..], " \t\r\n"));
+    }
+    return value;
 }
 
 fn plistStringValueAlloc(allocator: std.mem.Allocator, contents: []const u8, key: []const u8) !?[]u8 {

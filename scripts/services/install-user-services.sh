@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 platform=""
 bin_path="file-snitch"
 pass_bin_path=""
+render_args=()
 
 usage() {
   cat <<'EOF'
