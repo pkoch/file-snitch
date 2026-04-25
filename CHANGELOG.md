@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Fixed enrollment on macOS so a stale LaunchAgent that cannot find `pass`
   fails before moving the target file into guarded storage.
+- Fixed macOS release artifact stripping so binaries keep a Mach-O UUID that
+  dyld accepts.
 - Reported stale macOS run services that cannot find `pass` in `doctor`.
 
 ## [0.2.3] - 2026-04-25

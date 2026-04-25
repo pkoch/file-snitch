@@ -8,6 +8,8 @@ const policy = @import("policy.zig");
 const runtime = @import("runtime.zig");
 const types = @import("filesystem_types.zig");
 const c = @cImport({
+    @cUndef("_FORTIFY_SOURCE");
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
 });

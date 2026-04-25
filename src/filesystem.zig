@@ -8,6 +8,8 @@ const store = @import("store.zig");
 const types = @import("filesystem_types.zig");
 const util = @import("filesystem_util.zig");
 const c = @cImport({
+    @cUndef("_FORTIFY_SOURCE");
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("fcntl.h");
     @cInclude("sys/stat.h");
     @cInclude("unistd.h");
