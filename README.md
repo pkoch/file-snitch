@@ -145,7 +145,7 @@ boundary. It is not.
 - `tests/`: Zig integration tests and scenario coverage
 - `c/`: thin C boundary that owns `libfuse` interop and syscall-adjacent helpers
 - `docs/`: brief and research notes
-- `vendor/zig-yaml/`: vendored YAML parser used for `policy.yml`
+- `build.zig.zon`: package metadata and pinned `zig-yaml` dependency used for `policy.yml`
 
 ## Architecture guardrails
 

@@ -573,11 +573,11 @@ fn emptyPolicy(allocator: std.mem.Allocator, source_path: []u8) !PolicyFile {
 }
 
 fn parseRawPolicyDocument(arena: std.mem.Allocator, root: yaml.Yaml.Value) !RawPolicyFile {
-    const map = try root.asMap();
+    const map = try valueAsMap(root);
 
     var raw = RawPolicyFile{};
     if (mapGet(map, "version")) |value| {
-        raw.version = @intCast(try value.asInt());
+        raw.version = @intCast(try valueAsInt(value));
     }
     if (mapGet(map, "enrollments")) |value| {
         raw.enrollments = try parseRawEnrollments(arena, value);
@@ -589,10 +589,10 @@ fn parseRawPolicyDocument(arena: std.mem.Allocator, root: yaml.Yaml.Value) !RawP
 }
 
 fn parseRawEnrollments(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawEnrollment {
-    const list = try value.asList();
+    const list = try valueAsList(value);
     var enrollments = try arena.alloc(RawEnrollment, list.len);
     for (list, 0..) |entry, index| {
-        const map = try entry.asMap();
+        const map = try valueAsMap(entry);
         enrollments[index] = .{
             .path = try requiredStringField(arena, map, "path"),
             .object_id = try requiredStringField(arena, map, "object_id"),
@@ -602,10 +602,10 @@ fn parseRawEnrollments(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]cons
 }
 
 fn parseRawDecisions(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const RawDecision {
-    const list = try value.asList();
+    const list = try valueAsList(value);
     var decisions = try arena.alloc(RawDecision, list.len);
     for (list, 0..) |entry, index| {
-        const map = try entry.asMap();
+        const map = try valueAsMap(entry);
         decisions[index] = .{
             .executable_path = try requiredStringField(arena, map, "executable_path"),
             .uid = @intCast(try requiredIntField(map, "uid")),
@@ -625,7 +625,7 @@ fn requiredStringField(arena: std.mem.Allocator, map: yaml.Yaml.Map, field_name:
 
 fn requiredIntField(map: yaml.Yaml.Map, field_name: []const u8) !i64 {
     const value = mapGet(map, field_name) orelse return error.StructFieldMissing;
-    return try value.asInt();
+    return try valueAsInt(value);
 }
 
 fn optionalScalarField(
@@ -641,19 +641,31 @@ fn optionalScalarField(
 fn optionalExpirationField(map: yaml.Yaml.Map, field_name: []const u8, default_value: []const u8) ![]const u8 {
     const value = mapGet(map, field_name) orelse return default_value;
     return switch (value) {
-        .string => |string| string,
+        .scalar => |scalar| scalar,
         .empty => default_value,
         else => error.TypeMismatch,
     };
 }
 
-fn scalarFieldToString(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const u8 {
+fn scalarFieldToString(_: std.mem.Allocator, value: yaml.Yaml.Value) ![]const u8 {
     return switch (value) {
-        .string => |string| string,
-        .int => |int| try std.fmt.allocPrint(arena, "{d}", .{int}),
+        .scalar => |scalar| scalar,
         .empty => "null",
         else => error.TypeMismatch,
     };
+}
+
+fn valueAsMap(value: yaml.Yaml.Value) !yaml.Yaml.Map {
+    return value.asMap() orelse error.TypeMismatch;
+}
+
+fn valueAsList(value: yaml.Yaml.Value) !yaml.Yaml.List {
+    return value.asList() orelse error.TypeMismatch;
+}
+
+fn valueAsInt(value: yaml.Yaml.Value) !i64 {
+    const scalar = value.asScalar() orelse return error.TypeMismatch;
+    return try std.fmt.parseInt(i64, scalar, 0);
 }
 
 fn mapGet(map: yaml.Yaml.Map, field_name: []const u8) ?yaml.Yaml.Value {

@@ -7,11 +7,11 @@ pub fn build(b: *std.Build) void {
     const app_version = readAppVersion(b);
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
-    const yaml_module = b.createModule(.{
-        .root_source_file = b.path("vendor/zig-yaml/src/lib.zig"),
+    const yaml_dependency = b.dependency("yaml", .{
         .target = target,
         .optimize = optimize,
     });
+    const yaml_module = yaml_dependency.module("yaml");
     const executable_module = b.createModule(.{
         .root_source_file = b.path("src/cli.zig"),
         .target = target,

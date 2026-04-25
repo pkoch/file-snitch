@@ -3,7 +3,12 @@
     .version = "0.2.3",
     .fingerprint = 0xba0e9854b2f79c58,
     .minimum_zig_version = "0.15.2",
-    .dependencies = .{},
+    .dependencies = .{
+        .yaml = .{
+            .url = "https://github.com/kubkon/zig-yaml/archive/refs/tags/0.2.0.tar.gz",
+            .hash = "zig_yaml-0.2.0-C1161pmrAgC_rL9WzjvgNg7HnmyAMwHsG3Sre0F4haPI",
+        },
+    },
     .paths = .{
         "VERSION",
         "build",
@@ -12,6 +17,5 @@
         "c",
         "src",
         "tests",
-        "vendor/zig-yaml",
     },
 }
