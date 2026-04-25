@@ -914,12 +914,7 @@ fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: 
         length_len += 1;
     }
 
-    if (length_len == 0) return error.InvalidFrame;
-    if (length_len > 1 and length_buffer[0] == '0') return error.InvalidFrame;
-
-    const payload_len = try std.fmt.parseInt(usize, length_buffer[0..length_len], 10);
-    if (payload_len > max_frame_len) return error.InvalidFrame;
-
+    const payload_len = try parseFramePayloadLen(length_buffer[0..length_len]);
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
     try readExact(stream, payload, timeout_ms);
@@ -927,6 +922,15 @@ fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: 
     const trailing = try readByte(stream, timeout_ms);
     if (trailing != '\n') return error.InvalidFrame;
     return payload;
+}
+
+fn parseFramePayloadLen(length_prefix: []const u8) !usize {
+    if (length_prefix.len == 0) return error.InvalidFrame;
+    if (length_prefix.len > 1 and length_prefix[0] == '0') return error.InvalidFrame;
+
+    const payload_len = try std.fmt.parseInt(usize, length_prefix, 10);
+    if (payload_len > max_frame_len) return error.InvalidFrame;
+    return payload_len;
 }
 
 fn readExact(stream: net.Stream, buffer: []u8, timeout_ms: ?u32) !void {
@@ -1326,6 +1330,13 @@ test "frame roundtrip preserves payload" {
     try std.testing.expectEqualStrings(payload, decoded);
 }
 
+test "frame length parser rejects invalid prefixes" {
+    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen(""));
+    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen("01"));
+    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen("1000000"));
+    try std.testing.expectEqual(@as(usize, max_frame_len), try parseFramePayloadLen("999999"));
+}
+
 fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     var length_buffer: [max_length_digits]u8 = undefined;
     var length_len: usize = 0;
@@ -1337,9 +1348,7 @@ fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader
         length_buffer[length_len] = next;
         length_len += 1;
     }
-    if (length_len == 0) return error.InvalidFrame;
-    if (length_len > 1 and length_buffer[0] == '0') return error.InvalidFrame;
-    const payload_len = try std.fmt.parseInt(usize, length_buffer[0..length_len], 10);
+    const payload_len = try parseFramePayloadLen(length_buffer[0..length_len]);
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
     try reader.readSliceAll(payload);
