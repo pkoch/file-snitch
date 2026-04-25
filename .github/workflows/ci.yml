@@ -73,15 +73,15 @@ jobs:
       - name: Build and test macOS
         run: |
           sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
-          SDKROOT="$sdkroot" \
-          FILE_SNITCH_FUSE_INCLUDE_DIR="$RUNNER_TEMP/macfuse-sdk/include" \
-          FILE_SNITCH_FUSE_LIB_DIR="$RUNNER_TEMP/macfuse-sdk/lib" \
-          DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib" \
+          export SDKROOT="$sdkroot"
+          export FILE_SNITCH_FUSE_INCLUDE_DIR="$RUNNER_TEMP/macfuse-sdk/include"
+          export FILE_SNITCH_FUSE_LIB_DIR="$RUNNER_TEMP/macfuse-sdk/lib"
+          export DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib"
           ./tests/build.sh
 
       - name: Smoke macOS fake osascript prompt
         run: |
-          DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib" \
+          export DYLD_LIBRARY_PATH="$RUNNER_TEMP/macfuse-sdk/lib"
           ./tests/smoke/run-prompt-macos-ui-agent.sh
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
