@@ -1526,9 +1526,15 @@ fn resolveBlockingFrontend(raw_context: ?*anyopaque, request: prompt.Request) pr
     return .{ .decision = .allow, .remember_kind = .once };
 }
 
-fn runRequesterThread(done: *std.atomic.Value(bool), context: *RequesterContext, request: prompt.Request) void {
+fn runRequesterThread(
+    done: *std.atomic.Value(bool),
+    failed: *std.atomic.Value(bool),
+    context: *RequesterContext,
+    request: prompt.Request,
+) void {
     _ = resolveViaAgent(context, request) catch |err| {
         std.log.warn("test requester failed: {}", .{err});
+        failed.store(true, .release);
     };
     done.store(true, .release);
 }
@@ -1549,11 +1555,13 @@ fn runTestConnectionWorker(worker_context: *ConnectionWorkerContext) void {
 
 const TestAgentServiceContext = struct {
     service_context: *AgentServiceContext,
+    failed: *std.atomic.Value(bool),
 };
 
 fn runTestAgentServiceThread(context: *TestAgentServiceContext) void {
     runTestAgentService(context) catch |err| {
         std.log.warn("test agent service failed: {}", .{err});
+        context.failed.store(true, .release);
     };
 }
 
@@ -1763,8 +1771,12 @@ test "agent accepts later connections while one prompt is blocked" {
 
     const test_service_context = try allocator.create(TestAgentServiceContext);
     defer allocator.destroy(test_service_context);
+    const service_failed = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(service_failed);
+    service_failed.* = std.atomic.Value(bool).init(false);
     test_service_context.* = .{
         .service_context = service_context,
+        .failed = service_failed,
     };
 
     const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{runtime.nanoTimestamp()});
@@ -1772,9 +1784,15 @@ test "agent accepts later connections while one prompt is blocked" {
     const first_done = try allocator.create(std.atomic.Value(bool));
     defer allocator.destroy(first_done);
     first_done.* = std.atomic.Value(bool).init(false);
+    const first_failed = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(first_failed);
+    first_failed.* = std.atomic.Value(bool).init(false);
     const second_done = try allocator.create(std.atomic.Value(bool));
     defer allocator.destroy(second_done);
     second_done.* = std.atomic.Value(bool).init(false);
+    const second_failed = try allocator.create(std.atomic.Value(bool));
+    defer allocator.destroy(second_failed);
+    second_failed.* = std.atomic.Value(bool).init(false);
 
     const first_requester = try allocator.create(RequesterContext);
     defer allocator.destroy(first_requester);
@@ -1789,7 +1807,6 @@ test "agent accepts later connections while one prompt is blocked" {
     second_requester.* = first_requester.*;
 
     const service_thread = try std.Thread.spawn(.{}, runTestAgentServiceThread, .{test_service_context});
-    defer service_thread.join();
     try waitForPathToExist(socket_path);
 
     const request = prompt.Request{
@@ -1802,8 +1819,7 @@ test "agent accepts later connections while one prompt is blocked" {
         .executable_path = "/usr/bin/demo",
     };
 
-    const first_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ first_done, first_requester, request });
-    defer first_thread.join();
+    const first_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ first_done, first_failed, first_requester, request });
 
     var wait_attempts: usize = 0;
     while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
@@ -1811,8 +1827,7 @@ test "agent accepts later connections while one prompt is blocked" {
     }
     try std.testing.expect(blocking_context.first_started.load(.acquire));
 
-    const second_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ second_done, second_requester, request });
-    defer second_thread.join();
+    const second_thread = try std.Thread.spawn(.{}, runRequesterThread, .{ second_done, second_failed, second_requester, request });
 
     var second_completed = false;
     wait_attempts = 0;
@@ -1824,8 +1839,14 @@ test "agent accepts later connections while one prompt is blocked" {
         try std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake);
     }
     try std.testing.expect(second_completed);
+    second_thread.join();
+    try std.testing.expect(!second_failed.load(.acquire));
 
     blocking_context.release_first.store(true, .release);
+    first_thread.join();
+    try std.testing.expect(!first_failed.load(.acquire));
+    service_thread.join();
+    try std.testing.expect(!service_failed.load(.acquire));
 }
 
 test "apple script escaping covers control characters" {

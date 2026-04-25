@@ -178,7 +178,12 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         }
     }
 
-    if (try enrollment.pathExists(agent_socket_path)) {
+    const agent_socket_exists = enrollment.pathExists(agent_socket_path) catch |err| blk: {
+        has_errors = true;
+        try report_writer.print("error: agent socket path could not be inspected: {s}: {}\n", .{ agent_socket_path, err });
+        break :blk false;
+    };
+    if (agent_socket_exists) {
         try report_writer.print("ok: agent socket path exists: {s}\n", .{agent_socket_path});
     } else {
         try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
@@ -200,8 +205,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             defer allocator.free(agent_service_path);
             const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
             defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, "launchd agent", agent_service_path);
-            try appendServicePathReport(report_writer, "launchd run", run_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "launchd agent", agent_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "launchd run", run_service_path);
         },
         .linux => {
             const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.zenity_bin_env, "zenity");
@@ -217,8 +222,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             defer allocator.free(agent_service_path);
             const run_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-run.service");
             defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, "systemd user agent", agent_service_path);
-            try appendServicePathReport(report_writer, "systemd user run", run_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "systemd user agent", agent_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "systemd user run", run_service_path);
         },
         else => {},
     }
@@ -582,10 +587,17 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
 
 fn appendServicePathReport(
     writer: anytype,
+    has_errors: *bool,
     label: []const u8,
     path: []const u8,
 ) !void {
-    if (try enrollment.pathExists(path)) {
+    const exists = enrollment.pathExists(path) catch |err| {
+        has_errors.* = true;
+        try writer.print("error: {s} service file could not be inspected: {s}: {}\n", .{ label, path, err });
+        return;
+    };
+
+    if (exists) {
         try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
     } else {
         try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
