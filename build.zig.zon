@@ -3,7 +3,11 @@
     .version = "0.2.3",
     .fingerprint = 0xba0e9854b2f79c58,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .yaml = .{
+            .path = "vendor/zig-yaml",
+        },
+    },
     .paths = .{
         "VERSION",
         "build",
@@ -12,5 +16,6 @@
         "c",
         "src",
         "tests",
+        "vendor/zig-yaml",
     },
 }
