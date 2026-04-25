@@ -96,7 +96,9 @@ pub fn resolveCliWithContext(context: *CliContext, request: Request) Response {
         error.EndOfStream => Response{ .decision = .allow, .remember_kind = .once },
         else => Response{ .decision = .unavailable },
     };
-    finishPrompt(context, request, label, response) catch {};
+    finishPrompt(context, request, label, response) catch |err| {
+        std.log.warn("failed to finish terminal prompt cleanly: {}", .{err});
+    };
     return response;
 }
 

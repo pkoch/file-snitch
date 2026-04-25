@@ -607,7 +607,7 @@ fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) !
     };
     errdefer allocator.free(resolved);
 
-    switch (enrollment_ops.pathKind(resolved)) {
+    switch (try enrollment_ops.pathKind(resolved)) {
         .file => {},
         .directory => return invalidUsageWithOwnedPath("error: target file is a directory: {s}\n", resolved),
         .other => return invalidUsageWithOwnedPath("error: target file is not a regular file: {s}\n", resolved),
@@ -632,7 +632,7 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     const lexical_path = try resolvePathArgument(raw_path);
     errdefer allocator.free(lexical_path);
 
-    if (enrollment_ops.pathExists(lexical_path)) {
+    if (try enrollment_ops.pathExists(lexical_path)) {
         const canonical = try std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), lexical_path, allocator);
         allocator.free(lexical_path);
         return canonical;

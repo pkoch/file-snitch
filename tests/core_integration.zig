@@ -110,7 +110,9 @@ const TempDir = struct {
     }
 
     fn deinit(self: *TempDir) void {
-        deleteTreeAbsolute(self.path) catch {};
+        deleteTreeAbsolute(self.path) catch |err| {
+            std.debug.panic("failed to delete test directory {s}: {}", .{ self.path, err });
+        };
         self.allocator.free(self.path);
         self.* = undefined;
     }
@@ -1003,7 +1005,9 @@ test "current policy marker preserves access errors" {
     try file.writeAll("version: 1\nenrollments: []\ndecisions: []\n");
 
     try file.chmod(0);
-    defer file.chmod(0o600) catch {};
+    defer file.chmod(0o600) catch |err| {
+        std.debug.panic("failed to restore test policy permissions: {}", .{err});
+    };
 
     try std.testing.expectError(error.AccessDenied, config.currentPolicyMarker(allocator, policy_path));
 }

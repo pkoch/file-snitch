@@ -171,7 +171,7 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
     const address = try net.UnixAddress.init(context.socket_path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
     defer server.deinit(runtime.io());
-    defer removeStaleSocketFile(context.socket_path) catch {};
+    defer removeStaleSocketFileForCleanup(context.socket_path);
 
     while (true) {
         const stream = server.accept(runtime.io()) catch |err| switch (err) {
@@ -1084,6 +1084,13 @@ fn removeStaleSocketFile(path: []const u8) !void {
     try std.Io.Dir.cwd().deleteFile(runtime.io(), path);
 }
 
+fn removeStaleSocketFileForCleanup(path: []const u8) void {
+    removeStaleSocketFile(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => std.log.warn("failed to remove stale agent socket {s}: {}", .{ path, err }),
+    };
+}
+
 fn socketPathHasLiveListener(path: []const u8) !bool {
     var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
     if (path.len >= addr.sun_path.len) return error.InvalidSocketPath;
@@ -1433,7 +1440,7 @@ test "stale socket cleanup rejects regular files" {
     const allocator = std.testing.allocator;
     const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{runtime.nanoTimestamp()});
     defer allocator.free(path);
-    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
+    defer deleteFileIfPresent(path);
 
     const file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, .{ .truncate = true });
     file.close(runtime.io());
@@ -1445,7 +1452,7 @@ test "stale socket cleanup preserves live sockets" {
     const allocator = std.testing.allocator;
     const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{runtime.nanoTimestamp()});
     defer allocator.free(path);
-    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
+    defer deleteFileIfPresent(path);
 
     const address = try net.UnixAddress.init(path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
@@ -1459,7 +1466,7 @@ test "stale socket cleanup removes dead sockets" {
     const allocator = std.testing.allocator;
     const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-dead-socket-{d}.sock", .{runtime.nanoTimestamp()});
     defer allocator.free(path);
-    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
+    defer deleteFileIfPresent(path);
 
     const address = try net.UnixAddress.init(path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
@@ -1510,14 +1517,19 @@ fn resolveBlockingFrontend(raw_context: ?*anyopaque, request: prompt.Request) pr
     if (call_index == 0) {
         blocking_context.first_started.store(true, .release);
         while (!blocking_context.release_first.load(.acquire)) {
-            std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
+            std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch |err| {
+                std.log.warn("blocking frontend sleep failed: {}", .{err});
+                return .{ .decision = .unavailable };
+            };
         }
     }
     return .{ .decision = .allow, .remember_kind = .once };
 }
 
 fn runRequesterThread(done: *std.atomic.Value(bool), context: *RequesterContext, request: prompt.Request) void {
-    _ = resolveViaAgent(context, request) catch {};
+    _ = resolveViaAgent(context, request) catch |err| {
+        std.log.warn("test requester failed: {}", .{err});
+    };
     done.store(true, .release);
 }
 
@@ -1540,7 +1552,9 @@ const TestAgentServiceContext = struct {
 };
 
 fn runTestAgentServiceThread(context: *TestAgentServiceContext) void {
-    runTestAgentService(context) catch {};
+    runTestAgentService(context) catch |err| {
+        std.log.warn("test agent service failed: {}", .{err});
+    };
 }
 
 fn runTestAgentService(context: *TestAgentServiceContext) !void {
@@ -1552,7 +1566,7 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
     const address = try net.UnixAddress.init(service_context.socket_path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
     defer server.deinit(runtime.io());
-    defer removeStaleSocketFile(service_context.socket_path) catch {};
+    defer removeStaleSocketFileForCleanup(service_context.socket_path);
 
     const first_stream = try server.accept(runtime.io());
     errdefer first_stream.close(runtime.io());
@@ -1577,7 +1591,7 @@ fn waitForPathToExist(path: []const u8) !void {
     var attempts: usize = 0;
     while (attempts < 200) : (attempts += 1) {
         if (std.Io.Dir.cwd().statFile(runtime.io(), path, .{})) |_| return else |_| {}
-        std.Io.sleep(runtime.io(), .fromMilliseconds(10), .awake) catch {};
+        try std.Io.sleep(runtime.io(), .fromMilliseconds(10), .awake);
     }
     return error.FileNotFound;
 }
@@ -1590,7 +1604,16 @@ fn tempAgentSocketPathAlloc(allocator: std.mem.Allocator, prefix: []const u8) ![
 
 fn deleteParentDirectory(path: []const u8) void {
     const parent_dir = std.fs.path.dirname(path) orelse return;
-    std.Io.Dir.cwd().deleteTree(runtime.io(), parent_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(runtime.io(), parent_dir) catch |err| {
+        std.debug.panic("failed to delete test parent directory {s}: {}", .{ parent_dir, err });
+    };
+}
+
+fn deleteFileIfPresent(path: []const u8) void {
+    std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => std.debug.panic("failed to delete test file {s}: {}", .{ path, err }),
+    };
 }
 
 test "decideFromFrame returns an owned request id" {
@@ -1637,7 +1660,7 @@ fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
     const address = try net.UnixAddress.init(context.socket_path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
     defer server.deinit(runtime.io());
-    defer removeStaleSocketFile(context.socket_path) catch {};
+    defer removeStaleSocketFileForCleanup(context.socket_path);
 
     const stream = try server.accept(runtime.io());
     defer stream.close(runtime.io());
@@ -1707,7 +1730,7 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
 
     var wait_attempts: usize = 0;
     while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
-        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
+        try std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake);
     }
     try std.testing.expect(blocking_context.first_started.load(.acquire));
 
@@ -1784,7 +1807,7 @@ test "agent accepts later connections while one prompt is blocked" {
 
     var wait_attempts: usize = 0;
     while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
-        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
+        try std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake);
     }
     try std.testing.expect(blocking_context.first_started.load(.acquire));
 
@@ -1798,7 +1821,7 @@ test "agent accepts later connections while one prompt is blocked" {
             second_completed = true;
             break;
         }
-        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
+        try std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake);
     }
     try std.testing.expect(second_completed);
 

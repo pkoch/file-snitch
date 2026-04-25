@@ -158,7 +158,7 @@ fn reconcileManagedMountChildren(
     for (mount_plan.paths) |mount_path| {
         var child = try spawnManagedMountChild(exe_path, command, mount_path);
         children.append(allocator, child) catch |err| {
-            std.posix.kill(child.child.id.?, std.posix.SIG.INT) catch {};
+            signalChildBestEffort(child.child.id.?, std.posix.SIG.INT);
             _ = pollMountChild(&child);
             child.deinit();
             return err;
@@ -273,7 +273,7 @@ fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)
 
     for (children.items) |*runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id.?, std.posix.SIG.INT) catch {};
+        signalChildBestEffort(runner.child.id.?, std.posix.SIG.INT);
     }
 
     if (waitForManagedChildren(children, 20)) {
@@ -291,7 +291,7 @@ fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)
 
     for (children.items) |*runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id.?, std.posix.SIG.TERM) catch {};
+        signalChildBestEffort(runner.child.id.?, std.posix.SIG.TERM);
     }
 
     _ = waitForManagedChildren(children, 20);
@@ -318,7 +318,9 @@ fn waitForManagedChildren(children: *std.ArrayListUnmanaged(ManagedMountChild), 
             return true;
         }
 
-        std.Io.sleep(runtime.io(), .fromMilliseconds(50), .awake) catch {};
+        std.Io.sleep(runtime.io(), .fromMilliseconds(50), .awake) catch |err| {
+            std.log.warn("mount child wait sleep failed: {}", .{err});
+        };
     }
 
     return false;
@@ -361,8 +363,14 @@ fn runUnmountCommand(argv: []const []const u8) bool {
 fn signalChildrenForShutdown(children: anytype, signal: std.posix.SIG) void {
     for (children) |runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id.?, signal) catch {};
+        signalChildBestEffort(runner.child.id.?, signal);
     }
+}
+
+fn signalChildBestEffort(child_id: std.process.Child.Id, signal: std.posix.SIG) void {
+    std.posix.kill(child_id, signal) catch |err| {
+        std.log.warn("failed to signal mount child {d}: {}", .{ child_id, err });
+    };
 }
 
 fn termFromWaitStatus(status: u32) std.process.Child.Term {

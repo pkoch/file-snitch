@@ -45,7 +45,9 @@ pub fn moveFileIntoGuardedStore(
         .metadata = object.metadata,
         .content = object.content,
     });
-    errdefer guarded_store.removeObject(allocator, object_id) catch {};
+    errdefer guarded_store.removeObject(allocator, object_id) catch |err| {
+        std.debug.panic("failed to roll back guarded object {s} after failed enrollment move: {}", .{ object_id, err });
+    };
     try std.Io.Dir.deleteFileAbsolute(runtime.io(), source_path);
 }
 
@@ -56,7 +58,9 @@ pub fn moveGuardedFileBack(
     target_path: []const u8,
 ) !void {
     try guarded_store.restoreObjectToFile(allocator, object_id, target_path);
-    errdefer std.Io.Dir.deleteFileAbsolute(runtime.io(), target_path) catch {};
+    errdefer std.Io.Dir.deleteFileAbsolute(runtime.io(), target_path) catch |err| {
+        std.debug.panic("failed to roll back restored target file {s}: {}", .{ target_path, err });
+    };
     try guarded_store.removeObject(allocator, object_id);
 }
 
@@ -68,10 +72,10 @@ pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u
     return std.fs.path.join(alloc, &.{ base, "file-snitch", "lock-anchors", filename });
 }
 
-pub fn pathKind(path: []const u8) PathKind {
+pub fn pathKind(path: []const u8) !PathKind {
     const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .missing,
-        else => return .other,
+        else => return err,
     };
 
     return switch (stat.kind) {
@@ -81,12 +85,12 @@ pub fn pathKind(path: []const u8) PathKind {
     };
 }
 
-pub fn pathExists(path: []const u8) bool {
-    return pathKind(path) != .missing;
+pub fn pathExists(path: []const u8) !bool {
+    return try pathKind(path) != .missing;
 }
 
-pub fn directoryExists(path: []const u8) bool {
-    return pathKind(path) == .directory;
+pub fn directoryExists(path: []const u8) !bool {
+    return try pathKind(path) == .directory;
 }
 
 pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {

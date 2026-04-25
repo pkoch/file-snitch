@@ -125,26 +125,32 @@ pub const ChangeSource = union(enum) {
     pub fn wait(self: *ChangeSource, timeout_ns: u64) Outcome {
         return switch (self.*) {
             .polling => {
-                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
+                sleepForPolling(timeout_ns);
                 return .timeout;
             },
             .linux_inotify => |*watcher| watcher.wait(timeout_ns) catch |err| {
                 std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
                 watcher.deinit();
                 self.* = .polling;
-                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
+                sleepForPolling(timeout_ns);
                 return .timeout;
             },
             .darwin_kqueue => |*watcher| watcher.wait(timeout_ns) catch |err| {
                 std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
                 watcher.deinit();
                 self.* = .polling;
-                std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch {};
+                sleepForPolling(timeout_ns);
                 return .timeout;
             },
         };
     }
 };
+
+fn sleepForPolling(timeout_ns: u64) void {
+    std.Io.sleep(runtime.io(), .fromNanoseconds(@intCast(timeout_ns)), .awake) catch |err| {
+        std.log.warn("policy polling sleep failed: {}", .{err});
+    };
+}
 
 fn initLinuxWatcher(allocator: std.mem.Allocator, policy_path: []const u8) !ChangeSource {
     if (builtin.os.tag != .linux) unreachable;
