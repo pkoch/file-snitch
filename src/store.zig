@@ -3,6 +3,13 @@ const defaults = @import("defaults.zig");
 
 const Allocator = std.mem.Allocator;
 
+const bytes_per_mib = 1024 * 1024;
+
+/// File Snitch stores pass entries as one JSON document with base64 content.
+/// This cap is on that serialized pass payload, not on `pass` itself.
+pub const pass_payload_limit_bytes: usize = 1 * bytes_per_mib;
+pub const pass_payload_limit_label = "1 MiB";
+
 pub const Metadata = struct {
     mode: u32,
     uid: u32,
@@ -70,6 +77,17 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn restoreObjectToFile(
+        self: *Backend,
+        allocator: Allocator,
+        object_id: []const u8,
+        target_path: []const u8,
+    ) !void {
+        return switch (self.*) {
+            inline else => |*backend| backend.restoreObjectToFile(allocator, object_id, target_path),
+        };
+    }
+
     pub fn putObject(self: *Backend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         return switch (self.*) {
             inline else => |*backend| backend.putObject(allocator, object_id, object),
@@ -88,6 +106,10 @@ pub const PassBackend = struct {
     prefix: []u8,
 
     const store_prefix = "file-snitch";
+    const OutputLimitKind = enum {
+        payload,
+        command,
+    };
 
     fn init(allocator: Allocator) !PassBackend {
         const command = std.process.getEnvVarOwned(allocator, defaults.pass_bin_env) catch |err| switch (err) {
@@ -135,12 +157,26 @@ pub const PassBackend = struct {
         return decodeStoredObject(allocator, encoded);
     }
 
+    fn restoreObjectToFile(self: *PassBackend, allocator: Allocator, object_id: []const u8, target_path: []const u8) !void {
+        var object = self.loadObject(allocator, object_id) catch |err| switch (err) {
+            error.StorePayloadTooLarge => return self.restoreObjectToFileStreaming(allocator, object_id, target_path),
+            else => return err,
+        };
+        defer object.deinit(allocator);
+
+        try writeObjectToFileAtomic(target_path, .{
+            .metadata = object.metadata,
+            .content = object.content,
+        });
+    }
+
     fn putObject(self: *PassBackend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         const entry_name = try self.entryNameAlloc(allocator, object_id);
         defer allocator.free(entry_name);
 
         const encoded = try encodeStoredObject(allocator, object);
         defer allocator.free(encoded);
+        try ensurePayloadWithinPassLimit(encoded);
 
         const argv = [_][]const u8{
             self.command,
@@ -162,7 +198,7 @@ pub const PassBackend = struct {
             "--force",
             entry_name,
         };
-        const output = try self.runCommandNoInput(allocator, &argv);
+        const output = try self.runCommandNoInput(allocator, &argv, .command);
         allocator.free(output);
     }
 
@@ -176,7 +212,7 @@ pub const PassBackend = struct {
             "show",
             entry_name,
         };
-        const result = self.runCommandNoInput(allocator, &argv) catch |err| switch (err) {
+        const result = self.runCommandNoInput(allocator, &argv, .payload) catch |err| switch (err) {
             error.StoreCommandFailed => return error.ObjectNotFound,
             else => return err,
         };
@@ -187,14 +223,20 @@ pub const PassBackend = struct {
         self: *PassBackend,
         allocator: Allocator,
         argv: []const []const u8,
+        stdout_limit_kind: OutputLimitKind,
     ) ![]u8 {
         _ = self;
         const result = std.process.Child.run(.{
             .allocator = allocator,
             .argv = argv,
-            .max_output_bytes = 1024 * 1024,
+            .max_output_bytes = pass_payload_limit_bytes,
         }) catch |err| switch (err) {
             error.FileNotFound => return error.StoreUnavailable,
+            error.StdoutStreamTooLong => switch (stdout_limit_kind) {
+                .payload => return error.StorePayloadTooLarge,
+                .command => return error.StoreCommandOutputTooLarge,
+            },
+            error.StderrStreamTooLong => return error.StoreCommandOutputTooLarge,
             else => return err,
         };
         defer allocator.free(result.stderr);
@@ -237,7 +279,11 @@ pub const PassBackend = struct {
         defer stdout.deinit(allocator);
         var stderr = std.ArrayList(u8).empty;
         defer stderr.deinit(allocator);
-        try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+        child.collectOutput(allocator, &stdout, &stderr, pass_payload_limit_bytes) catch |err| switch (err) {
+            error.StdoutStreamTooLong => return error.StoreCommandOutputTooLarge,
+            error.StderrStreamTooLong => return error.StoreCommandOutputTooLarge,
+            else => return err,
+        };
 
         const term = try child.wait();
         switch (term) {
@@ -248,6 +294,62 @@ pub const PassBackend = struct {
             },
             else => return error.StoreCommandFailed,
         }
+    }
+
+    fn restoreObjectToFileStreaming(
+        self: *PassBackend,
+        allocator: Allocator,
+        object_id: []const u8,
+        target_path: []const u8,
+    ) !void {
+        const entry_name = try self.entryNameAlloc(allocator, object_id);
+        defer allocator.free(entry_name);
+
+        const argv = [_][]const u8{
+            self.command,
+            "show",
+            entry_name,
+        };
+
+        var child = std.process.Child.init(&argv, allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
+
+        child.spawn() catch |err| switch (err) {
+            error.FileNotFound => return error.StoreUnavailable,
+            else => return err,
+        };
+        errdefer _ = child.kill() catch {};
+
+        var stdout_pipe = child.stdout.?;
+        defer stdout_pipe.close();
+
+        var read_buffer: [8192]u8 = undefined;
+        var file_reader = stdout_pipe.readerStreaming(&read_buffer);
+        var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
+        defer json_reader.deinit();
+
+        var atomic_file = AtomicObjectFile{};
+        try atomic_file.init(target_path, 0o600);
+        defer atomic_file.deinit();
+
+        const metadata = decodeStoredObjectToWriter(allocator, &json_reader, &atomic_file.file.file_writer.interface) catch |err| {
+            _ = child.kill() catch {};
+            return err;
+        };
+
+        const term = try child.wait();
+        switch (term) {
+            .Exited => |code| {
+                if (code != 0) {
+                    return error.ObjectNotFound;
+                }
+            },
+            else => return error.StoreCommandFailed,
+        }
+
+        try finishAtomicObjectFile(&atomic_file.file, metadata);
     }
 };
 
@@ -270,6 +372,16 @@ pub const MockBackend = struct {
 
     fn loadObject(self: *MockBackend, allocator: Allocator, object_id: []const u8) !Object {
         return self.state.loadObject(allocator, object_id);
+    }
+
+    fn restoreObjectToFile(self: *MockBackend, allocator: Allocator, object_id: []const u8, target_path: []const u8) !void {
+        var object = try self.loadObject(allocator, object_id);
+        defer object.deinit(allocator);
+
+        try writeObjectToFileAtomic(target_path, .{
+            .metadata = object.metadata,
+            .content = object.content,
+        });
     }
 
     fn putObject(self: *MockBackend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
@@ -371,7 +483,15 @@ fn encodeStoredObject(allocator: Allocator, object: ObjectView) ![]u8 {
     );
 }
 
+fn ensurePayloadWithinPassLimit(encoded: []const u8) !void {
+    if (encoded.len > pass_payload_limit_bytes) {
+        return error.StorePayloadTooLarge;
+    }
+}
+
 fn decodeStoredObject(allocator: Allocator, encoded: []const u8) !Object {
+    try ensurePayloadWithinPassLimit(encoded);
+
     const parsed = try std.json.parseFromSlice(SerializedObject, allocator, encoded, .{});
     defer parsed.deinit();
 
@@ -394,6 +514,257 @@ fn decodeStoredObject(allocator: Allocator, encoded: []const u8) !Object {
         },
         .content = content,
     };
+}
+
+fn decodeStoredObjectToWriter(allocator: Allocator, json_reader: *std.json.Reader, writer: *std.Io.Writer) !Metadata {
+    if (try json_reader.next() != .object_begin) {
+        return error.InvalidStoredObject;
+    }
+
+    var version: ?u32 = null;
+    var metadata: Metadata = undefined;
+    var seen_mode = false;
+    var seen_uid = false;
+    var seen_gid = false;
+    var seen_atime_nsec = false;
+    var seen_mtime_nsec = false;
+    var seen_content = false;
+
+    while (true) {
+        const key_token = try json_reader.nextAllocMax(allocator, .alloc_if_needed, 128);
+
+        switch (key_token) {
+            .object_end => break,
+            .string, .allocated_string => {},
+            else => {
+                freeAllocatedJsonToken(allocator, key_token);
+                return error.InvalidStoredObject;
+            },
+        }
+
+        const key = jsonTokenString(key_token) orelse return error.InvalidStoredObject;
+        const field: enum {
+            version,
+            mode,
+            uid,
+            gid,
+            atime_nsec,
+            mtime_nsec,
+            content_base64,
+            unknown,
+        } = if (std.mem.eql(u8, key, "version"))
+            .version
+        else if (std.mem.eql(u8, key, "mode"))
+            .mode
+        else if (std.mem.eql(u8, key, "uid"))
+            .uid
+        else if (std.mem.eql(u8, key, "gid"))
+            .gid
+        else if (std.mem.eql(u8, key, "atime_nsec"))
+            .atime_nsec
+        else if (std.mem.eql(u8, key, "mtime_nsec"))
+            .mtime_nsec
+        else if (std.mem.eql(u8, key, "content_base64"))
+            .content_base64
+        else
+            .unknown;
+        freeAllocatedJsonToken(allocator, key_token);
+
+        if (field == .version) {
+            version = try readJsonInteger(u32, allocator, json_reader);
+        } else if (field == .mode) {
+            metadata.mode = try readJsonInteger(u32, allocator, json_reader);
+            seen_mode = true;
+        } else if (field == .uid) {
+            metadata.uid = try readJsonInteger(u32, allocator, json_reader);
+            seen_uid = true;
+        } else if (field == .gid) {
+            metadata.gid = try readJsonInteger(u32, allocator, json_reader);
+            seen_gid = true;
+        } else if (field == .atime_nsec) {
+            metadata.atime_nsec = try readJsonInteger(i128, allocator, json_reader);
+            seen_atime_nsec = true;
+        } else if (field == .mtime_nsec) {
+            metadata.mtime_nsec = try readJsonInteger(i128, allocator, json_reader);
+            seen_mtime_nsec = true;
+        } else if (field == .content_base64) {
+            try streamJsonBase64StringToWriter(json_reader, writer);
+            seen_content = true;
+        } else {
+            try json_reader.skipValue();
+        }
+    }
+
+    if (try json_reader.next() != .end_of_document) {
+        return error.InvalidStoredObject;
+    }
+
+    if (version == null or
+        version.? != 1 or
+        !seen_mode or
+        !seen_uid or
+        !seen_gid or
+        !seen_atime_nsec or
+        !seen_mtime_nsec or
+        !seen_content)
+    {
+        return error.InvalidStoredObject;
+    }
+
+    return metadata;
+}
+
+fn readJsonInteger(comptime T: type, allocator: Allocator, json_reader: *std.json.Reader) !T {
+    const token = try json_reader.nextAllocMax(allocator, .alloc_if_needed, 64);
+    defer freeAllocatedJsonToken(allocator, token);
+
+    const number = jsonTokenNumber(token) orelse return error.InvalidStoredObject;
+    return std.fmt.parseInt(T, number, 10) catch error.InvalidStoredObject;
+}
+
+fn jsonTokenString(token: std.json.Token) ?[]const u8 {
+    return switch (token) {
+        .string => |value| value,
+        .allocated_string => |value| value,
+        else => null,
+    };
+}
+
+fn jsonTokenNumber(token: std.json.Token) ?[]const u8 {
+    return switch (token) {
+        .number => |value| value,
+        .allocated_number => |value| value,
+        else => null,
+    };
+}
+
+fn freeAllocatedJsonToken(allocator: Allocator, token: std.json.Token) void {
+    switch (token) {
+        .allocated_string => |value| allocator.free(value),
+        .allocated_number => |value| allocator.free(value),
+        else => {},
+    }
+}
+
+fn streamJsonBase64StringToWriter(json_reader: *std.json.Reader, writer: *std.Io.Writer) !void {
+    var decoder = StreamingBase64Decoder{};
+
+    while (true) {
+        switch (try json_reader.next()) {
+            .partial_string => |value| try decoder.feed(value, writer),
+            .partial_string_escaped_1 => |value| try decoder.feed(value[0..], writer),
+            .partial_string_escaped_2 => |value| try decoder.feed(value[0..], writer),
+            .partial_string_escaped_3 => |value| try decoder.feed(value[0..], writer),
+            .partial_string_escaped_4 => |value| try decoder.feed(value[0..], writer),
+            .string => |value| {
+                try decoder.feed(value, writer);
+                try decoder.finish();
+                return;
+            },
+            else => return error.InvalidStoredObject,
+        }
+    }
+}
+
+const StreamingBase64Decoder = struct {
+    quad: [4]u8 = undefined,
+    quad_len: usize = 0,
+    finished: bool = false,
+
+    fn feed(self: *StreamingBase64Decoder, encoded: []const u8, writer: *std.Io.Writer) !void {
+        for (encoded) |byte| {
+            try self.feedByte(byte, writer);
+        }
+    }
+
+    fn feedByte(self: *StreamingBase64Decoder, byte: u8, writer: *std.Io.Writer) !void {
+        if (self.finished) {
+            return error.InvalidStoredObject;
+        }
+
+        self.quad[self.quad_len] = byte;
+        self.quad_len += 1;
+        if (self.quad_len == self.quad.len) {
+            try self.flushQuad(writer);
+        }
+    }
+
+    fn flushQuad(self: *StreamingBase64Decoder, writer: *std.Io.Writer) !void {
+        if (self.quad[0] == '=' or self.quad[1] == '=' or
+            (self.quad[2] == '=' and self.quad[3] != '='))
+        {
+            return error.InvalidStoredObject;
+        }
+
+        const source = self.quad[0..];
+        const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(source) catch return error.InvalidStoredObject;
+        var decoded: [3]u8 = undefined;
+        std.base64.standard.Decoder.decode(decoded[0..decoded_len], source) catch return error.InvalidStoredObject;
+        try writer.writeAll(decoded[0..decoded_len]);
+
+        if (self.quad[2] == '=' or self.quad[3] == '=') {
+            self.finished = true;
+        }
+        self.quad_len = 0;
+    }
+
+    fn finish(self: *StreamingBase64Decoder) !void {
+        if (self.quad_len != 0) {
+            return error.InvalidStoredObject;
+        }
+    }
+};
+
+fn writeObjectToFileAtomic(path: []const u8, object: ObjectView) !void {
+    var atomic_file = AtomicObjectFile{};
+    try atomic_file.init(path, @intCast(object.metadata.mode & 0o777));
+    defer atomic_file.deinit();
+
+    if (object.content.len != 0) {
+        try atomic_file.file.file_writer.interface.writeAll(object.content);
+    }
+
+    try finishAtomicObjectFile(&atomic_file.file, object.metadata);
+}
+
+const AtomicObjectFile = struct {
+    buffer: [4096]u8 = undefined,
+    file: std.fs.AtomicFile = undefined,
+    initialized: bool = false,
+
+    fn init(self: *AtomicObjectFile, path: []const u8, mode: std.fs.File.Mode) !void {
+        const parent_dir_path = std.fs.path.dirname(path) orelse return error.InvalidPath;
+        try std.fs.cwd().makePath(parent_dir_path);
+
+        var parent_dir = try std.fs.openDirAbsolute(parent_dir_path, .{});
+        errdefer parent_dir.close();
+
+        self.file = try std.fs.AtomicFile.init(
+            std.fs.path.basename(path),
+            mode,
+            parent_dir,
+            true,
+            &self.buffer,
+        );
+        self.initialized = true;
+    }
+
+    fn deinit(self: *AtomicObjectFile) void {
+        if (self.initialized) {
+            self.file.deinit();
+            self.initialized = false;
+        }
+        self.* = undefined;
+    }
+};
+
+fn finishAtomicObjectFile(atomic_file: *std.fs.AtomicFile, metadata: Metadata) !void {
+    try atomic_file.file_writer.interface.flush();
+    try atomic_file.file_writer.file.chmod(@intCast(metadata.mode & 0o777));
+    try atomic_file.file_writer.file.chown(metadata.uid, metadata.gid);
+    try atomic_file.file_writer.file.updateTimes(metadata.atime_nsec, metadata.mtime_nsec);
+    try atomic_file.file_writer.file.sync();
+    try atomic_file.finish();
 }
 
 test "mock backend round-trips objects" {
@@ -470,4 +841,65 @@ test "stored object decode rejects unsupported version" {
             "{\"version\":2,\"mode\":384,\"uid\":1,\"gid\":2,\"atime_nsec\":3,\"mtime_nsec\":4,\"content_base64\":\"YQ==\"}",
         ),
     );
+}
+
+test "pass payload limit rejects oversized serialized objects before parsing" {
+    const allocator = std.testing.allocator;
+
+    const oversized = try allocator.alloc(u8, pass_payload_limit_bytes + 1);
+    defer allocator.free(oversized);
+    @memset(oversized, 'x');
+
+    try std.testing.expectError(error.StorePayloadTooLarge, ensurePayloadWithinPassLimit(oversized));
+    try std.testing.expectError(error.StorePayloadTooLarge, decodeStoredObject(allocator, oversized));
+}
+
+test "streaming object decode can restore payloads beyond the pass capture limit" {
+    const allocator = std.testing.allocator;
+
+    const content = try allocator.alloc(u8, pass_payload_limit_bytes);
+    defer allocator.free(content);
+    for (content, 0..) |*byte, index| {
+        byte.* = @intCast('a' + (index % 26));
+    }
+
+    const object: ObjectView = .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 501,
+            .gid = 20,
+            .atime_nsec = 111,
+            .mtime_nsec = 222,
+        },
+        .content = content,
+    };
+
+    const encoded = try encodeStoredObject(allocator, object);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > pass_payload_limit_bytes);
+    try std.testing.expectError(error.StorePayloadTooLarge, decodeStoredObject(allocator, encoded));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var payload_file = try tmp.dir.createFile("payload.json", .{ .read = true });
+    defer payload_file.close();
+    try payload_file.writeAll(encoded);
+    try payload_file.seekTo(0);
+
+    var read_buffer: [4096]u8 = undefined;
+    var file_reader = payload_file.readerStreaming(&read_buffer);
+    var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
+    defer json_reader.deinit();
+
+    var decoded: std.Io.Writer.Allocating = .init(allocator);
+    defer decoded.deinit();
+
+    const metadata = try decodeStoredObjectToWriter(allocator, &json_reader, &decoded.writer);
+    try std.testing.expectEqual(object.metadata.mode, metadata.mode);
+    try std.testing.expectEqual(object.metadata.uid, metadata.uid);
+    try std.testing.expectEqual(object.metadata.gid, metadata.gid);
+    try std.testing.expectEqual(object.metadata.atime_nsec, metadata.atime_nsec);
+    try std.testing.expectEqual(object.metadata.mtime_nsec, metadata.mtime_nsec);
+    try std.testing.expectEqualSlices(u8, content, decoded.written());
 }

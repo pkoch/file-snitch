@@ -241,3 +241,7 @@ configuration.
   - always deny
 - `run prompt` defaults timeout to deny
 - the current store backend is `pass:file-snitch/<object_id>`
+- each `pass` entry is a File Snitch JSON/base64 payload capped at 1 MiB; this
+  is a File Snitch capture/memory limit, not a `pass` limit
+- `unenroll` streams oversized guarded objects back to disk without the normal
+  capture limit before removing the store entry

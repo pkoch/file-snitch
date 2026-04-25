@@ -46,6 +46,22 @@ pub fn main() !void {
             std.debug.print("hint: run `file-snitch doctor` and inspect the affected `pass:file-snitch/...` entry before reenrolling\n", .{});
             std.process.exit(1);
         },
+        error.GuardedSourceFileTooLarge => {
+            std.debug.print("error: guarded source file is too large for the current store read limit ({s})\n", .{store.pass_payload_limit_label});
+            std.debug.print("hint: File Snitch currently targets small secret/config files and stores them as JSON/base64 in `pass`\n", .{});
+            std.process.exit(1);
+        },
+        error.StorePayloadTooLarge => {
+            std.debug.print("error: guarded object exceeds the pass payload limit ({s})\n", .{store.pass_payload_limit_label});
+            std.debug.print("hint: the limit applies to File Snitch's JSON/base64 payload, not to `pass` itself\n", .{});
+            std.debug.print("hint: `file-snitch unenroll <path>` can stream the object back out as a recovery path\n", .{});
+            std.process.exit(1);
+        },
+        error.StoreCommandOutputTooLarge => {
+            std.debug.print("error: pass backend command output exceeded the capture limit ({s})\n", .{store.pass_payload_limit_label});
+            std.debug.print("hint: run `file-snitch doctor` and inspect the affected `pass:file-snitch/...` entry\n", .{});
+            std.process.exit(1);
+        },
         error.SocketPathInUse => {
             std.debug.print("error: another file-snitch agent is already using the configured socket path\n", .{});
             std.debug.print("hint: stop the existing agent or choose a different `--socket` path\n", .{});

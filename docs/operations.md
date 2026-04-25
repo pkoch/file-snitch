@@ -94,6 +94,15 @@ file-snitch doctor
 If `pass` cannot decrypt its store, File Snitch cannot load guarded objects
 either.
 
+File Snitch currently captures each stored `pass:file-snitch/<object_id>` entry
+as one JSON/base64 payload capped at 1 MiB. If a guarded object exceeds that
+serialized payload limit, File Snitch reports the limit explicitly. The limit is
+in File Snitch's in-memory store handling, not in `pass` or GPG.
+
+`unenroll` is the recovery path for an oversized guarded object. It streams the
+stored JSON/base64 payload back to the target file without applying the normal
+capture limit, then removes the `pass` entry only after the restore succeeds.
+
 Common causes:
 - wrong `GNUPGHOME`
 - missing secret key

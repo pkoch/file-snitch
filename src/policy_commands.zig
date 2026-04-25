@@ -156,6 +156,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
     try report_writer.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
+    try report_writer.print("store_limit: pass JSON/base64 payload <= {s}\n", .{store.pass_payload_limit_label});
     try appendFuseReport(report_writer, &has_errors);
 
     if (loaded_policy.enrollments.len != 0) {
@@ -241,7 +242,29 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         const store_ref = try guarded_store.?.describeRefAlloc(allocator, entry.object_id);
         defer allocator.free(store_ref);
 
-        if (try guarded_store.?.exists(allocator, entry.object_id)) {
+        const object_exists = guarded_store.?.exists(allocator, entry.object_id) catch |err| switch (err) {
+            error.StorePayloadTooLarge => {
+                has_errors = true;
+                try report_writer.print("error: guarded object exceeds pass payload limit ({s}): {s}\n", .{
+                    store.pass_payload_limit_label,
+                    store_ref,
+                });
+                try report_writer.writeAll("hint: the limit applies to File Snitch's JSON/base64 payload, not to `pass` itself\n");
+                try report_writer.print("hint: run `file-snitch unenroll {s}` to stream the object back to disk and remove the enrollment\n", .{entry.path});
+                continue;
+            },
+            error.StoreCommandOutputTooLarge => {
+                has_errors = true;
+                try report_writer.print("error: pass backend command output exceeded capture limit ({s}): {s}\n", .{
+                    store.pass_payload_limit_label,
+                    store_ref,
+                });
+                continue;
+            },
+            else => return err,
+        };
+
+        if (object_exists) {
             try report_writer.print("ok: guarded object exists in store: {s}\n", .{store_ref});
         } else {
             has_errors = true;
@@ -361,7 +384,8 @@ fn writeDebugDossier(
     try writer.print("- enrollments: {d}\n", .{loaded_policy.enrollments.len});
     try writer.print("- decisions: {d}\n", .{loaded_policy.decisions.len});
     try writer.print("- planned_mounts: {d}\n", .{mount_paths.len});
-    try writer.print("- store_backend: `{s}`\n\n", .{backendName(guarded_store)});
+    try writer.print("- store_backend: `{s}`\n", .{backendName(guarded_store)});
+    try writer.print("- store_payload_limit: `pass JSON/base64 payload <= {s}`\n\n", .{store.pass_payload_limit_label});
 
     if (mount_paths.len != 0) {
         try writer.writeAll("### Planned Mounts\n\n");

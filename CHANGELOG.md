@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Documented the current 1 MiB `pass` JSON/base64 payload cap as a File
+  Snitch store limit rather than a `pass` limit.
+
+### Fixed
+
+- Reported oversized guarded-store payloads with explicit CLI and `doctor`
+  diagnostics.
+- Allowed `unenroll` to stream oversized guarded objects back to disk as a
+  recovery path before removing the store entry.
+
 ## [0.2.2] - 2026-04-25
 
 ## [0.2.1] - 2026-04-24

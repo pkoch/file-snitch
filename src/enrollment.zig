@@ -2,6 +2,8 @@ const std = @import("std");
 const defaults = @import("defaults.zig");
 const store = @import("store.zig");
 
+const guarded_source_file_read_limit_bytes = store.pass_payload_limit_bytes;
+
 pub const PathKind = enum {
     missing,
     file,
@@ -48,13 +50,7 @@ pub fn moveGuardedFileBack(
     object_id: []const u8,
     target_path: []const u8,
 ) !void {
-    var object = try guarded_store.loadObject(allocator, object_id);
-    defer object.deinit(allocator);
-
-    try writeStoredObjectToFile(target_path, .{
-        .metadata = object.metadata,
-        .content = object.content,
-    });
+    try guarded_store.restoreObjectToFile(allocator, object_id, target_path);
     errdefer std.fs.deleteFileAbsolute(target_path) catch {};
     try guarded_store.removeObject(allocator, object_id);
 }
@@ -116,7 +112,10 @@ fn readStoredObjectFromFile(allocator: std.mem.Allocator, path: []const u8) !sto
 
     const stat = try file.stat();
     const posix_stat = try std.posix.fstat(file.handle);
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = file.readToEndAlloc(allocator, guarded_source_file_read_limit_bytes) catch |err| switch (err) {
+        error.FileTooBig => return error.GuardedSourceFileTooLarge,
+        else => return err,
+    };
 
     return .{
         .metadata = .{
@@ -128,29 +127,6 @@ fn readStoredObjectFromFile(allocator: std.mem.Allocator, path: []const u8) !sto
         },
         .content = content,
     };
-}
-
-fn writeStoredObjectToFile(path: []const u8, object: store.ObjectView) !void {
-    try ensureParentDirectory(path);
-
-    var file = try std.fs.createFileAbsolute(path, .{
-        .truncate = true,
-        .read = true,
-    });
-    defer file.close();
-
-    if (object.content.len != 0) {
-        try file.writeAll(object.content);
-    }
-    try file.chmod(@intCast(object.metadata.mode & 0o777));
-    try file.chown(object.metadata.uid, object.metadata.gid);
-    try file.updateTimes(object.metadata.atime_nsec, object.metadata.mtime_nsec);
-    try file.sync();
-}
-
-fn ensureParentDirectory(path: []const u8) !void {
-    const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent_dir);
 }
 
 test "path is within directory respects segment boundaries" {

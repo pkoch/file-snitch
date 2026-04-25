@@ -296,6 +296,12 @@ Prompt notes:
 - accepted `expires_at` formats are:
   - quoted RFC3339 UTC timestamps like `"2026-04-09T12:34:56Z"`
 - the current guarded-store ref is `pass:file-snitch/<object_id>`
+- File Snitch stores each `pass` entry as one JSON document with base64
+  content and currently caps that serialized payload at 1 MiB. This is a File
+  Snitch memory/capture limit, not a `pass` limit.
+- `unenroll` can recover an oversized guarded object by streaming it back to
+  disk without the normal capture limit, then removing the store entry after the
+  restore succeeds.
 - the production `pass` backend assumes a usable GPG environment; in practice that means `pass` must work and `GNUPGHOME` must resolve to a keyring that can decrypt the configured store
 - the current agent service now has one bootstrap terminal frontend and one first native macOS frontend; the long-term goal is still a fuller agent-style broker, more like `ssh-agent` or `gpg-agent`, with forwarding and richer frontends
 - smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`; production code talks to the `pass` CLI directly
