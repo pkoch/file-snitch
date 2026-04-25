@@ -775,13 +775,10 @@ const AtomicObjectFile = struct {
     initialized: bool = false,
 
     fn init(self: *AtomicObjectFile, path: []const u8, mode: std.posix.mode_t) !void {
-        const parent_dir_path = std.fs.path.dirname(path) orelse return error.InvalidPath;
-        try ensureDirectoryPath(parent_dir_path);
-
-        var parent_dir = try std.Io.Dir.openDirAbsolute(runtime.io(), parent_dir_path, .{});
-        defer parent_dir.close(runtime.io());
-        self.file = try parent_dir.createFileAtomic(runtime.io(), std.fs.path.basename(path), .{
+        if (std.fs.path.dirname(path) == null) return error.InvalidPath;
+        self.file = try std.Io.Dir.cwd().createFileAtomic(runtime.io(), path, .{
             .permissions = .fromMode(mode),
+            .make_path = true,
             .replace = true,
         });
         self.initialized = true;
@@ -805,16 +802,6 @@ fn finishAtomicObjectFile(atomic_file: *std.Io.File.Atomic, metadata: Metadata) 
     });
     try atomic_file.file.sync(runtime.io());
     try atomic_file.replace(runtime.io());
-}
-
-fn ensureDirectoryPath(path: []const u8) !void {
-    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            return std.Io.Dir.cwd().createDirPath(runtime.io(), path);
-        },
-        else => return err,
-    };
-    if (stat.kind != .directory) return error.NotDir;
 }
 
 test "mock backend round-trips objects" {
