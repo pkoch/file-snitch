@@ -27,7 +27,9 @@ pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path
     defer allocator.free(object_id);
 
     try enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, target_path, object_id);
-    errdefer enrollment.moveGuardedFileBack(allocator, &guarded_store, object_id, target_path) catch {};
+    errdefer enrollment.moveGuardedFileBack(allocator, &guarded_store, object_id, target_path) catch |err| {
+        std.debug.panic("failed to roll back enrollment for {s}: {}", .{ target_path, err });
+    };
 
     try loaded_policy.appendEnrollment(target_path, object_id);
     errdefer {
@@ -59,7 +61,7 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
     };
 
     const enrolled_path = loaded_policy.enrollments[enrollment_index].path;
-    if (enrollment.pathExists(enrolled_path)) {
+    if (try enrollment.pathExists(enrolled_path)) {
         std.debug.print(
             "error: target path currently exists: {s}\nstop the active projection before unenrolling\n",
             .{enrolled_path},
@@ -69,7 +71,9 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
 
     const object_id = loaded_policy.enrollments[enrollment_index].object_id;
     try enrollment.moveGuardedFileBack(allocator, &guarded_store, object_id, enrolled_path);
-    errdefer enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, enrolled_path, object_id) catch {};
+    errdefer enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, enrolled_path, object_id) catch |err| {
+        std.debug.panic("failed to roll back unenrollment for {s}: {}", .{ enrolled_path, err });
+    };
 
     loaded_policy.removeDecisionsForPath(enrolled_path);
     var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
@@ -174,7 +178,12 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         }
     }
 
-    if (enrollment.pathExists(agent_socket_path)) {
+    const agent_socket_exists = enrollment.pathExists(agent_socket_path) catch |err| blk: {
+        has_errors = true;
+        try report_writer.print("error: agent socket path could not be inspected: {s}: {}\n", .{ agent_socket_path, err });
+        break :blk false;
+    };
+    if (agent_socket_exists) {
         try report_writer.print("ok: agent socket path exists: {s}\n", .{agent_socket_path});
     } else {
         try report_writer.print("warn: agent socket path is absent: {s}\n", .{agent_socket_path});
@@ -196,8 +205,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             defer allocator.free(agent_service_path);
             const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
             defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, "launchd agent", agent_service_path);
-            try appendServicePathReport(report_writer, "launchd run", run_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "launchd agent", agent_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "launchd run", run_service_path);
         },
         .linux => {
             const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.zenity_bin_env, "zenity");
@@ -213,8 +222,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             defer allocator.free(agent_service_path);
             const run_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-run.service");
             defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, "systemd user agent", agent_service_path);
-            try appendServicePathReport(report_writer, "systemd user run", run_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "systemd user agent", agent_service_path);
+            try appendServicePathReport(report_writer, &has_errors, "systemd user run", run_service_path);
         },
         else => {},
     }
@@ -234,7 +243,12 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             continue;
         };
 
-        if (!enrollment.directoryExists(parent_dir)) {
+        const parent_exists = enrollment.directoryExists(parent_dir) catch |err| {
+            has_errors = true;
+            try report_writer.print("error: parent directory could not be inspected: {s}: {}\n", .{ parent_dir, err });
+            continue;
+        };
+        if (!parent_exists) {
             has_errors = true;
             try report_writer.print("error: parent directory missing: {s}\n", .{parent_dir});
         } else {
@@ -273,21 +287,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             try report_writer.print("error: guarded object missing from store: {s}\n", .{store_ref});
         }
 
-        switch (enrollment.pathKind(entry.path)) {
-            .missing => try report_writer.print("ok: target path currently absent: {s}\n", .{entry.path}),
-            .file => try report_writer.print(
-                "warn: target path currently exists: {s}\nexpected only while actively projected or before migration cleanup\n",
-                .{entry.path},
-            ),
-            .directory => {
-                has_errors = true;
-                try report_writer.print("error: target path is a directory: {s}\n", .{entry.path});
-            },
-            .other => {
-                has_errors = true;
-                try report_writer.print("error: target path has unsupported type: {s}\n", .{entry.path});
-            },
-        }
+        try appendTargetPathReport(report_writer, &has_errors, entry.path);
     }
 
     for (loaded_policy.decisions) |decision| {
@@ -317,6 +317,30 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 
     if (has_errors) {
         return error.DoctorFailed;
+    }
+}
+
+fn appendTargetPathReport(writer: anytype, has_errors: *bool, target_path: []const u8) !void {
+    const target_kind = enrollment.pathKind(target_path) catch |err| {
+        has_errors.* = true;
+        try writer.print("error: target path could not be inspected: {s}: {}\n", .{ target_path, err });
+        return;
+    };
+
+    switch (target_kind) {
+        .missing => try writer.print("ok: target path currently absent: {s}\n", .{target_path}),
+        .file => try writer.print(
+            "warn: target path currently exists: {s}\nexpected only while actively projected or before migration cleanup\n",
+            .{target_path},
+        ),
+        .directory => {
+            has_errors.* = true;
+            try writer.print("error: target path is a directory: {s}\n", .{target_path});
+        },
+        .other => {
+            has_errors.* = true;
+            try writer.print("error: target path has unsupported type: {s}\n", .{target_path});
+        },
     }
 }
 
@@ -563,10 +587,17 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
 
 fn appendServicePathReport(
     writer: anytype,
+    has_errors: *bool,
     label: []const u8,
     path: []const u8,
 ) !void {
-    if (enrollment.pathExists(path)) {
+    const exists = enrollment.pathExists(path) catch |err| {
+        has_errors.* = true;
+        try writer.print("error: {s} service file could not be inspected: {s}: {}\n", .{ label, path, err });
+        return;
+    };
+
+    if (exists) {
         try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
     } else {
         try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });

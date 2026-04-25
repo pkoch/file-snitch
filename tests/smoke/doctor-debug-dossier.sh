@@ -46,6 +46,26 @@ main() {
   if grep -F "plain kube config" "$dossier_path" >/dev/null 2>&1; then
     fail "expected debug dossier to avoid leaking guarded file contents"
   fi
+
+  chmod 000 "$home_dir/.kube"
+  inaccessible_dossier_path="$home_dir/file-snitch-inaccessible-target-dossier.md"
+  set +e
+  inaccessible_output="$(capture_file_snitch doctor --export-debug-dossier "$inaccessible_dossier_path")"
+  inaccessible_status=$?
+  set -e
+  chmod 700 "$home_dir/.kube"
+
+  if [[ "$inaccessible_status" -eq 0 ]]; then
+    fail "expected doctor to exit non-zero for an inaccessible target path"
+  fi
+
+  assert_file_exists \
+    "$inaccessible_dossier_path" \
+    "expected doctor to export a debug dossier for an inaccessible target path"
+
+  grep -F "policy: ok ($policy_file)" <<<"$inaccessible_output" >/dev/null || fail "expected doctor to keep reporting policy status"
+  grep -F "error: target path could not be inspected: $home_dir/.kube/config:" <<<"$inaccessible_output" >/dev/null || fail "expected doctor to report the inaccessible target path"
+  grep -F "error: target path could not be inspected: $home_dir/.kube/config:" "$inaccessible_dossier_path" >/dev/null || fail "expected dossier to include the inaccessible target path report"
 }
 
 main "$@"
