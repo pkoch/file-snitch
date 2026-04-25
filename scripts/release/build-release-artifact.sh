@@ -71,7 +71,7 @@ env \
 
 case "$(uname -s)" in
   Darwin)
-    strip -no_uuid "$install_prefix/bin/file-snitch"
+    strip -S "$install_prefix/bin/file-snitch"
     ;;
   Linux)
     strip --strip-debug "$install_prefix/bin/file-snitch"
