@@ -30,7 +30,7 @@ fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
         "/lib/x86_64-linux-gnu",
         "/usr/local/lib",
     }) |library_dir| {
-        addLibraryPathIfPresent(module, library_dir);
+        addLibraryPathIfPresent(b, module, library_dir);
     }
 
     if (pkgConfigPackageExists(b, "fuse3")) {
@@ -38,7 +38,7 @@ fn configureLinuxFuse(b: *std.Build, module: *std.Build.Module) void {
         return;
     }
 
-    addSystemIncludeIfPresent(module, "/usr/include/fuse3");
+    addSystemIncludeIfPresent(b, module, "/usr/include/fuse3");
     module.linkSystemLibrary("fuse3", .{ .use_pkg_config = .no });
 }
 
@@ -56,11 +56,11 @@ fn configureMacFuse(b: *std.Build, module: *std.Build.Module) void {
     }
 
     for ([_][]const u8{ "/usr/local/include", "/opt/homebrew/include" }) |include_dir| {
-        addSystemIncludeIfPresent(module, include_dir);
+        addSystemIncludeIfPresent(b, module, include_dir);
     }
 
     for ([_][]const u8{ "/usr/local/lib", "/opt/homebrew/lib" }) |library_dir| {
-        addLibraryPathIfPresent(module, library_dir);
+        addLibraryPathIfPresent(b, module, library_dir);
     }
 
     module.linkSystemLibrary("fuse", .{ .use_pkg_config = .no });
@@ -70,12 +70,12 @@ fn configureMacFuseFromEnvironment(b: *std.Build, module: *std.Build.Module) boo
     var configured = false;
 
     if (getEnvironmentPath(b, "FILE_SNITCH_FUSE_INCLUDE_DIR")) |include_dir| {
-        addSystemIncludeIfPresent(module, include_dir);
+        addSystemIncludeIfPresent(b, module, include_dir);
         configured = true;
     }
 
     if (getEnvironmentPath(b, "FILE_SNITCH_FUSE_LIB_DIR")) |library_dir| {
-        addLibraryPathOnlyIfPresent(module, library_dir);
+        addLibraryPathOnlyIfPresent(b, module, library_dir);
         configured = true;
     }
 
@@ -86,8 +86,8 @@ fn findPkgConfig(b: *std.Build) ?[]const u8 {
     return b.findProgram(&.{"pkg-config"}, &.{ "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" }) catch null;
 }
 
-fn addSystemIncludeIfPresent(module: *std.Build.Module, path: []const u8) void {
-    if (!directoryExists(path)) {
+fn addSystemIncludeIfPresent(b: *std.Build, module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(b, path)) {
         return;
     }
 
@@ -97,11 +97,11 @@ fn addSystemIncludeIfPresent(module: *std.Build.Module, path: []const u8) void {
 fn addAppleSdkIncludesIfPresent(b: *std.Build, module: *std.Build.Module) void {
     const sdkroot = getEnvironmentPath(b, "SDKROOT") orelse return;
     const include_dir = std.fs.path.join(b.allocator, &.{ sdkroot, "usr", "include" }) catch @panic("OOM");
-    addSystemIncludeIfPresent(module, include_dir);
+    addSystemIncludeIfPresent(b, module, include_dir);
 }
 
-fn addLibraryPathIfPresent(module: *std.Build.Module, path: []const u8) void {
-    if (!directoryExists(path)) {
+fn addLibraryPathIfPresent(b: *std.Build, module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(b, path)) {
         return;
     }
 
@@ -109,16 +109,16 @@ fn addLibraryPathIfPresent(module: *std.Build.Module, path: []const u8) void {
     module.addRPath(.{ .cwd_relative = path });
 }
 
-fn addLibraryPathOnlyIfPresent(module: *std.Build.Module, path: []const u8) void {
-    if (!directoryExists(path)) {
+fn addLibraryPathOnlyIfPresent(b: *std.Build, module: *std.Build.Module, path: []const u8) void {
+    if (!directoryExists(b, path)) {
         return;
     }
 
     module.addLibraryPath(.{ .cwd_relative = path });
 }
 
-fn directoryExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+fn directoryExists(b: *std.Build, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(b.graph.io, path, .{}) catch return false;
     return true;
 }
 
@@ -141,7 +141,7 @@ fn renderCompileCommands(b: *std.Build, os_tag: std.Target.Os.Tag) []const u8 {
         arguments: []const []const u8,
     };
 
-    var out: std.io.Writer.Allocating = .init(b.allocator);
+    var out: std.Io.Writer.Allocating = .init(b.allocator);
     var write_stream: std.json.Stringify = .{
         .writer = &out.writer,
         .options = .{ .whitespace = .indent_2 },
@@ -192,7 +192,7 @@ fn appendFuseCompileArgs(
 }
 
 fn getEnvironmentPath(b: *std.Build, name: []const u8) ?[]const u8 {
-    return b.graph.env_map.get(name);
+    return b.graph.environ_map.get(name);
 }
 
 fn appendPkgConfigCflags(
@@ -209,7 +209,7 @@ fn appendPkgConfigCflags(
     const stdout = b.runAllowFail(
         &.{ pkg_config, "--cflags", package_name },
         &code,
-        .Ignore,
+        .ignore,
     ) catch return false;
     if (code != 0) {
         return false;
@@ -237,7 +237,7 @@ fn pkgConfigPackageExistsWithBinary(
     _ = b.runAllowFail(
         &.{ pkg_config, "--exists", package_name },
         &code,
-        .Ignore,
+        .ignore,
     ) catch return false;
     return code == 0;
 }
@@ -247,7 +247,7 @@ fn appendIncludeDirIfPresent(
     arguments: *std.ArrayList([]const u8),
     path: []const u8,
 ) void {
-    if (!directoryExists(path)) {
+    if (!directoryExists(b, path)) {
         return;
     }
 

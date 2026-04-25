@@ -1,6 +1,11 @@
 const std = @import("std");
 const defaults = @import("defaults.zig");
+const runtime = @import("runtime.zig");
 const store = @import("store.zig");
+const c = @cImport({
+    @cInclude("sys/stat.h");
+    @cInclude("unistd.h");
+});
 
 const guarded_source_file_read_limit_bytes = store.pass_payload_limit_bytes;
 
@@ -16,7 +21,7 @@ pub fn allocateObjectId(allocator: std.mem.Allocator, guarded_store: *store.Back
     var object_id_buffer: [32]u8 = undefined;
 
     while (true) {
-        std.crypto.random.bytes(&bytes);
+        runtime.io().random(&bytes);
         object_id_buffer = std.fmt.bytesToHex(bytes, .lower);
         const object_id = try allocator.dupe(u8, &object_id_buffer);
         errdefer allocator.free(object_id);
@@ -41,7 +46,7 @@ pub fn moveFileIntoGuardedStore(
         .content = object.content,
     });
     errdefer guarded_store.removeObject(allocator, object_id) catch {};
-    try std.fs.deleteFileAbsolute(source_path);
+    try std.Io.Dir.deleteFileAbsolute(runtime.io(), source_path);
 }
 
 pub fn moveGuardedFileBack(
@@ -51,7 +56,7 @@ pub fn moveGuardedFileBack(
     target_path: []const u8,
 ) !void {
     try guarded_store.restoreObjectToFile(allocator, object_id, target_path);
-    errdefer std.fs.deleteFileAbsolute(target_path) catch {};
+    errdefer std.Io.Dir.deleteFileAbsolute(runtime.io(), target_path) catch {};
     try guarded_store.removeObject(allocator, object_id);
 }
 
@@ -64,7 +69,7 @@ pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u
 }
 
 pub fn pathKind(path: []const u8) PathKind {
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .missing,
         else => return .other,
     };
@@ -85,9 +90,9 @@ pub fn directoryExists(path: []const u8) bool {
 }
 
 pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(alloc, "HOME");
+    const home = try runtime.getEnvVarOwned(alloc, "HOME");
     errdefer alloc.free(home);
-    const canonical = try std.fs.realpathAlloc(alloc, home);
+    const canonical = try std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), home, alloc);
     alloc.free(home);
     return canonical;
 }
@@ -100,30 +105,38 @@ pub fn pathIsWithinDirectory(path: []const u8, directory: []const u8) bool {
 }
 
 pub fn pathOwnedByCurrentUser(path: []const u8) !bool {
-    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
-    defer file.close();
-    const stat = try std.posix.fstat(file.handle);
-    return stat.uid == std.posix.getuid();
+    var file = try std.Io.Dir.openFileAbsolute(runtime.io(), path, .{ .mode = .read_only });
+    defer file.close(runtime.io());
+    const stat = try fstatFile(file);
+    return stat.st_uid == c.getuid();
+}
+
+fn fstatFile(file: std.Io.File) !c.struct_stat {
+    var stat: c.struct_stat = undefined;
+    if (c.fstat(file.handle, &stat) != 0) return error.InputOutput;
+    return stat;
 }
 
 fn readStoredObjectFromFile(allocator: std.mem.Allocator, path: []const u8) !store.Object {
-    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
-    defer file.close();
+    var file = try std.Io.Dir.openFileAbsolute(runtime.io(), path, .{ .mode = .read_only });
+    defer file.close(runtime.io());
 
-    const stat = try file.stat();
-    const posix_stat = try std.posix.fstat(file.handle);
-    const content = file.readToEndAlloc(allocator, guarded_source_file_read_limit_bytes) catch |err| switch (err) {
-        error.FileTooBig => return error.GuardedSourceFileTooLarge,
+    const stat = try file.stat(runtime.io());
+    const posix_stat = try fstatFile(file);
+    var reader_buffer: [4096]u8 = undefined;
+    var file_reader = file.reader(runtime.io(), &reader_buffer);
+    const content = file_reader.interface.allocRemaining(allocator, .limited(guarded_source_file_read_limit_bytes)) catch |err| switch (err) {
+        error.StreamTooLong => return error.GuardedSourceFileTooLarge,
         else => return err,
     };
 
     return .{
         .metadata = .{
-            .mode = @intCast(stat.mode & 0o777),
-            .uid = @intCast(posix_stat.uid),
-            .gid = @intCast(posix_stat.gid),
-            .atime_nsec = stat.atime,
-            .mtime_nsec = stat.mtime,
+            .mode = @intCast(stat.permissions.toMode() & 0o777),
+            .uid = @intCast(posix_stat.st_uid),
+            .gid = @intCast(posix_stat.st_gid),
+            .atime_nsec = if (stat.atime) |atime| atime.toNanoseconds() else 0,
+            .mtime_nsec = stat.mtime.toNanoseconds(),
         },
         .content = content,
     };

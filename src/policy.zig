@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 pub const AccessClass = enum(u32) {
     read = 1,
@@ -50,7 +51,7 @@ const StoredRule = struct {
 pub const Engine = struct {
     allocator: std.mem.Allocator,
     default_mutation_outcome: Outcome,
-    rules: std.ArrayListUnmanaged(StoredRule) = .{},
+    rules: std.ArrayListUnmanaged(StoredRule) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -99,7 +100,7 @@ pub const Engine = struct {
     }
 
     pub fn evaluate(self: *const Engine, request: Request) Outcome {
-        return self.evaluateAt(request, std.time.timestamp());
+        return self.evaluateAt(request, runtime.timestamp());
     }
 
     pub fn evaluateAt(self: *const Engine, request: Request, now_unix_seconds: i64) Outcome {

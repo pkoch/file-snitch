@@ -5,6 +5,7 @@ const config = @import("config.zig");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const policy_watch = @import("cli_policy_watch.zig");
+const runtime = @import("runtime.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -48,7 +49,7 @@ pub fn reconcilePolicyInForeground(command: RunCommand) !void {
     const signal_handlers = installSupervisorSignalHandlers();
     defer signal_handlers.restore();
 
-    var children: std.ArrayListUnmanaged(ManagedMountChild) = .{};
+    var children: std.ArrayListUnmanaged(ManagedMountChild) = .empty;
     defer stopManagedMountChildren(&children);
 
     var change_source = policy_watch.ChangeSource.init(allocator, command.policy_path);
@@ -65,7 +66,7 @@ pub fn reconcilePolicyInForeground(command: RunCommand) !void {
         }
 
         if (next_expiration_unix_seconds) |expires_at| {
-            if (std.time.timestamp() >= expires_at) {
+            if (runtime.timestamp() >= expires_at) {
                 needs_reconcile = true;
             }
         }
@@ -117,7 +118,7 @@ fn reconcileManagedMountChildren(
     };
     defer loaded_policy.deinit();
 
-    const trimmed_expired_decisions = loaded_policy.pruneExpiredDecisions(std.time.timestamp()) catch |err| {
+    const trimmed_expired_decisions = loaded_policy.pruneExpiredDecisions(runtime.timestamp()) catch |err| {
         std.log.err("failed to prune expired decisions from {s}: {}", .{ loaded_policy.source_path, err });
         return null;
     };
@@ -151,13 +152,13 @@ fn reconcileManagedMountChildren(
         return next_expiration_unix_seconds;
     }
 
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(runtime.io(), allocator);
     defer allocator.free(exe_path);
 
     for (mount_plan.paths) |mount_path| {
         var child = try spawnManagedMountChild(exe_path, command, mount_path);
         children.append(allocator, child) catch |err| {
-            std.posix.kill(child.child.id, std.posix.SIG.INT) catch {};
+            std.posix.kill(child.child.id.?, std.posix.SIG.INT) catch {};
             _ = pollMountChild(&child);
             child.deinit();
             return err;
@@ -170,7 +171,7 @@ fn reconcileManagedMountChildren(
 fn reconcileSleepNanos(next_expiration_unix_seconds: ?i64) u64 {
     const default_sleep_ns = 250 * std.time.ns_per_ms;
     const expires_at = next_expiration_unix_seconds orelse return default_sleep_ns;
-    const now = std.time.timestamp();
+    const now = runtime.timestamp();
     if (expires_at <= now) return 0;
 
     const remaining_seconds: u64 = @intCast(expires_at - now);
@@ -195,14 +196,15 @@ fn spawnManagedMountChild(
     argv[3] = "--policy";
     argv[4] = command.policy_path;
 
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
     var env_map = try buildMountChildEnv(command, mount_path_owned);
     defer env_map.deinit();
-    child.env_map = &env_map;
-    try child.spawn();
+    const child = try std.process.spawn(runtime.io(), .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+        .environ_map = &env_map,
+    });
 
     return .{
         .child = child,
@@ -212,15 +214,18 @@ fn spawnManagedMountChild(
     };
 }
 
-fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.EnvMap {
-    var env_map = try std.process.getEnvMap(allocator);
+fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.Environ.Map {
+    var env_map = if (runtime.envMap()) |env|
+        try env.clone(allocator)
+    else
+        std.process.Environ.Map.init(allocator);
     errdefer env_map.deinit();
 
     try env_map.put(defaults.internal_mount_path_env, mount_path);
     if (command.status_fifo_path) |status_fifo_path| {
         try env_map.put(defaults.internal_status_fifo_env, status_fifo_path);
     } else {
-        _ = env_map.remove(defaults.internal_status_fifo_env);
+        _ = env_map.swapRemove(defaults.internal_status_fifo_env);
     }
 
     return env_map;
@@ -238,8 +243,8 @@ fn reapExitedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild))
             reaped_any = true;
 
             switch (term) {
-                .Exited => |code| std.log.warn("mount child for {s} exited with code {d}", .{ runner.mount_path, code }),
-                .Signal => |sig| std.log.warn("mount child for {s} exited on signal {d}", .{ runner.mount_path, sig }),
+                .exited => |code| std.log.warn("mount child for {s} exited with code {d}", .{ runner.mount_path, code }),
+                .signal => |sig| std.log.warn("mount child for {s} exited on signal {d}", .{ runner.mount_path, @intFromEnum(sig) }),
                 else => std.log.warn("mount child for {s} terminated unexpectedly", .{runner.mount_path}),
             }
         }
@@ -249,9 +254,11 @@ fn reapExitedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild))
 }
 
 fn pollMountChild(runner: *ManagedMountChild) ?std.process.Child.Term {
-    const waited = std.posix.waitpid(runner.child.id, std.posix.W.NOHANG);
-    if (waited.pid == 0) return null;
-    return termFromWaitStatus(waited.status);
+    var status: c_int = 0;
+    const waited = std.c.waitpid(runner.child.id.?, &status, std.c.W.NOHANG);
+    if (waited == 0) return null;
+    if (waited < 0) return null;
+    return termFromWaitStatus(@intCast(status));
 }
 
 fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) void {
@@ -266,7 +273,7 @@ fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)
 
     for (children.items) |*runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id, std.posix.SIG.INT) catch {};
+        std.posix.kill(runner.child.id.?, std.posix.SIG.INT) catch {};
     }
 
     if (waitForManagedChildren(children, 20)) {
@@ -284,7 +291,7 @@ fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)
 
     for (children.items) |*runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id, std.posix.SIG.TERM) catch {};
+        std.posix.kill(runner.child.id.?, std.posix.SIG.TERM) catch {};
     }
 
     _ = waitForManagedChildren(children, 20);
@@ -311,7 +318,7 @@ fn waitForManagedChildren(children: *std.ArrayListUnmanaged(ManagedMountChild), 
             return true;
         }
 
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+        std.Io.sleep(runtime.io(), .fromMilliseconds(50), .awake) catch {};
     }
 
     return false;
@@ -334,10 +341,10 @@ fn bestEffortUnmount(mount_path: []const u8) void {
 }
 
 fn runUnmountCommand(argv: []const []const u8) bool {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = argv,
-        .max_output_bytes = 4096,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
     }) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return false,
@@ -346,26 +353,26 @@ fn runUnmountCommand(argv: []const []const u8) bool {
     defer allocator.free(result.stderr);
 
     return switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
 
-fn signalChildrenForShutdown(children: anytype, signal: u8) void {
+fn signalChildrenForShutdown(children: anytype, signal: std.posix.SIG) void {
     for (children) |runner| {
         if (!runner.alive) continue;
-        std.posix.kill(runner.child.id, signal) catch {};
+        std.posix.kill(runner.child.id.?, signal) catch {};
     }
 }
 
 fn termFromWaitStatus(status: u32) std.process.Child.Term {
     if ((status & 0x7f) == 0) {
-        return .{ .Exited = @intCast((status >> 8) & 0xff) };
+        return .{ .exited = @intCast((status >> 8) & 0xff) };
     }
     if ((status & 0xff) == 0x7f) {
-        return .{ .Stopped = @intCast((status >> 8) & 0xff) };
+        return .{ .stopped = @enumFromInt((status >> 8) & 0xff) };
     }
-    return .{ .Signal = @intCast(status & 0x7f) };
+    return .{ .signal = @enumFromInt(status & 0x7f) };
 }
 
 fn outcomeArg(outcome: policy.Outcome) []const u8 {
@@ -406,8 +413,8 @@ fn installSupervisorSignalHandlers() SupervisorSignalHandlers {
     };
 }
 
-fn handleSupervisorSignal(signal_number: i32) callconv(.c) void {
-    supervisor_shutdown_signal.store(signal_number, .release);
+fn handleSupervisorSignal(signal_number: std.c.SIG) callconv(.c) void {
+    supervisor_shutdown_signal.store(@intCast(@intFromEnum(signal_number)), .release);
 }
 
 test "reconcileSleepNanos returns default when no expiration is set" {
@@ -416,12 +423,12 @@ test "reconcileSleepNanos returns default when no expiration is set" {
 }
 
 test "reconcileSleepNanos returns zero when expiration is in the past" {
-    const past = std.time.timestamp() - 60;
+    const past = runtime.timestamp() - 60;
     try std.testing.expectEqual(@as(u64, 0), reconcileSleepNanos(past));
 }
 
 test "reconcileSleepNanos clamps to remaining time when below default" {
-    const future = std.time.timestamp() + 1;
+    const future = runtime.timestamp() + 1;
     const ns = reconcileSleepNanos(future);
     try std.testing.expect(ns <= 1 * std.time.ns_per_s);
 }
@@ -435,19 +442,19 @@ test "outcomeArg maps each policy outcome to its CLI token" {
 test "termFromWaitStatus decodes exit, signal, and stop encodings" {
     const exit_status: u32 = (5 << 8);
     switch (termFromWaitStatus(exit_status)) {
-        .Exited => |code| try std.testing.expectEqual(@as(u8, 5), code),
+        .exited => |code| try std.testing.expectEqual(@as(u8, 5), code),
         else => try std.testing.expect(false),
     }
 
     const signal_status: u32 = 9;
     switch (termFromWaitStatus(signal_status)) {
-        .Signal => |sig| try std.testing.expectEqual(@as(u8, 9), sig),
+        .signal => |sig| try std.testing.expectEqual(@as(u8, 9), @intFromEnum(sig)),
         else => try std.testing.expect(false),
     }
 
     const stopped_status: u32 = 0x7f | (3 << 8);
     switch (termFromWaitStatus(stopped_status)) {
-        .Stopped => |code| try std.testing.expectEqual(@as(u8, 3), code),
+        .stopped => |sig| try std.testing.expectEqual(@as(u8, 3), @intFromEnum(sig)),
         else => try std.testing.expect(false),
     }
 }

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const policy = @import("policy.zig");
+const runtime = @import("runtime.zig");
 const types = @import("filesystem_types.zig");
 const c = @cImport({
     @cInclude("fcntl.h");
@@ -59,7 +60,7 @@ pub fn copySlice(source: []const u8, buffer: []u8, offset: usize) i32 {
 }
 
 pub fn currentTimestamp() Timestamp {
-    const now = std.time.nanoTimestamp();
+    const now = runtime.nanoTimestamp();
     return .{
         .sec = @intCast(@divTrunc(now, std.time.ns_per_s)),
         .nsec = @intCast(@mod(now, std.time.ns_per_s)),
@@ -68,7 +69,7 @@ pub fn currentTimestamp() Timestamp {
 
 pub fn ensureParentDirectoryAbsolute(path: []const u8) !void {
     const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent_dir);
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), parent_dir);
 }
 
 pub fn nanosFromTimestamp(timestamp: Timestamp) i128 {
@@ -168,7 +169,7 @@ pub fn blockCountForSize(size: u64) u64 {
 }
 
 pub fn currentUid() u32 {
-    return @intCast(std.posix.getuid());
+    return @intCast(c.getuid());
 }
 
 pub fn currentGid() u32 {
@@ -202,7 +203,7 @@ pub fn formatOpenPromptLabel(
     path: []const u8,
     flags: i32,
 ) ![]u8 {
-    var mode: std.ArrayList(u8) = .{};
+    var mode: std.ArrayList(u8) = .empty;
     defer mode.deinit(allocator);
 
     switch (flags & c.O_ACCMODE) {
@@ -389,7 +390,7 @@ test "mapFsError routes every enumerated branch and falls back to EIO" {
 }
 
 test "writeIntoArrayList zero-fills the gap and overwrites at offset" {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     defer list.deinit(testing.allocator);
 
     try writeIntoArrayList(testing.allocator, &list, 0, "abc");
@@ -409,7 +410,7 @@ test "writeIntoArrayList with zero-length bytes past end zero-fills up to offset
     // A zero-length write at an offset beyond the current length currently
     // grows the buffer to `offset` and zero-fills the new bytes. Lock this
     // in so callers can reason about write(fd, buf, 0) behavior.
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     defer list.deinit(testing.allocator);
 
     try writeIntoArrayList(testing.allocator, &list, 0, "abc");
@@ -425,7 +426,7 @@ test "writeIntoArrayList with zero-length bytes past end zero-fills up to offset
 }
 
 test "resizeArrayList grows with zero fill and shrinks in place" {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     defer list.deinit(testing.allocator);
 
     try list.appendSlice(testing.allocator, "hello");

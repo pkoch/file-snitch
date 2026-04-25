@@ -6,6 +6,7 @@ const daemon = app_src.daemon;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
 const prompt = app_src.prompt;
+const runtime = app_src.runtime;
 const store = app_src.store;
 
 pub const std_options: std.Options = .{
@@ -20,6 +21,60 @@ const blocked_note_path = "/blocked-note.txt";
 const prompted_note_path = "/prompted-note.txt";
 const allowed_prompt_note_path = "/allowed-prompt-note.txt";
 
+const TestFile = struct {
+    file: std.Io.File,
+
+    fn close(self: TestFile) void {
+        self.file.close(runtime.io());
+    }
+
+    fn writeAll(self: TestFile, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(runtime.io(), bytes);
+    }
+
+    fn readToEndAlloc(self: TestFile, allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
+        var buffer: [4096]u8 = undefined;
+        var reader = self.file.reader(runtime.io(), &buffer);
+        return reader.interface.allocRemaining(allocator, .limited(max_bytes));
+    }
+
+    fn tryLock(self: TestFile, lock: std.Io.File.Lock) !bool {
+        return self.file.tryLock(runtime.io(), lock);
+    }
+
+    fn chmod(self: TestFile, mode: u32) !void {
+        try self.file.setPermissions(runtime.io(), .fromMode(@intCast(mode)));
+    }
+};
+
+fn makeDirAbsolute(path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), path);
+}
+
+fn makePath(path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), path);
+}
+
+fn deleteTreeAbsolute(path: []const u8) !void {
+    try std.Io.Dir.cwd().deleteTree(runtime.io(), path);
+}
+
+fn deleteFileAbsolute(path: []const u8) !void {
+    try std.Io.Dir.deleteFileAbsolute(runtime.io(), path);
+}
+
+fn deleteFile(path: []const u8) !void {
+    try std.Io.Dir.cwd().deleteFile(runtime.io(), path);
+}
+
+fn createFileAbsolute(path: []const u8, options: std.Io.Dir.CreateFileOptions) !TestFile {
+    return .{ .file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, options) };
+}
+
+fn openFileAbsolute(path: []const u8, options: std.Io.Dir.OpenFileOptions) !TestFile {
+    return .{ .file = try std.Io.Dir.openFileAbsolute(runtime.io(), path, options) };
+}
+
 const CountingPromptContext = struct {
     count: usize = 0,
     response: prompt.Response,
@@ -32,17 +87,17 @@ const Fixture = struct {
     backend: store.Backend = undefined,
 
     fn init(allocator: std.mem.Allocator) !Fixture {
-        const run_id = std.time.nanoTimestamp();
+        const run_id = runtime.nanoTimestamp();
         const mount_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.test-mount-{d}", .{run_id});
         errdefer allocator.free(mount_path);
 
-        try std.fs.makeDirAbsolute(mount_path);
-        errdefer std.fs.deleteTreeAbsolute(mount_path) catch {};
+        try makeDirAbsolute(mount_path);
+        errdefer deleteTreeAbsolute(mount_path) catch {};
 
         const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_path, seed_name });
         defer allocator.free(seed_host_path);
 
-        var seed_file = try std.fs.createFileAbsolute(seed_host_path, .{ .truncate = true });
+        var seed_file = try createFileAbsolute(seed_host_path, .{ .truncate = true });
         defer seed_file.close();
         try seed_file.writeAll("seeded from source dir\n");
 
@@ -54,7 +109,7 @@ const Fixture = struct {
 
     fn deinit(self: *Fixture) void {
         self.mock_state.deinit(self.allocator);
-        std.fs.deleteTreeAbsolute(self.mount_path) catch {};
+        deleteTreeAbsolute(self.mount_path) catch {};
         self.allocator.free(self.mount_path);
     }
 
@@ -191,11 +246,11 @@ test "directory entry composition is owned by Zig" {
 
     const nested_dir_path = try std.fmt.allocPrint(allocator, "{s}/nested", .{fixture.mount_path});
     defer allocator.free(nested_dir_path);
-    try std.fs.makeDirAbsolute(nested_dir_path);
+    try makeDirAbsolute(nested_dir_path);
 
     const nested_file_path = try std.fmt.allocPrint(allocator, "{s}/visible.txt", .{nested_dir_path});
     defer allocator.free(nested_file_path);
-    var nested_file = try std.fs.createFileAbsolute(nested_file_path, .{ .truncate = true });
+    var nested_file = try createFileAbsolute(nested_file_path, .{ .truncate = true });
     nested_file.close();
 
     var preseed_store = fixture.guardedStore();
@@ -210,9 +265,9 @@ test "directory entry composition is owned by Zig" {
         .content = "synthetic secret\n",
     });
 
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.ghost-lock-{d}", .{std.time.nanoTimestamp()});
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.ghost-lock-{d}", .{runtime.nanoTimestamp()});
     defer allocator.free(lock_anchor_path);
-    defer std.fs.deleteFileAbsolute(lock_anchor_path) catch {};
+    defer deleteFileAbsolute(lock_anchor_path) catch {};
 
     const guarded_entries = &.{filesystem.GuardedEntryConfig{
         .relative_path = "ghost/secret.txt",
@@ -267,9 +322,9 @@ test "policy and prompt paths are covered by core assertions" {
     defer fixture.deinit();
 
     const guarded_note_path = "/guarded-note.txt";
-    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guard-policy-lock-{d}", .{std.time.nanoTimestamp()});
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.guard-policy-lock-{d}", .{runtime.nanoTimestamp()});
     defer allocator.free(lock_anchor_path);
-    defer std.fs.deleteFileAbsolute(lock_anchor_path) catch {};
+    defer deleteFileAbsolute(lock_anchor_path) catch {};
 
     var preseed_store = fixture.guardedStore();
     try preseed_store.putObject(allocator, "guarded-note", .{
@@ -399,7 +454,7 @@ test "directory operations fail explicitly in the file-only spike" {
 
     const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.mount_path});
     defer allocator.free(host_path);
-    try std.testing.expectError(error.FileNotFound, std.fs.openDirAbsolute(host_path, .{}));
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.openDirAbsolute(runtime.io(), host_path, .{}));
 
     const not_supported = -@as(i32, @intFromEnum(std.posix.E.OPNOTSUPP));
     var audit_snapshot = try session.auditEventSnapshot(allocator);
@@ -412,11 +467,11 @@ test "policy file loader treats empty file as a no-op" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "empty");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     file.close();
 
     var loaded = try config.loadFromFile(allocator, path);
@@ -435,7 +490,7 @@ test "policy file loader parses enrollments and collapses mount plan" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "planned");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -457,7 +512,7 @@ test "policy file loader parses enrollments and collapses mount plan" {
         \\    expires_at: null
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -484,7 +539,7 @@ test "policy file save round-trips appended enrollments" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "roundtrip");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -510,7 +565,7 @@ test "policy file save removes enrollment and attached decisions" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "remove");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -528,7 +583,7 @@ test "policy file save removes enrollment and attached decisions" {
         \\    expires_at: null
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -552,7 +607,7 @@ test "compiled durable decisions respect executable path and uid" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "compiled-rules");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -576,7 +631,7 @@ test "compiled durable decisions respect executable path and uid" {
         \\    expires_at: null
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -630,7 +685,7 @@ test "compiled durable decisions ignore expired entries" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "compiled-rules-expiration");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -654,7 +709,7 @@ test "compiled durable decisions ignore expired entries" {
         \\    expires_at: '2100-01-01T00:00:00Z'
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -690,7 +745,7 @@ test "policy loader rejects invalid decision expiration" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "invalid-decision-expiration");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -708,7 +763,7 @@ test "policy loader rejects invalid decision expiration" {
         \\    expires_at: later-ish
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -719,7 +774,7 @@ test "policy file prunes expired decisions in place" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "prune-expired-decisions");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -741,7 +796,7 @@ test "policy file prunes expired decisions in place" {
         \\    expires_at: null
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -758,7 +813,7 @@ test "upsertDecision replaces matching durable decision" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "upsert-decision");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         allocator.free(path);
     }
 
@@ -768,7 +823,7 @@ test "upsertDecision replaces matching durable decision" {
         \\decisions: []
     ;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source);
 
@@ -801,10 +856,10 @@ test "policy lock prevents a second concurrent writer" {
     const allocator = std.testing.allocator;
     const path = try tempPolicyPath(allocator, "policy-lock");
     defer {
-        std.fs.deleteFileAbsolute(path) catch {};
+        deleteFileAbsolute(path) catch {};
         const lock_path = std.fmt.allocPrint(allocator, "{s}.lock", .{path}) catch null;
         if (lock_path) |owned| {
-            std.fs.deleteFileAbsolute(owned) catch {};
+            deleteFileAbsolute(owned) catch {};
             allocator.free(owned);
         }
         allocator.free(path);
@@ -813,7 +868,7 @@ test "policy lock prevents a second concurrent writer" {
     var first_lock = try config.acquirePolicyLock(allocator, path);
     defer first_lock.deinit();
 
-    const second_file = try std.fs.openFileAbsolute(first_lock.lock_path, .{ .mode = .read_write });
+    const second_file = try openFileAbsolute(first_lock.lock_path, .{ .mode = .read_write });
     defer second_file.close();
 
     try std.testing.expect(!(try second_file.tryLock(.exclusive)));
@@ -821,7 +876,7 @@ test "policy lock prevents a second concurrent writer" {
 
 test "current policy marker treats missing file as absent" {
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-missing-{d}.yml", .{std.time.nanoTimestamp()});
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-missing-{d}.yml", .{runtime.nanoTimestamp()});
     defer allocator.free(policy_path);
 
     const marker = try config.currentPolicyMarker(allocator, policy_path);
@@ -832,11 +887,11 @@ test "current policy marker preserves access errors" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-denied-{d}.yml", .{std.time.nanoTimestamp()});
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-denied-{d}.yml", .{runtime.nanoTimestamp()});
     defer allocator.free(policy_path);
-    defer std.fs.cwd().deleteFile(policy_path) catch {};
+    defer deleteFile(policy_path) catch {};
 
-    var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+    var file = try createFileAbsolute(policy_path, .{ .truncate = true });
     defer file.close();
     try file.writeAll("version: 1\nenrollments: []\ndecisions: []\n");
 
@@ -848,12 +903,12 @@ test "current policy marker preserves access errors" {
 
 test "current policy marker hashes policy contents beyond one megabyte" {
     const allocator = std.testing.allocator;
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-large-{d}.yml", .{std.time.nanoTimestamp()});
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-cli-marker-large-{d}.yml", .{runtime.nanoTimestamp()});
     defer allocator.free(policy_path);
-    defer std.fs.cwd().deleteFile(policy_path) catch {};
+    defer deleteFile(policy_path) catch {};
 
     {
-        var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+        var file = try createFileAbsolute(policy_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("version: 1\nenrollments: []\ndecisions:\n  - executable_path: \"/usr/bin/demo\"\n");
         const filler = try allocator.alloc(u8, 1_100_000);
@@ -864,7 +919,7 @@ test "current policy marker hashes policy contents beyond one megabyte" {
     const first_marker = try config.currentPolicyMarker(allocator, policy_path);
 
     {
-        var file = try std.fs.createFileAbsolute(policy_path, .{ .truncate = true });
+        var file = try createFileAbsolute(policy_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("version: 1\nenrollments: []\ndecisions:\n  - executable_path: \"/usr/bin/demo\"\n");
         const filler = try allocator.alloc(u8, 1_100_000);
@@ -883,7 +938,7 @@ test "current policy marker hashes policy contents beyond one megabyte" {
 
 test "live policy reload suppresses repeated prompt without remount" {
     const allocator = std.testing.allocator;
-    const run_id = std.time.nanoTimestamp();
+    const run_id = runtime.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-reload-{d}", .{run_id});
     defer allocator.free(source_parent);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
@@ -893,12 +948,12 @@ test "live policy reload suppresses repeated prompt without remount" {
     const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.live-policy-lock-{d}", .{run_id});
     defer allocator.free(lock_anchor_path);
 
-    try std.fs.makeDirAbsolute(source_parent);
-    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
-    defer std.fs.cwd().deleteFile(policy_path) catch {};
+    try makeDirAbsolute(source_parent);
+    defer deleteTreeAbsolute(source_parent) catch {};
+    defer deleteFile(policy_path) catch {};
 
     {
-        var file = try std.fs.createFileAbsolute(source_guarded_path, .{ .truncate = true });
+        var file = try createFileAbsolute(source_guarded_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("host kubeconfig\n");
     }
@@ -985,7 +1040,7 @@ test "generated policy engine behavior survives source teardown" {
     for (0..24) |case_index| {
         const path = try tempPolicyPath(allocator, "generated-engine-teardown");
         defer {
-            std.fs.deleteFileAbsolute(path) catch {};
+            deleteFileAbsolute(path) catch {};
             allocator.free(path);
         }
 
@@ -1022,11 +1077,11 @@ test "generated policy save load preserves engine behavior" {
     for (0..24) |case_index| {
         const path = try tempPolicyPath(allocator, "generated-policy-roundtrip");
         defer {
-            std.fs.deleteFileAbsolute(path) catch {};
+            deleteFileAbsolute(path) catch {};
             allocator.free(path);
         }
 
-        var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        var file = try createFileAbsolute(path, .{ .truncate = true });
         file.close();
 
         var loaded = try config.loadFromFile(allocator, path);
@@ -1112,7 +1167,7 @@ test "audit event snapshots remain immutable after later writes" {
 
 test "enrolled parent shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
-    const run_id = std.time.nanoTimestamp();
+    const run_id = runtime.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-{d}", .{run_id});
     defer allocator.free(source_parent);
     const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-{d}", .{run_id});
@@ -1122,14 +1177,14 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     const sibling_path = try std.fmt.allocPrint(allocator, "{s}/sibling.txt", .{source_parent});
     defer allocator.free(sibling_path);
 
-    try std.fs.makeDirAbsolute(source_parent);
-    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    try makeDirAbsolute(source_parent);
+    defer deleteTreeAbsolute(source_parent) catch {};
 
-    var source_guarded_file = try std.fs.createFileAbsolute(source_guarded_path, .{ .truncate = true });
+    var source_guarded_file = try createFileAbsolute(source_guarded_path, .{ .truncate = true });
     defer source_guarded_file.close();
     try source_guarded_file.writeAll("host kubeconfig\n");
 
-    var sibling_file = try std.fs.createFileAbsolute(sibling_path, .{ .truncate = true });
+    var sibling_file = try createFileAbsolute(sibling_path, .{ .truncate = true });
     defer sibling_file.close();
     try sibling_file.writeAll("plain sibling\n");
 
@@ -1194,7 +1249,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
 
 test "enrolled parent can shadow multiple guarded siblings under one mount" {
     const allocator = std.testing.allocator;
-    const run_id = std.time.nanoTimestamp();
+    const run_id = runtime.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-multi-{d}", .{run_id});
     defer allocator.free(source_parent);
     const first_lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-a-{d}", .{run_id});
@@ -1208,21 +1263,21 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     const sibling_path = try std.fmt.allocPrint(allocator, "{s}/pubring.kbx", .{source_parent});
     defer allocator.free(sibling_path);
 
-    try std.fs.makeDirAbsolute(source_parent);
-    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    try makeDirAbsolute(source_parent);
+    defer deleteTreeAbsolute(source_parent) catch {};
 
     {
-        var file = try std.fs.createFileAbsolute(first_source_path, .{ .truncate = true });
+        var file = try createFileAbsolute(first_source_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("host first\n");
     }
     {
-        var file = try std.fs.createFileAbsolute(second_source_path, .{ .truncate = true });
+        var file = try createFileAbsolute(second_source_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("host second\n");
     }
     {
-        var file = try std.fs.createFileAbsolute(sibling_path, .{ .truncate = true });
+        var file = try createFileAbsolute(sibling_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("host sibling\n");
     }
@@ -1317,7 +1372,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
 
 test "enrolled parent can project a guarded file below a synthetic subdirectory" {
     const allocator = std.testing.allocator;
-    const run_id = std.time.nanoTimestamp();
+    const run_id = runtime.nanoTimestamp();
     const source_parent = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.enrolled-parent-nested-{d}", .{run_id});
     defer allocator.free(source_parent);
     const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.lock-anchor-nested-{d}", .{run_id});
@@ -1327,12 +1382,12 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
     const real_sibling_path = try std.fmt.allocPrint(allocator, "{s}/hosts.yml", .{source_parent});
     defer allocator.free(real_sibling_path);
 
-    try std.fs.makeDirAbsolute(source_parent);
-    try std.fs.cwd().makePath(real_dir_path);
-    defer std.fs.deleteTreeAbsolute(source_parent) catch {};
+    try makeDirAbsolute(source_parent);
+    try makePath(real_dir_path);
+    defer deleteTreeAbsolute(source_parent) catch {};
 
     {
-        var file = try std.fs.createFileAbsolute(real_sibling_path, .{ .truncate = true });
+        var file = try createFileAbsolute(real_sibling_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("plain hosts\n");
     }
@@ -1397,7 +1452,7 @@ fn tempPolicyPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
         "/tmp/file-snitch.policy-{s}-{d}.yml",
-        .{ name, std.time.nanoTimestamp() },
+        .{ name, runtime.nanoTimestamp() },
     );
 }
 
@@ -1456,14 +1511,15 @@ fn writeGeneratedPolicyFile(
     var source: std.ArrayList(u8) = .empty;
     defer source.deinit(allocator);
 
-    try source.writer(allocator).writeAll("version: 1\nenrollments:\n");
+    try source.appendSlice(allocator, "version: 1\nenrollments:\n");
     for (generated_enrollments) |entry| {
-        try source.writer(allocator).print(
+        try source.print(
+            allocator,
             "  - path: {s}\n    object_id: {s}\n",
             .{ entry.path, entry.object_id },
         );
     }
-    try source.writer(allocator).writeAll("decisions:\n");
+    try source.appendSlice(allocator, "decisions:\n");
     for (0..decision_count) |_| {
         const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
         const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
@@ -1471,7 +1527,8 @@ fn writeGeneratedPolicyFile(
         const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
         const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
         const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
-        try source.writer(allocator).print(
+        try source.print(
+            allocator,
             "  - executable_path: {s}\n    uid: {d}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
             .{
                 executable_path,
@@ -1484,7 +1541,7 @@ fn writeGeneratedPolicyFile(
         );
     }
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    var file = try createFileAbsolute(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(source.items);
 }
@@ -1507,7 +1564,7 @@ fn repeatedByteStringZAlloc(allocator: std.mem.Allocator, byte: u8, len: usize) 
 }
 
 fn readFileAbsoluteAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    var file = try openFileAbsolute(path, .{ .mode = .read_only });
     defer file.close();
     return file.readToEndAlloc(allocator, 1024 * 1024);
 }

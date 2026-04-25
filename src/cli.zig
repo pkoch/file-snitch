@@ -11,6 +11,7 @@ const policy = @import("policy.zig");
 const policy_commands = @import("policy_commands.zig");
 const supervisor = @import("cli_supervisor.zig");
 const prompt = @import("prompt.zig");
+const runtime = @import("runtime.zig");
 const store = @import("store.zig");
 
 pub const std_options: std.Options = .{
@@ -20,9 +21,9 @@ pub const std_options: std.Options = .{
 const allocator = std.heap.page_allocator;
 const RunCommand = supervisor.RunCommand;
 
-pub fn main() !void {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init_info: std.process.Init) !void {
+    runtime.init(init_info);
+    const args = try init_info.minimal.args.toSlice(init_info.arena.allocator());
 
     run(args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed => std.process.exit(1),
@@ -515,7 +516,7 @@ fn runStaticPolicy(command: RunCommand) !void {
     else
         null;
     defer {
-        if (status_output_file) |file| file.close();
+        if (status_output_file) |file| file.close(runtime.io());
     }
 
     const prompt_requester = if (command.default_mutation_outcome == .prompt)
@@ -590,14 +591,14 @@ fn runStaticPolicy(command: RunCommand) !void {
             else
                 null,
             .status_output_file = status_output_file,
-            .audit_output_file = std.fs.File.stdout(),
+            .audit_output_file = std.Io.File.stdout(),
         });
         return;
     }
 }
 
 fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) ![]const u8 {
-    const resolved = std.fs.realpathAlloc(allocator, raw_path) catch |err| switch (err) {
+    const resolved = std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), raw_path, allocator) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("error: {s} does not exist: {s}\n", .{ label, raw_path });
             return error.InvalidUsage;
@@ -622,7 +623,7 @@ fn resolvePathArgument(raw_path: []const u8) ![]const u8 {
         return allocator.dupe(u8, raw_path);
     }
 
-    const cwd = try std.fs.realpathAlloc(allocator, ".");
+    const cwd = try std.process.currentPathAlloc(runtime.io(), allocator);
     defer allocator.free(cwd);
     return std.fs.path.resolve(allocator, &.{ cwd, raw_path });
 }
@@ -632,7 +633,7 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     errdefer allocator.free(lexical_path);
 
     if (enrollment_ops.pathExists(lexical_path)) {
-        const canonical = try std.fs.realpathAlloc(allocator, lexical_path);
+        const canonical = try std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), lexical_path, allocator);
         allocator.free(lexical_path);
         return canonical;
     }
@@ -641,7 +642,7 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
         std.debug.print("error: invalid target path: {s}\n", .{lexical_path});
         return error.InvalidUsage;
     };
-    const canonical_parent = std.fs.realpathAlloc(allocator, parent_dir) catch |err| switch (err) {
+    const canonical_parent = std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), parent_dir, allocator) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("error: parent directory does not exist: {s}\n", .{parent_dir});
             return error.InvalidUsage;
@@ -686,7 +687,7 @@ fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const 
 }
 
 fn loadPromptTimeoutMs() !u32 {
-    const raw_value = std.process.getEnvVarOwned(allocator, defaults.prompt_timeout_ms_env) catch |err| switch (err) {
+    const raw_value = runtime.getEnvVarOwned(allocator, defaults.prompt_timeout_ms_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return defaults.prompt_timeout_ms_default,
         else => return err,
     };
@@ -700,7 +701,7 @@ fn loadPromptTimeoutMs() !u32 {
 }
 
 fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
-    const raw_value = std.process.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+    const raw_value = runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return null,
         else => return err,
     };
@@ -718,8 +719,8 @@ fn parseFrontendKind(raw: []const u8) ?agent.FrontendKind {
     return null;
 }
 
-fn openStatusFifo(path: []const u8) !std.fs.File {
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+fn openStatusFifo(path: []const u8) !std.Io.File {
+    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return invalidUsage("error: status fifo does not exist: {s}\n", .{path}),
         else => return err,
     };
@@ -728,7 +729,7 @@ fn openStatusFifo(path: []const u8) !std.fs.File {
         return invalidUsage("error: status fifo is not a named pipe: {s}\n", .{path});
     }
 
-    return std.fs.cwd().openFile(path, .{ .mode = .write_only });
+    return std.Io.Dir.cwd().openFile(runtime.io(), path, .{ .mode = .write_only });
 }
 
 fn relativeEnrollmentPath(
@@ -839,7 +840,7 @@ fn printUsage() void {
 fn printVersion() void {
     var buffer: [64]u8 = undefined;
     const line = std.fmt.bufPrint(&buffer, "file-snitch {s}\n", .{app_meta.version}) catch @panic("failed to format version");
-    std.fs.File.stdout().writeAll(line) catch @panic("failed to write version");
+    std.Io.File.stdout().writeStreamingAll(runtime.io(), line) catch @panic("failed to write version");
 }
 
 test "parse command routes completion subcommand" {

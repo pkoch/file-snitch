@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 /// Single source of truth for the runtime `FILE_SNITCH_*` environment variable
 /// names used by `src/`, the small numeric defaults the rest of the code
@@ -53,14 +54,14 @@ pub fn xdgBasePathAlloc(
     xdg_env: []const u8,
     home_relative_fallback: []const u8,
 ) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, xdg_env)) |value| {
+    if (runtime.getEnvVarOwned(allocator, xdg_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
         else => return err,
     }
 
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    const home = try runtime.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, home_relative_fallback });
 }

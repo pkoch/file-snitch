@@ -1,14 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const net = std.net;
+const net = std.Io.net;
 const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const runtime = @import("runtime.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cInclude("stdlib.h");
+    @cInclude("sys/stat.h");
     @cInclude("sys/socket.h");
     @cInclude("sys/types.h");
     @cInclude("sys/un.h");
@@ -51,7 +53,7 @@ pub const TerminalPinentryContext = struct {
     timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     tty_path: ?[]const u8 = null,
     inherited_cli_context: ?*prompt.CliContext = null,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
 };
 
 pub const MacosUiContext = struct {
@@ -85,7 +87,7 @@ const ConnectionWorkerContext = struct {
 };
 
 pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, defaults.agent_socket_env)) |value| {
+    if (runtime.getEnvVarOwned(allocator, defaults.agent_socket_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -129,7 +131,7 @@ pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
 }
 
 pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, defaults.agent_tty_env)) |value| {
+    if (runtime.getEnvVarOwned(allocator, defaults.agent_tty_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -141,7 +143,7 @@ pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, defaults.osascript_bin_env)) |value| {
+    if (runtime.getEnvVarOwned(allocator, defaults.osascript_bin_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -152,7 +154,7 @@ pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultZenityPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, defaults.zenity_bin_env)) |value| {
+    if (runtime.getEnvVarOwned(allocator, defaults.zenity_bin_env)) |value| {
         return value;
     } else |err| switch (err) {
         error.EnvironmentVariableNotFound => {},
@@ -166,29 +168,25 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
     try ensureParentDirectory(context.socket_path);
     try removeSocketFileIfStale(context.socket_path);
 
-    const address = try net.Address.initUnix(context.socket_path);
-    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
-    defer std.posix.close(listener);
+    const address = try net.UnixAddress.init(context.socket_path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
+    defer server.deinit(runtime.io());
     defer removeStaleSocketFile(context.socket_path) catch {};
 
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 16);
-
     while (true) {
-        const accepted = std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC) catch |err| switch (err) {
+        const stream = server.accept(runtime.io()) catch |err| switch (err) {
             error.ConnectionAborted, error.WouldBlock => continue,
             else => return err,
         };
-        var stream: net.Stream = .{ .handle = accepted };
         assertSameUidPeer(stream) catch |err| {
-            stream.close();
+            stream.close(runtime.io());
             std.log.warn("agent rejected socket peer: {}", .{err});
             continue;
         };
         if (!context.frontend.supports_concurrent_requests) {
             // GUI frontends shell out to helper processes. On Linux, doing that
             // from a worker thread would fork a multithreaded process.
-            defer stream.close();
+            defer stream.close(runtime.io());
             handleConnection(context, stream) catch |err| {
                 std.log.warn("agent connection failed: {}", .{err});
             };
@@ -217,7 +215,7 @@ fn runConnectionWorker(worker_context: *ConnectionWorkerContext) void {
 }
 
 fn cleanupConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    worker_context.stream.close();
+    worker_context.stream.close(runtime.io());
     worker_context.allocator.destroy(worker_context);
 }
 
@@ -231,8 +229,9 @@ fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Respo
 }
 
 fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.Response {
-    var stream = try net.connectUnixSocket(context.socket_path);
-    defer stream.close();
+    const address = try net.UnixAddress.init(context.socket_path);
+    var stream = try address.connect(runtime.io());
+    defer stream.close(runtime.io());
     try assertSameUidPeer(stream);
 
     const hello_frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
@@ -248,7 +247,7 @@ fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.
     defer context.allocator.free(request_id);
 
     const timeout_seconds = @divTrunc(@as(i64, @intCast(context.timeout_ms)) + 999, 1000);
-    const timeout_at = std.time.timestamp() + timeout_seconds;
+    const timeout_at = runtime.timestamp() + timeout_seconds;
     const timeout_at_rfc3339 = try formatRfc3339UtcAlloc(context.allocator, timeout_at);
     defer context.allocator.free(timeout_at_rfc3339);
 
@@ -537,16 +536,16 @@ fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Fr
 fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
     const context = raw_context orelse return .{ .decision = .unavailable };
     const pinentry_context: *TerminalPinentryContext = @ptrCast(@alignCast(context));
-    pinentry_context.mutex.lock();
-    defer pinentry_context.mutex.unlock();
+    pinentry_context.mutex.lockUncancelable(runtime.io());
+    defer pinentry_context.mutex.unlock(runtime.io());
 
     if (pinentry_context.inherited_cli_context) |cli_context| {
         return prompt.resolveCliWithContext(cli_context, request);
     }
 
     const tty_path = pinentry_context.tty_path orelse return .{ .decision = .unavailable };
-    var tty_file = std.fs.openFileAbsolute(tty_path, .{ .mode = .read_write }) catch return .{ .decision = .unavailable };
-    defer tty_file.close();
+    const tty_file = std.Io.Dir.openFileAbsolute(runtime.io(), tty_path, .{ .mode = .read_write }) catch return .{ .decision = .unavailable };
+    defer tty_file.close(runtime.io());
 
     var cli_context = prompt.CliContext{
         .allocator = pinentry_context.allocator,
@@ -570,14 +569,18 @@ fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
         "-e",
         script,
     };
-    const result = std.process.Child.run(.{
-        .allocator = ui_context.allocator,
+    const result = std.process.run(ui_context.allocator, runtime.io(), .{
         .argv = &argv,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
     }) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) return .{ .decision = .unavailable };
+    switch (result.term) {
+        .exited => |code| if (code != 0) return .{ .decision = .unavailable },
+        else => return .{ .decision = .unavailable },
+    }
     return parseMacosUiResponse(result.stdout) catch .{ .decision = .unavailable };
 }
 
@@ -624,9 +627,10 @@ fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Resp
         "--width=520",
     }) catch return .{ .decision = .unavailable };
 
-    const result = std.process.Child.run(.{
-        .allocator = ui_context.allocator,
+    const result = std.process.run(ui_context.allocator, runtime.io(), .{
         .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
     }) catch return .{ .decision = .unavailable };
     defer ui_context.allocator.free(result.stdout);
     defer ui_context.allocator.free(result.stderr);
@@ -732,7 +736,7 @@ fn parseMacosUiResponse(raw_output: []const u8) !prompt.Response {
     if (std.mem.eql(u8, trimmed, "allow-5m")) return .{
         .decision = .allow,
         .remember_kind = .temporary,
-        .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
+        .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
     };
     if (std.mem.eql(u8, trimmed, "always-allow")) return .{ .decision = .allow, .remember_kind = .durable };
     if (std.mem.eql(u8, trimmed, "always-deny")) return .{ .decision = .deny, .remember_kind = .durable };
@@ -741,7 +745,7 @@ fn parseMacosUiResponse(raw_output: []const u8) !prompt.Response {
 
 fn parseLinuxUiResponse(term: std.process.Child.Term, raw_output: []const u8) !prompt.Response {
     return switch (term) {
-        .Exited => |code| switch (code) {
+        .exited => |code| switch (code) {
             0 => parseLinuxUiSelection(raw_output),
             1 => .{ .decision = .deny, .remember_kind = .once },
             5 => .{ .decision = .timeout },
@@ -762,7 +766,7 @@ fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
     if (std.mem.eql(u8, trimmed, "Allow 5 min") or std.mem.eql(u8, trimmed, "allow-5m")) return .{
         .decision = .allow,
         .remember_kind = .temporary,
-        .expires_at_unix_seconds = std.time.timestamp() + defaults.remember_temporary_seconds,
+        .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
     };
     if (std.mem.eql(u8, trimmed, "Always allow") or std.mem.eql(u8, trimmed, "always-allow")) {
         return .{ .decision = .allow, .remember_kind = .durable };
@@ -774,17 +778,17 @@ fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
 }
 
 fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.fs.File.stderr().isTty()) {
-        return terminalPathForFileAlloc(allocator, std.fs.File.stderr());
+    if (try std.Io.File.stderr().isTty(runtime.io())) {
+        return terminalPathForFileAlloc(allocator, std.Io.File.stderr());
     }
-    if (std.fs.File.stdin().isTty()) {
-        return terminalPathForFileAlloc(allocator, std.fs.File.stdin());
+    if (try std.Io.File.stdin().isTty(runtime.io())) {
+        return terminalPathForFileAlloc(allocator, std.Io.File.stdin());
     }
     return error.NotATerminal;
 }
 
-fn terminalPathForFileAlloc(allocator: std.mem.Allocator, file: std.fs.File) ![]u8 {
-    if (!file.isTty()) return error.NotATerminal;
+fn terminalPathForFileAlloc(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
+    if (!try file.isTty(runtime.io())) return error.NotATerminal;
 
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const result = c.ttyname_r(file.handle, &buffer, buffer.len);
@@ -879,22 +883,22 @@ fn frameTypeFromJson(allocator: std.mem.Allocator, frame: []const u8) ![]u8 {
 }
 
 fn sendJsonFrame(allocator: std.mem.Allocator, stream: net.Stream, value: anytype) !void {
-    var output: std.io.Writer.Allocating = .init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     try std.json.Stringify.value(value, .{}, &output.writer);
     try writeFrame(stream, output.written());
 }
 
 fn isPeerClosedError(err: anyerror) bool {
-    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting;
+    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting or err == error.InputOutput;
 }
 
 fn writeFrame(stream: net.Stream, payload: []const u8) !void {
     var prefix_buffer: [32]u8 = undefined;
     const prefix = try std.fmt.bufPrint(&prefix_buffer, "{d}:", .{payload.len});
-    try stream.writeAll(prefix);
-    try stream.writeAll(payload);
-    try stream.writeAll("\n");
+    try writeAllFd(stream.socket.handle, prefix);
+    try writeAllFd(stream.socket.handle, payload);
+    try writeAllFd(stream.socket.handle, "\n");
 }
 
 fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: ?u32) ![]u8 {
@@ -928,10 +932,21 @@ fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: 
 fn readExact(stream: net.Stream, buffer: []u8, timeout_ms: ?u32) !void {
     var offset: usize = 0;
     while (offset < buffer.len) {
-        try waitReadable(stream.handle, timeout_ms);
-        const count = try stream.read(buffer[offset..]);
+        try waitReadable(stream.socket.handle, timeout_ms);
+        const count = c.read(stream.socket.handle, buffer[offset..].ptr, buffer.len - offset);
+        if (count < 0) return error.InputOutput;
         if (count == 0) return error.EndOfStream;
-        offset += count;
+        offset += @intCast(count);
+    }
+}
+
+fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const count = c.write(fd, bytes[offset..].ptr, bytes.len - offset);
+        if (count < 0) return error.InputOutput;
+        if (count == 0) return error.EndOfStream;
+        offset += @intCast(count);
     }
 }
 
@@ -960,9 +975,9 @@ fn waitReadable(fd: std.posix.fd_t, timeout_ms: ?u32) !void {
 
 fn ensureParentDirectory(path: []const u8) !void {
     const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    if (std.fs.cwd().statFile(parent_dir)) |_| {
+    if (std.Io.Dir.cwd().statFile(runtime.io(), parent_dir, .{})) |_| {
         if (std.mem.eql(u8, std.fs.path.basename(parent_dir), "file-snitch")) {
-            try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o700, 0);
+            try chmodPath(parent_dir, 0o700);
         }
         try validatePrivateDirectory(parent_dir);
         return;
@@ -972,27 +987,50 @@ fn ensureParentDirectory(path: []const u8) !void {
     }
 
     const grandparent_dir = std.fs.path.dirname(parent_dir) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(grandparent_dir);
-    std.posix.mkdir(parent_dir, 0o700) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDirPath(runtime.io(), grandparent_dir) catch |err| switch (err) {
+        error.PathAlreadyExists, error.NotDir => {},
+        else => return err,
+    };
+    mkdirPath(parent_dir, 0o700) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o700, 0);
+    try chmodPath(parent_dir, 0o700);
     try validatePrivateDirectory(parent_dir);
 }
 
 fn validatePrivateDirectory(path: []const u8) !void {
-    const file_stat = try std.fs.cwd().statFile(path);
+    const file_stat = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
     if (file_stat.kind != .directory) return error.InvalidSocketPath;
 
-    const posix_stat = try std.posix.fstatat(std.posix.AT.FDCWD, path, 0);
-    if (posix_stat.uid != std.posix.getuid()) return error.InvalidSocketPath;
-    if ((posix_stat.mode & 0o777) != 0o700) return error.InvalidSocketPath;
+    const posix_stat = try statPath(path);
+    if (posix_stat.st_uid != c.getuid()) return error.InvalidSocketPath;
+    if ((posix_stat.st_mode & 0o777) != 0o700) return error.InvalidSocketPath;
 }
 
 fn assertSameUidPeer(stream: net.Stream) !void {
-    const peer_uid = try peerUid(stream.handle);
-    if (peer_uid != std.posix.getuid()) return error.UnauthorizedPeer;
+    const peer_uid = try peerUid(stream.socket.handle);
+    if (peer_uid != c.getuid()) return error.UnauthorizedPeer;
+}
+
+fn chmodPath(path: []const u8, mode: c.mode_t) !void {
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(path_z);
+    if (c.chmod(path_z.ptr, mode) != 0) return error.AccessDenied;
+}
+
+fn mkdirPath(path: []const u8, mode: c.mode_t) !void {
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(path_z);
+    if (c.mkdir(path_z.ptr, mode) != 0) return error.PathAlreadyExists;
+}
+
+fn statPath(path: []const u8) !c.struct_stat {
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(path_z);
+    var stat: c.struct_stat = undefined;
+    if (c.stat(path_z.ptr, &stat) != 0) return error.InvalidSocketPath;
+    return stat;
 }
 
 fn peerUid(fd: std.posix.fd_t) !std.posix.uid_t {
@@ -1032,37 +1070,48 @@ fn peerUidMacos(fd: std.posix.fd_t) !std.posix.uid_t {
 }
 
 fn removeSocketFileIfStale(path: []const u8) !void {
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
     if (stat.kind != .unix_domain_socket) return error.InvalidSocketPath;
 
-    var stream = net.connectUnixSocket(path) catch |err| switch (err) {
-        error.FileNotFound => return,
-        error.ConnectionRefused, error.ConnectionResetByPeer => {
-            try removeStaleSocketFile(path);
-            return;
-        },
-        error.AddressInUse,
-        error.AccessDenied,
-        error.PermissionDenied,
-        error.ConnectionTimedOut,
-        error.WouldBlock,
-        error.NetworkUnreachable,
-        error.AddressNotAvailable,
-        error.AddressFamilyNotSupported,
-        error.SystemResources,
-        error.ConnectionPending,
-        => return error.SocketPathInUse,
-        else => return err,
-    };
-    stream.close();
-    return error.SocketPathInUse;
+    if (try socketPathHasLiveListener(path)) return error.SocketPathInUse;
+    try removeStaleSocketFile(path);
 }
 
 fn removeStaleSocketFile(path: []const u8) !void {
-    try std.fs.cwd().deleteFile(path);
+    try std.Io.Dir.cwd().deleteFile(runtime.io(), path);
+}
+
+fn socketPathHasLiveListener(path: []const u8) !bool {
+    var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+    if (path.len >= addr.sun_path.len) return error.InvalidSocketPath;
+
+    addr.sun_family = c.AF_UNIX;
+    if (@hasField(c.struct_sockaddr_un, "sun_len")) {
+        addr.sun_len = @intCast(@offsetOf(c.struct_sockaddr_un, "sun_path") + path.len + 1);
+    }
+    @memcpy(addr.sun_path[0..path.len], path);
+
+    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+    if (fd < 0) return error.SocketPathInUse;
+    defer _ = c.close(fd);
+
+    const addr_len: c.socklen_t = @intCast(@offsetOf(c.struct_sockaddr_un, "sun_path") + path.len + 1);
+    const connect_result = if (builtin.os.tag == .linux)
+        c.connect(fd, .{ .__sockaddr_un__ = &addr }, addr_len)
+    else
+        c.connect(fd, @ptrCast(&addr), addr_len);
+    if (connect_result == 0) {
+        return true;
+    }
+
+    return switch (std.c.errno(-1)) {
+        .NOENT => error.FileNotFound,
+        .CONNREFUSED, .CONNRESET => false,
+        else => error.SocketPathInUse,
+    };
 }
 
 fn operationLabel(access_class: policy.AccessClass) []const u8 {
@@ -1217,14 +1266,14 @@ fn isLeapYear(year: i64) bool {
 
 fn generateUlidAlloc(allocator: std.mem.Allocator) ![]u8 {
     var bytes: [16]u8 = undefined;
-    const timestamp_ms: u64 = @intCast(std.time.milliTimestamp());
+    const timestamp_ms: u64 = @intCast(runtime.milliTimestamp());
     bytes[0] = @truncate(timestamp_ms >> 40);
     bytes[1] = @truncate(timestamp_ms >> 32);
     bytes[2] = @truncate(timestamp_ms >> 24);
     bytes[3] = @truncate(timestamp_ms >> 16);
     bytes[4] = @truncate(timestamp_ms >> 8);
     bytes[5] = @truncate(timestamp_ms);
-    std.crypto.random.bytes(bytes[6..]);
+    runtime.io().random(bytes[6..]);
 
     var encoded: [26]u8 = undefined;
     const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -1262,19 +1311,19 @@ test "frame roundtrip preserves payload" {
     var list: std.ArrayList(u8) = .empty;
     defer list.deinit(allocator);
     const payload = "{\"protocol\":\"file-snitch-agent\"}";
-    try list.writer(allocator).print("{d}:{s}\n", .{ payload.len, payload });
+    try list.print(allocator, "{d}:{s}\n", .{ payload.len, payload });
 
-    var stream = std.io.fixedBufferStream(list.items);
-    const decoded = try readFrameFromReaderAlloc(allocator, stream.reader());
+    var reader: std.Io.Reader = .fixed(list.items);
+    const decoded = try readFrameFromReaderAlloc(allocator, &reader);
     defer allocator.free(decoded);
     try std.testing.expectEqualStrings(payload, decoded);
 }
 
-fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: anytype) ![]u8 {
+fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     var length_buffer: [max_length_digits]u8 = undefined;
     var length_len: usize = 0;
     while (true) {
-        const next = try reader.readByte();
+        const next = try reader.takeByte();
         if (next == ':') break;
         if (next < '0' or next > '9') return error.InvalidFrame;
         if (length_len >= max_length_digits) return error.InvalidFrame;
@@ -1286,8 +1335,8 @@ fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: anytype) ![]u8
     const payload_len = try std.fmt.parseInt(usize, length_buffer[0..length_len], 10);
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
-    try reader.readNoEof(payload);
-    if (try reader.readByte() != '\n') return error.InvalidFrame;
+    try reader.readSliceAll(payload);
+    if (try reader.takeByte() != '\n') return error.InvalidFrame;
     return payload;
 }
 
@@ -1372,40 +1421,52 @@ test "parse macos ui response accepts known values" {
 }
 
 test "parse linux ui response accepts known exit codes" {
-    try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .Exited = 0 }, "Allow once")).decision);
-    try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .Exited = 1 }, "")).decision);
-    try std.testing.expectEqual(prompt.Decision.timeout, (try parseLinuxUiResponse(.{ .Exited = 5 }, "")).decision);
-    const remembered = try parseLinuxUiResponse(.{ .Exited = 0 }, "Always deny");
+    try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .exited = 0 }, "Allow once")).decision);
+    try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .exited = 1 }, "")).decision);
+    try std.testing.expectEqual(prompt.Decision.timeout, (try parseLinuxUiResponse(.{ .exited = 5 }, "")).decision);
+    const remembered = try parseLinuxUiResponse(.{ .exited = 0 }, "Always deny");
     try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
     try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
 }
 
 test "stale socket cleanup rejects regular files" {
     const allocator = std.testing.allocator;
-    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{std.time.nanoTimestamp()});
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{runtime.nanoTimestamp()});
     defer allocator.free(path);
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    file.close();
+    const file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, .{ .truncate = true });
+    file.close(runtime.io());
 
     try std.testing.expectError(error.InvalidSocketPath, removeSocketFileIfStale(path));
 }
 
 test "stale socket cleanup preserves live sockets" {
     const allocator = std.testing.allocator;
-    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{std.time.nanoTimestamp()});
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{runtime.nanoTimestamp()});
     defer allocator.free(path);
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
 
-    const address = try net.Address.initUnix(path);
-    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
-    defer std.posix.close(listener);
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 1);
+    const address = try net.UnixAddress.init(path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
+    defer server.deinit(runtime.io());
 
     try std.testing.expectError(error.SocketPathInUse, removeSocketFileIfStale(path));
-    _ = try std.fs.cwd().statFile(path);
+    _ = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
+}
+
+test "stale socket cleanup removes dead sockets" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-dead-socket-{d}.sock", .{runtime.nanoTimestamp()});
+    defer allocator.free(path);
+    defer std.Io.Dir.cwd().deleteFile(runtime.io(), path) catch {};
+
+    const address = try net.UnixAddress.init(path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
+    server.deinit(runtime.io());
+
+    try removeSocketFileIfStale(path);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(runtime.io(), path, .{}));
 }
 
 test "agent socket parent directory is created private" {
@@ -1417,9 +1478,9 @@ test "agent socket parent directory is created private" {
     try ensureParentDirectory(socket_path);
 
     const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
-    const stat = try std.posix.fstatat(std.posix.AT.FDCWD, parent_dir, 0);
-    try std.testing.expectEqual(std.posix.getuid(), stat.uid);
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), stat.mode & 0o777);
+    const stat = try statPath(parent_dir);
+    try std.testing.expectEqual(c.getuid(), stat.st_uid);
+    try std.testing.expectEqual(@as(c.mode_t, 0o700), stat.st_mode & 0o777);
 }
 
 test "agent socket parent directory rejects shared permissions" {
@@ -1429,8 +1490,8 @@ test "agent socket parent directory rejects shared permissions" {
     defer deleteParentDirectory(socket_path);
 
     const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
-    try std.posix.mkdir(parent_dir, 0o700);
-    try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o755, 0);
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), parent_dir);
+    try chmodPath(parent_dir, 0o755);
 
     try std.testing.expectError(error.InvalidSocketPath, ensureParentDirectory(socket_path));
 }
@@ -1449,7 +1510,7 @@ fn resolveBlockingFrontend(raw_context: ?*anyopaque, request: prompt.Request) pr
     if (call_index == 0) {
         blocking_context.first_started.store(true, .release);
         while (!blocking_context.release_first.load(.acquire)) {
-            std.Thread.sleep(5 * std.time.ns_per_ms);
+            std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
         }
     }
     return .{ .decision = .allow, .remember_kind = .once };
@@ -1488,17 +1549,13 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
     try ensureParentDirectory(service_context.socket_path);
     try removeSocketFileIfStale(service_context.socket_path);
 
-    const address = try net.Address.initUnix(service_context.socket_path);
-    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
-    defer std.posix.close(listener);
+    const address = try net.UnixAddress.init(service_context.socket_path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
+    defer server.deinit(runtime.io());
     defer removeStaleSocketFile(service_context.socket_path) catch {};
 
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 16);
-
-    const first_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
-    var first_stream: net.Stream = .{ .handle = first_accepted };
-    errdefer first_stream.close();
+    const first_stream = try server.accept(runtime.io());
+    errdefer first_stream.close(runtime.io());
     try assertSameUidPeer(first_stream);
     const first_worker_context = try service_context.allocator.create(ConnectionWorkerContext);
     errdefer service_context.allocator.destroy(first_worker_context);
@@ -1510,9 +1567,8 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
     const first_worker = try std.Thread.spawn(.{}, runTestConnectionWorker, .{first_worker_context});
     defer first_worker.join();
 
-    const second_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
-    var second_stream: net.Stream = .{ .handle = second_accepted };
-    defer second_stream.close();
+    const second_stream = try server.accept(runtime.io());
+    defer second_stream.close(runtime.io());
     try assertSameUidPeer(second_stream);
     try handleConnection(service_context, second_stream);
 }
@@ -1520,25 +1576,25 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
 fn waitForPathToExist(path: []const u8) !void {
     var attempts: usize = 0;
     while (attempts < 200) : (attempts += 1) {
-        if (std.fs.cwd().statFile(path)) |_| return else |_| {}
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        if (std.Io.Dir.cwd().statFile(runtime.io(), path, .{})) |_| return else |_| {}
+        std.Io.sleep(runtime.io(), .fromMilliseconds(10), .awake) catch {};
     }
     return error.FileNotFound;
 }
 
 fn tempAgentSocketPathAlloc(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
-    const parent_dir = try std.fmt.allocPrint(allocator, "/tmp/{s}-{d}", .{ prefix, std.time.nanoTimestamp() });
+    const parent_dir = try std.fmt.allocPrint(allocator, "/tmp/{s}-{d}", .{ prefix, runtime.nanoTimestamp() });
     defer allocator.free(parent_dir);
     return std.fs.path.join(allocator, &.{ parent_dir, "agent.sock" });
 }
 
 fn deleteParentDirectory(path: []const u8) void {
     const parent_dir = std.fs.path.dirname(path) orelse return;
-    std.fs.deleteTreeAbsolute(parent_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(runtime.io(), parent_dir) catch {};
 }
 
 test "decideFromFrame returns an owned request id" {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1578,17 +1634,13 @@ fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
     try ensureParentDirectory(context.socket_path);
     try removeSocketFileIfStale(context.socket_path);
 
-    const address = try net.Address.initUnix(context.socket_path);
-    const listener = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
-    defer std.posix.close(listener);
+    const address = try net.UnixAddress.init(context.socket_path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
+    defer server.deinit(runtime.io());
     defer removeStaleSocketFile(context.socket_path) catch {};
 
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 1);
-
-    const accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
-    var stream: net.Stream = .{ .handle = accepted };
-    defer stream.close();
+    const stream = try server.accept(runtime.io());
+    defer stream.close(runtime.io());
     try assertSameUidPeer(stream);
     try handleConnection(context.service_context, stream);
 }
@@ -1629,7 +1681,8 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
     const server_thread = try std.Thread.spawn(.{}, runDelayedDecisionServerThread, .{server_context});
     try waitForPathToExist(socket_path);
 
-    var client_stream = try net.connectUnixSocket(socket_path);
+    const client_address = try net.UnixAddress.init(socket_path);
+    var client_stream = try client_address.connect(runtime.io());
 
     const hello_frame = try readFrameAlloc(allocator, client_stream, 1_000);
     defer allocator.free(hello_frame);
@@ -1650,11 +1703,11 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         .executable_path = "/bin/cat",
     };
     try sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?, "2026-04-10T12:00:00Z");
-    client_stream.close();
+    client_stream.close(runtime.io());
 
     var wait_attempts: usize = 0;
     while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
     }
     try std.testing.expect(blocking_context.first_started.load(.acquire));
 
@@ -1691,7 +1744,7 @@ test "agent accepts later connections while one prompt is blocked" {
         .service_context = service_context,
     };
 
-    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{std.time.nanoTimestamp()});
+    const policy_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.yml", .{runtime.nanoTimestamp()});
     defer allocator.free(policy_path);
     const first_done = try allocator.create(std.atomic.Value(bool));
     defer allocator.destroy(first_done);
@@ -1731,7 +1784,7 @@ test "agent accepts later connections while one prompt is blocked" {
 
     var wait_attempts: usize = 0;
     while (!blocking_context.first_started.load(.acquire) and wait_attempts < 200) : (wait_attempts += 1) {
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
     }
     try std.testing.expect(blocking_context.first_started.load(.acquire));
 
@@ -1745,7 +1798,7 @@ test "agent accepts later connections while one prompt is blocked" {
             second_completed = true;
             break;
         }
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake) catch {};
     }
     try std.testing.expect(second_completed);
 

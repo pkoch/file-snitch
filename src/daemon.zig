@@ -3,15 +3,11 @@ const filesystem = @import("filesystem.zig");
 const fuse = @import("fuse/shim.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const runtime = @import("runtime.zig");
 const store = @import("store.zig");
 const builtin = @import("builtin");
 
-const c = if (builtin.os.tag == .macos)
-    @cImport({
-        @cInclude("libproc.h");
-    })
-else
-    struct {};
+extern "c" fn proc_pidpath(pid: c_int, buffer: *anyopaque, buffersize: u32) c_int;
 
 pub const EnrolledParentConfig = struct {
     mount_path: []const u8,
@@ -25,8 +21,8 @@ pub const EnrolledParentConfig = struct {
     // into the policy engine.
     policy_rule_views: []const policy.RuleView = &.{},
     prompt_broker: ?prompt.Broker = null,
-    status_output_file: ?std.fs.File = null,
-    audit_output_file: ?std.fs.File = null,
+    status_output_file: ?std.Io.File = null,
+    audit_output_file: ?std.Io.File = null,
 };
 
 pub const Description = struct {
@@ -137,7 +133,7 @@ const DirectoryEntryEmitContext = struct {
 
 const DirectoryEntryCollectContext = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged([]const u8) = .{},
+    entries: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn deinit(self: *DirectoryEntryCollectContext) void {
         for (self.entries.items) |entry| {
@@ -194,16 +190,16 @@ pub const Session = struct {
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
-            .source_dir_fd = state.filesystem.source_dir.?.fd,
+            .source_dir_fd = state.filesystem.source_dir.?.handle,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
         });
         errdefer fuse.destroySession(handle);
 
-        const runtime = try fuse.describeSession(handle);
+        const fuse_runtime = try fuse.describeSession(handle);
         state.filesystem.setRuntimeStats(.{
-            .configured_operation_count = runtime.configured_operation_count,
-            .planned_argument_count = runtime.planned_argument_count,
+            .configured_operation_count = fuse_runtime.configured_operation_count,
+            .planned_argument_count = fuse_runtime.planned_argument_count,
         });
 
         return .{
@@ -220,18 +216,18 @@ pub const Session = struct {
     }
 
     pub fn describe(self: Session) !Description {
-        const runtime = try fuse.describeSession(self.handle);
+        const fuse_runtime = try fuse.describeSession(self.handle);
         return .{
-            .backend_name = runtime.backend_name,
+            .backend_name = fuse_runtime.backend_name,
             .mount_path = self.state.filesystem.mount_path,
-            .high_level_ops_size = runtime.high_level_ops_size,
-            .configured_operation_count = runtime.configured_operation_count,
-            .planned_argument_count = runtime.planned_argument_count,
-            .mount_implemented = runtime.mount_implemented,
-            .has_session_state = runtime.has_session_state,
-            .has_daemon_state = runtime.has_daemon_state,
-            .has_init_callback = runtime.has_init_callback,
-            .run_in_foreground = runtime.run_in_foreground,
+            .high_level_ops_size = fuse_runtime.high_level_ops_size,
+            .configured_operation_count = fuse_runtime.configured_operation_count,
+            .planned_argument_count = fuse_runtime.planned_argument_count,
+            .mount_implemented = fuse_runtime.mount_implemented,
+            .has_session_state = fuse_runtime.has_session_state,
+            .has_daemon_state = fuse_runtime.has_daemon_state,
+            .has_init_callback = fuse_runtime.has_init_callback,
+            .run_in_foreground = fuse_runtime.run_in_foreground,
             .default_mutation_outcome = self.state.filesystem.defaultMutationOutcome(),
         };
     }
@@ -436,8 +432,8 @@ pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentC
 }
 
 fn ensureDirectory(path: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(path, .{});
-    dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(runtime.io(), path, .{});
+    dir.close(runtime.io());
 }
 
 fn requireState(opaque_state: ?*anyopaque) ?*State {
@@ -496,7 +492,7 @@ fn resolveExecutablePath(allocator: std.mem.Allocator, pid: u32) !?[]u8 {
 
 fn resolveExecutablePathMacos(allocator: std.mem.Allocator, pid: u32) !?[]u8 {
     var buffer: [std.posix.PATH_MAX]u8 = undefined;
-    const result = c.proc_pidpath(@intCast(pid), &buffer, buffer.len);
+    const result = proc_pidpath(@intCast(pid), &buffer, buffer.len);
     if (result <= 0) {
         return null;
     }
@@ -508,8 +504,11 @@ fn resolveExecutablePathLinux(allocator: std.mem.Allocator, pid: u32) !?[]u8 {
     defer allocator.free(link_path);
 
     var buffer: [std.posix.PATH_MAX]u8 = undefined;
-    const target = std.posix.readlink(link_path, &buffer) catch return null;
-    return try allocator.dupe(u8, target);
+    const link_path_z = try allocator.dupeZ(u8, link_path);
+    defer allocator.free(link_path_z);
+    const target_len = std.c.readlink(link_path_z.ptr, &buffer, buffer.len);
+    if (target_len < 0) return null;
+    return try allocator.dupe(u8, buffer[0..@intCast(target_len)]);
 }
 
 fn fileRequestFromRaw(raw_file_info: ?*const RawFileInfo) ?filesystem.FileRequestInfo {
