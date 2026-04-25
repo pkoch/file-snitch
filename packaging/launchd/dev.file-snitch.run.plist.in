@@ -13,6 +13,12 @@
       <string>prompt</string>
     </array>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>FILE_SNITCH_PASS_BIN</key>
+      <string>{{PASS_BIN}}</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

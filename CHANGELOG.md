@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Changed per-user service installation to pin the `pass` binary path in the
+  run service environment.
+
+### Fixed
+
+- Fixed enrollment on macOS so a stale LaunchAgent that cannot find `pass`
+  fails before moving the target file into guarded storage.
+- Reported stale macOS run services that cannot find `pass` in `doctor`.
+
 ## [0.2.3] - 2026-04-25
 
 ### Changed

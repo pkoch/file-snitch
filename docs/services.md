@@ -7,13 +7,18 @@ File Snitch now has real per-user service install helpers:
 Render the service files without installing them:
 
 ```bash
-./scripts/services/render-user-services.sh --bin "$(command -v file-snitch)" --output-dir ./out
+./scripts/services/render-user-services.sh \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)" \
+  --output-dir ./out
 ```
 
 Install the default service set for the current platform:
 
 ```bash
-./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
 ```
 
 Remove them again:
@@ -41,7 +46,10 @@ Templates:
 Install it with:
 
 ```bash
-./scripts/services/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh \
+  --platform linux \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
 ```
 
 Then inspect it with:
@@ -62,7 +70,10 @@ Templates:
 Install them with:
 
 ```bash
-./scripts/services/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh \
+  --platform macos \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
 ```
 
 Then inspect it with:
@@ -75,6 +86,9 @@ launchctl print gui/$(id -u)/dev.file-snitch.run
 ## Notes
 
 - The install helper resolves and embeds an absolute `file-snitch` binary path.
+- The install helper resolves and embeds an absolute `pass` binary path into
+  the run service so launchd/systemd do not depend on an interactive shell
+  `PATH`.
 - Both examples assume the default policy path:
   `~/.config/file-snitch/policy.yml`
 - Rendered macOS plists log to `~/.local/state/file-snitch/log/`.

@@ -80,7 +80,7 @@ If you want to install and try it on a real machine:
 
 If you want per-user services:
 - [services.md](./services.md)
-- `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)"`
+- `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
 
 ## If Something Goes Wrong
 

@@ -18,6 +18,8 @@ pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path
     var guarded_store = try store.Backend.initPass(allocator);
     defer guarded_store.deinit(allocator);
 
+    try ensureProjectionServiceCanLoadPass(allocator);
+
     if (loaded_policy.findEnrollmentIndex(target_path) != null) {
         std.debug.print("error: already enrolled: {s}\n", .{target_path});
         return error.InvalidUsage;
@@ -165,17 +167,15 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
     try report_writer.print("store_limit: pass JSON/base64 payload <= {s}\n", .{store.pass_payload_limit_label});
     try appendFuseReport(report_writer, &has_errors);
 
-    if (loaded_policy.enrollments.len != 0) {
-        const pass_command = try detectPassCommandAlloc(allocator);
-        defer allocator.free(pass_command);
-        if (try passBackendIsUsable(allocator, pass_command)) {
-            try report_writer.print("ok: pass backend is usable: {s}\n", .{pass_command});
-        } else {
-            has_errors = true;
-            try report_writer.print("error: pass backend is not usable: {s}\n", .{pass_command});
-            try report_writer.writeAll("hint: run `pass ls` and fix the reported issue before trying File Snitch again\n");
-            try report_writer.writeAll("hint: check that GPG works for this shell and that GNUPGHOME points at a usable keyring\n");
-        }
+    const pass_command = try detectPassCommandAlloc(allocator);
+    defer allocator.free(pass_command);
+    if (try passBackendIsUsable(allocator, pass_command)) {
+        try report_writer.print("ok: pass backend is usable: {s}\n", .{pass_command});
+    } else {
+        has_errors = true;
+        try report_writer.print("error: pass backend is not usable: {s}\n", .{pass_command});
+        try report_writer.writeAll("hint: run `pass ls` and fix the reported issue before trying File Snitch again\n");
+        try report_writer.writeAll("hint: check that GPG works for this shell and that GNUPGHOME points at a usable keyring\n");
     }
 
     const agent_socket_exists = enrollment.pathExists(agent_socket_path) catch |err| blk: {
@@ -207,6 +207,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             defer allocator.free(run_service_path);
             try appendServicePathReport(report_writer, &has_errors, "launchd agent", agent_service_path);
             try appendServicePathReport(report_writer, &has_errors, "launchd run", run_service_path);
+            try appendMacosRunServicePassReport(allocator, report_writer, &has_errors, run_service_path);
         },
         .linux => {
             const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.zenity_bin_env, "zenity");
@@ -558,6 +559,145 @@ fn commandExists(allocator: std.mem.Allocator, command: []const u8) !bool {
     };
 }
 
+fn commandExistsInPath(allocator: std.mem.Allocator, command: []const u8, path: []const u8) !bool {
+    const result = std.process.run(allocator, runtime.io(), .{
+        .argv = &.{ "sh", "-lc", "PATH=\"$2\"; command -v \"$1\" >/dev/null 2>&1", "sh", command, path },
+        .stdout_limit = .limited(1),
+        .stderr_limit = .limited(1),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+const launchd_default_path = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+const ServicePassProbe = struct {
+    command: []u8,
+    available: bool,
+    source: []const u8,
+
+    fn deinit(self: *ServicePassProbe, allocator: std.mem.Allocator) void {
+        allocator.free(self.command);
+        self.* = undefined;
+    }
+};
+
+fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .macos) return;
+
+    const home_dir = try enrollment.currentUserHomeAlloc(allocator);
+    defer allocator.free(home_dir);
+    const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
+    defer allocator.free(run_service_path);
+
+    const service_exists = enrollment.pathExists(run_service_path) catch |err| {
+        std.debug.print("error: launchd run service file could not be inspected: {s}: {}\n", .{ run_service_path, err });
+        return error.InvalidUsage;
+    };
+    if (!service_exists) return;
+
+    var probe = try macosRunServicePassProbeAlloc(allocator, run_service_path);
+    defer probe.deinit(allocator);
+    if (probe.available) return;
+
+    std.debug.print(
+        "error: launchd run service cannot find `pass` in its configured environment: {s}\n",
+        .{probe.command},
+    );
+    std.debug.print("hint: enrollment was aborted before moving the file into the guarded store\n", .{});
+    std.debug.print(
+        "hint: reinstall the service with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
+        .{},
+    );
+    std.debug.print("hint: or set FILE_SNITCH_PASS_BIN in {s}\n", .{run_service_path});
+    return error.InvalidUsage;
+}
+
+fn appendMacosRunServicePassReport(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    has_errors: *bool,
+    run_service_path: []const u8,
+) !void {
+    const service_exists = enrollment.pathExists(run_service_path) catch |err| {
+        has_errors.* = true;
+        try writer.print("error: launchd run service file could not be inspected for pass access: {s}: {}\n", .{ run_service_path, err });
+        return;
+    };
+    if (!service_exists) return;
+
+    var probe = try macosRunServicePassProbeAlloc(allocator, run_service_path);
+    defer probe.deinit(allocator);
+
+    if (probe.available) {
+        try writer.print(
+            "ok: launchd run service pass backend is available via {s}: {s}\n",
+            .{ probe.source, probe.command },
+        );
+        return;
+    }
+
+    has_errors.* = true;
+    try writer.print(
+        "error: launchd run service cannot find `pass` via {s}: {s}\n",
+        .{ probe.source, probe.command },
+    );
+    try writer.writeAll("hint: the run service uses launchd's restricted environment, not your interactive shell PATH\n");
+    try writer.writeAll("hint: reinstall the services with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+    try writer.print("hint: or set FILE_SNITCH_PASS_BIN in {s}\n", .{run_service_path});
+}
+
+fn macosRunServicePassProbeAlloc(allocator: std.mem.Allocator, run_service_path: []const u8) !ServicePassProbe {
+    const contents = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), run_service_path, allocator, .limited(64 * 1024));
+    defer allocator.free(contents);
+
+    if (try plistStringValueAlloc(allocator, contents, defaults.pass_bin_env)) |command| {
+        errdefer allocator.free(command);
+        const available = if (std.fs.path.isAbsolute(command))
+            try commandExists(allocator, command)
+        else blk: {
+            const service_path = (try plistStringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+            defer allocator.free(service_path);
+            break :blk try commandExistsInPath(allocator, command, service_path);
+        };
+        return .{
+            .command = command,
+            .available = available,
+            .source = defaults.pass_bin_env,
+        };
+    }
+
+    const service_path = (try plistStringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+    defer allocator.free(service_path);
+    return .{
+        .command = try allocator.dupe(u8, "pass"),
+        .available = try commandExistsInPath(allocator, "pass", service_path),
+        .source = if (std.mem.eql(u8, service_path, launchd_default_path)) "launchd default PATH" else "launchd PATH",
+    };
+}
+
+fn plistStringValueAlloc(allocator: std.mem.Allocator, contents: []const u8, key: []const u8) !?[]u8 {
+    const key_tag = try std.fmt.allocPrint(allocator, "<key>{s}</key>", .{key});
+    defer allocator.free(key_tag);
+    const key_index = std.mem.indexOf(u8, contents, key_tag) orelse return null;
+    const after_key = contents[key_index + key_tag.len ..];
+    const open_tag = "<string>";
+    const close_tag = "</string>";
+    const open_index = std.mem.indexOf(u8, after_key, open_tag) orelse return null;
+    const value_start = open_index + open_tag.len;
+    const after_open = after_key[value_start..];
+    const close_index = std.mem.indexOf(u8, after_open, close_tag) orelse return null;
+    return @as(?[]u8, try allocator.dupe(u8, std.mem.trim(u8, after_open[0..close_index], " \t\r\n")));
+}
+
 fn backendName(guarded_store: ?*store.Backend) []const u8 {
     if (guarded_store) |value| return value.name();
     return "none";
@@ -601,7 +741,7 @@ fn appendServicePathReport(
         try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
     } else {
         try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
-        try writer.writeAll("hint: run `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\"`\n");
+        try writer.writeAll("hint: run `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
     }
 }
 

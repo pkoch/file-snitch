@@ -5,16 +5,19 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 platform=""
 bin_path="file-snitch"
+pass_bin_path=""
 
 usage() {
   cat <<'EOF'
 usage:
-  ./scripts/services/install-user-services.sh [--platform <macos|linux>] [--bin <path>]
+  ./scripts/services/install-user-services.sh [--platform <macos|linux>] [--bin <path>] [--pass-bin <path>]
 
 notes:
   - macOS installs and starts both the `agent` and `run` LaunchAgents
   - Linux installs and starts both `file-snitch-agent.service` and
     `file-snitch-run.service`
+  - the pass binary path is embedded into the run service; defaults to
+    FILE_SNITCH_PASS_BIN or `command -v pass`
 EOF
 }
 
@@ -43,6 +46,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || fail "missing value for --bin"
       bin_path="$1"
       ;;
+    --pass-bin)
+      shift
+      [[ $# -gt 0 ]] || fail "missing value for --pass-bin"
+      pass_bin_path="$1"
+      ;;
     --help|-h)
       usage
       exit 0
@@ -68,10 +76,12 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    "$repo_root/scripts/services/render-user-services.sh" \
-      --platform macos \
-      --bin "$bin_path" \
-      --output-dir "$temp_dir"
+    render_args=(--platform macos --bin "$bin_path")
+    if [[ -n "$pass_bin_path" ]]; then
+      render_args+=(--pass-bin "$pass_bin_path")
+    fi
+    render_args+=(--output-dir "$temp_dir")
+    "$repo_root/scripts/services/render-user-services.sh" "${render_args[@]}"
 
     cp "$temp_dir/dev.file-snitch.agent.plist" "$launch_agents_dir/"
     cp "$temp_dir/dev.file-snitch.run.plist" "$launch_agents_dir/"
@@ -98,10 +108,12 @@ case "$platform" in
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
 
-    "$repo_root/scripts/services/render-user-services.sh" \
-      --platform linux \
-      --bin "$bin_path" \
-      --output-dir "$temp_dir"
+    render_args=(--platform linux --bin "$bin_path")
+    if [[ -n "$pass_bin_path" ]]; then
+      render_args+=(--pass-bin "$pass_bin_path")
+    fi
+    render_args+=(--output-dir "$temp_dir")
+    "$repo_root/scripts/services/render-user-services.sh" "${render_args[@]}"
 
     cp "$temp_dir/file-snitch-agent.service" "$unit_dir/"
     cp "$temp_dir/file-snitch-run.service" "$unit_dir/"

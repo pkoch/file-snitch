@@ -94,6 +94,18 @@ file-snitch doctor
 If `pass` cannot decrypt its store, File Snitch cannot load guarded objects
 either.
 
+When using the per-user service, `doctor` also checks whether the run service
+can find `pass` from its own service environment. On macOS this is especially
+important because launchd does not inherit your interactive shell `PATH`; if
+Homebrew installed `pass` under `/opt/homebrew/bin`, reinstall the services
+with:
+
+```bash
+./scripts/services/install-user-services.sh \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
+```
+
 File Snitch currently captures each stored `pass:file-snitch/<object_id>` entry
 as one JSON/base64 payload capped at 1 MiB. If a guarded object exceeds that
 serialized payload limit, File Snitch reports the limit explicitly. The limit is

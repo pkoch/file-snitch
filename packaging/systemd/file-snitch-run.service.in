@@ -5,6 +5,7 @@ After=default.target
 
 [Service]
 Type=simple
+Environment=FILE_SNITCH_PASS_BIN={{PASS_BIN}}
 ExecStart={{FILE_SNITCH_BIN}} run prompt
 Restart=on-failure
 RestartSec=2

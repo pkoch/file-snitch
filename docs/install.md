@@ -177,13 +177,19 @@ Per-user service installation now has real helper scripts:
 macOS first-class path:
 
 ```bash
-./scripts/services/install-user-services.sh --platform macos --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh \
+  --platform macos \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
 ```
 
 Linux first-class path:
 
 ```bash
-./scripts/services/install-user-services.sh --platform linux --bin "$(command -v file-snitch)"
+./scripts/services/install-user-services.sh \
+  --platform linux \
+  --bin "$(command -v file-snitch)" \
+  --pass-bin "$(command -v pass)"
 ```
 
 That installs:
