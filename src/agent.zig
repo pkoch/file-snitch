@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const net = std.net;
 const app_meta = @import("app_meta.zig");
 const config = @import("config.zig");
@@ -6,7 +7,14 @@ const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
 const c = @cImport({
+    @cDefine("_GNU_SOURCE", "1");
     @cInclude("stdlib.h");
+    @cInclude("sys/socket.h");
+    @cInclude("sys/types.h");
+    @cInclude("sys/un.h");
+    if (builtin.os.tag == .macos) {
+        @cInclude("sys/ucred.h");
+    }
     @cInclude("unistd.h");
 });
 
@@ -67,6 +75,7 @@ pub const AgentServiceContext = struct {
 pub const SocketPathError = error{
     SocketPathInUse,
     InvalidSocketPath,
+    UnauthorizedPeer,
 };
 
 const ConnectionWorkerContext = struct {
@@ -171,6 +180,11 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
             else => return err,
         };
         var stream: net.Stream = .{ .handle = accepted };
+        assertSameUidPeer(stream) catch |err| {
+            stream.close();
+            std.log.warn("agent rejected socket peer: {}", .{err});
+            continue;
+        };
         if (!context.frontend.supports_concurrent_requests) {
             // GUI frontends shell out to helper processes. On Linux, doing that
             // from a worker thread would fork a multithreaded process.
@@ -219,6 +233,7 @@ fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Respo
 fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.Response {
     var stream = try net.connectUnixSocket(context.socket_path);
     defer stream.close();
+    try assertSameUidPeer(stream);
 
     const hello_frame = try readFrameAlloc(context.allocator, stream, context.timeout_ms);
     defer context.allocator.free(hello_frame);
@@ -945,7 +960,75 @@ fn waitReadable(fd: std.posix.fd_t, timeout_ms: ?u32) !void {
 
 fn ensureParentDirectory(path: []const u8) !void {
     const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent_dir);
+    if (std.fs.cwd().statFile(parent_dir)) |_| {
+        if (std.mem.eql(u8, std.fs.path.basename(parent_dir), "file-snitch")) {
+            try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o700, 0);
+        }
+        try validatePrivateDirectory(parent_dir);
+        return;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    const grandparent_dir = std.fs.path.dirname(parent_dir) orelse return error.InvalidPath;
+    try std.fs.cwd().makePath(grandparent_dir);
+    std.posix.mkdir(parent_dir, 0o700) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o700, 0);
+    try validatePrivateDirectory(parent_dir);
+}
+
+fn validatePrivateDirectory(path: []const u8) !void {
+    const file_stat = try std.fs.cwd().statFile(path);
+    if (file_stat.kind != .directory) return error.InvalidSocketPath;
+
+    const posix_stat = try std.posix.fstatat(std.posix.AT.FDCWD, path, 0);
+    if (posix_stat.uid != std.posix.getuid()) return error.InvalidSocketPath;
+    if ((posix_stat.mode & 0o777) != 0o700) return error.InvalidSocketPath;
+}
+
+fn assertSameUidPeer(stream: net.Stream) !void {
+    const peer_uid = try peerUid(stream.handle);
+    if (peer_uid != std.posix.getuid()) return error.UnauthorizedPeer;
+}
+
+fn peerUid(fd: std.posix.fd_t) !std.posix.uid_t {
+    return switch (builtin.os.tag) {
+        .linux => peerUidLinux(fd),
+        .macos => peerUidMacos(fd),
+        else => error.InvalidSocketPath,
+    };
+}
+
+fn peerUidLinux(fd: std.posix.fd_t) !std.posix.uid_t {
+    var credential: c.struct_ucred = undefined;
+    var credential_len: c.socklen_t = @sizeOf(c.struct_ucred);
+    if (c.getsockopt(
+        fd,
+        c.SOL_SOCKET,
+        c.SO_PEERCRED,
+        &credential,
+        &credential_len,
+    ) != 0) return error.InvalidSocketPath;
+    if (credential_len < @sizeOf(c.struct_ucred)) return error.InvalidSocketPath;
+    return @intCast(credential.uid);
+}
+
+fn peerUidMacos(fd: std.posix.fd_t) !std.posix.uid_t {
+    var credential: c.struct_xucred = undefined;
+    var credential_len: c.socklen_t = @sizeOf(c.struct_xucred);
+    if (c.getsockopt(
+        fd,
+        c.SOL_LOCAL,
+        c.LOCAL_PEERCRED,
+        &credential,
+        &credential_len,
+    ) != 0) return error.InvalidSocketPath;
+    if (credential_len < @sizeOf(c.struct_xucred)) return error.InvalidSocketPath;
+    return @intCast(credential.cr_uid);
 }
 
 fn removeSocketFileIfStale(path: []const u8) !void {
@@ -1325,6 +1408,33 @@ test "stale socket cleanup preserves live sockets" {
     _ = try std.fs.cwd().statFile(path);
 }
 
+test "agent socket parent directory is created private" {
+    const allocator = std.testing.allocator;
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-private-parent");
+    defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
+
+    try ensureParentDirectory(socket_path);
+
+    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
+    const stat = try std.posix.fstatat(std.posix.AT.FDCWD, parent_dir, 0);
+    try std.testing.expectEqual(std.posix.getuid(), stat.uid);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), stat.mode & 0o777);
+}
+
+test "agent socket parent directory rejects shared permissions" {
+    const allocator = std.testing.allocator;
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-shared-parent");
+    defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
+
+    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
+    try std.posix.mkdir(parent_dir, 0o700);
+    try std.posix.fchmodat(std.posix.AT.FDCWD, parent_dir, 0o755, 0);
+
+    try std.testing.expectError(error.InvalidSocketPath, ensureParentDirectory(socket_path));
+}
+
 const BlockingFrontendContext = struct {
     first_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     release_first: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1387,12 +1497,15 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
     try std.posix.listen(listener, 16);
 
     const first_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
+    var first_stream: net.Stream = .{ .handle = first_accepted };
+    errdefer first_stream.close();
+    try assertSameUidPeer(first_stream);
     const first_worker_context = try service_context.allocator.create(ConnectionWorkerContext);
     errdefer service_context.allocator.destroy(first_worker_context);
     first_worker_context.* = .{
         .allocator = service_context.allocator,
         .service_context = service_context,
-        .stream = .{ .handle = first_accepted },
+        .stream = first_stream,
     };
     const first_worker = try std.Thread.spawn(.{}, runTestConnectionWorker, .{first_worker_context});
     defer first_worker.join();
@@ -1400,6 +1513,7 @@ fn runTestAgentService(context: *TestAgentServiceContext) !void {
     const second_accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
     var second_stream: net.Stream = .{ .handle = second_accepted };
     defer second_stream.close();
+    try assertSameUidPeer(second_stream);
     try handleConnection(service_context, second_stream);
 }
 
@@ -1410,6 +1524,17 @@ fn waitForPathToExist(path: []const u8) !void {
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
     return error.FileNotFound;
+}
+
+fn tempAgentSocketPathAlloc(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
+    const parent_dir = try std.fmt.allocPrint(allocator, "/tmp/{s}-{d}", .{ prefix, std.time.nanoTimestamp() });
+    defer allocator.free(parent_dir);
+    return std.fs.path.join(allocator, &.{ parent_dir, "agent.sock" });
+}
+
+fn deleteParentDirectory(path: []const u8) void {
+    const parent_dir = std.fs.path.dirname(path) orelse return;
+    std.fs.deleteTreeAbsolute(parent_dir) catch {};
 }
 
 test "decideFromFrame returns an owned request id" {
@@ -1464,13 +1589,15 @@ fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
     const accepted = try std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC);
     var stream: net.Stream = .{ .handle = accepted };
     defer stream.close();
+    try assertSameUidPeer(stream);
     try handleConnection(context.service_context, stream);
 }
 
 test "handleConnection ignores requester disconnect after prompt timeout" {
     const allocator = std.testing.allocator;
-    const socket_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-disconnect-{d}.sock", .{std.time.nanoTimestamp()});
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-disconnect");
     defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
 
     const blocking_context = try allocator.create(BlockingFrontendContext);
     defer allocator.destroy(blocking_context);
@@ -1539,8 +1666,9 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
 
 test "agent accepts later connections while one prompt is blocked" {
     const allocator = std.testing.allocator;
-    const socket_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-concurrency-{d}.sock", .{std.time.nanoTimestamp()});
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-concurrency");
     defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
 
     const blocking_context = try allocator.create(BlockingFrontendContext);
     defer allocator.destroy(blocking_context);
