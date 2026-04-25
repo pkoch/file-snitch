@@ -315,6 +315,8 @@ Prompt notes:
 - `readonly` still allows reads and denies mutations
 - the current `terminal-pinentry` frontend prints structured prompt JSON before each question and supports once, timed, and durable decisions
 - the current `macos-ui` and `linux-ui` frontends return once, timed, and durable decisions back to the agent
-- prompt timeout defaults to 5 seconds and falls back to deny
-- set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen that timeout during manual testing
+- agent user-interaction timeout defaults to 5 seconds and falls back to deny
+- requester/agent protocol timeout defaults to 1 second and treats a silent peer as unavailable
+- set `FILE_SNITCH_PROMPT_TIMEOUT_MS` to shorten or lengthen the user-interaction timeout during manual testing
+- set `FILE_SNITCH_PROTOCOL_TIMEOUT_MS` to tune local socket liveness checks during protocol testing
 - xattr traffic does not prompt in this mode; xattr mediation is deferred to future work

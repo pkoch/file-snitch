@@ -14,7 +14,7 @@ var supervisor_shutdown_signal = std.atomic.Value(i32).init(0);
 pub const RunCommand = struct {
     policy_path: []const u8,
     default_mutation_outcome: policy.Outcome,
-    prompt_timeout_ms: u32,
+    protocol_timeout_ms: u32,
     status_fifo_path: ?[]const u8 = null,
     mount_path_filter: ?[]const u8 = null,
 
@@ -471,7 +471,7 @@ test "buildMountChildEnv sets mount path and removes status fifo when missing" {
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .deny,
-        .prompt_timeout_ms = 100,
+        .protocol_timeout_ms = 100,
         .status_fifo_path = null,
         .mount_path_filter = null,
     };
@@ -487,7 +487,7 @@ test "buildMountChildEnv propagates status fifo when provided" {
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .allow,
-        .prompt_timeout_ms = 100,
+        .protocol_timeout_ms = 100,
         .status_fifo_path = "/tmp/status.fifo",
         .mount_path_filter = null,
     };
