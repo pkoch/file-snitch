@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 #define FUSE_USE_VERSION 312
 
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fuse.h>
@@ -94,15 +93,15 @@ struct fsn_bridge_lookup {
     uint8_t reserved[2];
 };
 
+typedef int (*fsn_directory_entry_emit_fn)(void *context, const char *name);
+
 extern int fsn_daemon_lookup_path(void *daemon_state, const char *path, struct fsn_bridge_lookup *out);
 extern int fsn_daemon_open_guarded_lock_fd(void *daemon_state, const char *path, int requested_flags);
-extern uint32_t fsn_daemon_directory_entry_count(void *daemon_state, const char *path);
-extern int fsn_daemon_directory_entry_name(
+extern int fsn_daemon_for_each_directory_entry(
     void *daemon_state,
     const char *path,
-    uint32_t index,
-    char *buffer,
-    size_t buffer_size
+    void *context,
+    fsn_directory_entry_emit_fn emit
 );
 extern int fsn_daemon_authorize_open(
     void *daemon_state,
@@ -217,6 +216,13 @@ struct fsn_fuse_session {
     struct fuse_operations operations;
 };
 
+struct fsn_readdir_emit_context {
+    const char *parent_path;
+    void *buf;
+    fuse_fill_dir_t filler;
+    struct fsn_fuse_session *session;
+};
+
 static char *fsn_strdup(const char *value);
 static int fsn_is_root_path(const char *path);
 static int fsn_is_non_root_path(const char *path);
@@ -232,7 +238,6 @@ static int fsn_lookup_path(
     struct fsn_bridge_lookup *out
 );
 static void fsn_fill_stat_from_lookup(const struct fsn_bridge_lookup *lookup, struct stat *stbuf);
-static int fsn_build_virtual_path(const char *name, char *buf, size_t buf_size);
 static int fsn_build_child_virtual_path(
     const char *parent_path,
     const char *name,
@@ -240,6 +245,7 @@ static int fsn_build_child_virtual_path(
     size_t buf_size
 );
 static int fsn_build_relative_path(const char *path, char *buf, size_t buf_size);
+static int fsn_emit_readdir_entry(void *raw_context, const char *name);
 static int fsn_open_passthrough_fd(
     const struct fsn_fuse_session *session,
     const char *path,
@@ -323,11 +329,6 @@ static int fsn_fuse_opendir(const char *path, struct fuse_file_info *fi) {
     return lookup.open_kind == FSN_OPEN_DIRECTORY ? 0 : -ENOENT;
 }
 
-/*
- * Root directory enumeration still lives in the shim. That means
- * opendir/readdir/releasedir are the remaining callbacks where C owns
- * behavior instead of only forwarding libfuse ABI data into Zig.
- */
 static int fsn_fuse_readdir(
     const char *path,
     void *buf,
@@ -341,10 +342,9 @@ static int fsn_fuse_readdir(
 ) {
     struct stat stbuf;
     struct fsn_bridge_lookup directory_lookup;
+    struct fsn_readdir_emit_context emit_context;
     struct fsn_fuse_session *session;
-    uint32_t count;
-    uint32_t index;
-    int real_directory_present = 0;
+    int result;
 
     (void)off;
     (void)fi;
@@ -383,104 +383,54 @@ static int fsn_fuse_readdir(
         return 0;
     }
 
-    session = fuse_get_context()->private_data;
-    {
-        DIR *directory;
-        struct dirent *entry;
-        int directory_fd;
+    emit_context.parent_path = path;
+    emit_context.buf = buf;
+    emit_context.filler = filler;
+    emit_context.session = session;
 
-        if (fsn_is_root_path(path)) {
-            directory_fd = dup(session->source_dir_fd);
-        } else {
-            char relative_path[PATH_MAX];
-
-            if (fsn_build_relative_path(path, relative_path, sizeof(relative_path)) != 0) {
-                return -ENAMETOOLONG;
-            }
-
-            directory_fd = openat(session->source_dir_fd, relative_path, O_RDONLY | O_DIRECTORY);
-        }
-
-        if (directory_fd >= 0) {
-            directory = fdopendir(directory_fd);
-            if (directory == NULL) {
-                close(directory_fd);
-                return -errno;
-            }
-            real_directory_present = 1;
-
-            errno = 0;
-            while ((entry = readdir(directory)) != NULL) {
-                struct fsn_bridge_lookup entry_lookup;
-                char child_path[PATH_MAX];
-
-                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                    continue;
-                }
-
-                if (fsn_build_child_virtual_path(path, entry->d_name, child_path, sizeof(child_path)) != 0) {
-                    closedir(directory);
-                    return -ENAMETOOLONG;
-                }
-
-                if (fsn_lookup_path(session, child_path, &entry_lookup) != 0) {
-                    closedir(directory);
-                    return -EIO;
-                }
-
-                memset(&stbuf, 0, sizeof(stbuf));
-                fsn_fill_stat_from_lookup(&entry_lookup, &stbuf);
-                if (filler(buf, entry->d_name, &stbuf, 0
-#ifdef __linux__
-                    , 0
-#endif
-                ) != 0) {
-                    closedir(directory);
-                    return 0;
-                }
-            }
-
-            if (errno != 0) {
-                int read_errno = errno;
-                closedir(directory);
-                return -read_errno;
-            }
-        } else if (errno != ENOENT) {
-            return -errno;
-        }
-
-        if (real_directory_present) {
-            closedir(directory);
-        }
-    }
-
-    count = fsn_daemon_directory_entry_count(session->daemon_state, path);
-    for (index = 0; index < count; index += 1) {
-        char name[PATH_MAX];
-        struct fsn_bridge_lookup lookup;
-        char virtual_path[PATH_MAX];
-
-        if (fsn_daemon_directory_entry_name(session->daemon_state, path, index, name, sizeof(name)) != 0) {
-            return -EIO;
-        }
-
-        if (fsn_build_child_virtual_path(path, name, virtual_path, sizeof(virtual_path)) != 0) {
-            return -ENAMETOOLONG;
-        }
-
-        if (fsn_lookup_path(session, virtual_path, &lookup) != 0) {
-            return -EIO;
-        }
-
-        memset(&stbuf, 0, sizeof(stbuf));
-        fsn_fill_stat_from_lookup(&lookup, &stbuf);
-        if (filler(buf, name, &stbuf, 0
-#ifdef __linux__
-            , 0
-#endif
-        ) != 0) {
+    result = fsn_daemon_for_each_directory_entry(
+        session->daemon_state,
+        path,
+        &emit_context,
+        fsn_emit_readdir_entry
+    );
+    if (result != 0) {
+        if (result > 0) {
             return 0;
         }
+        return result;
+    }
+
+    return 0;
+}
+
+static int fsn_emit_readdir_entry(void *raw_context, const char *name) {
+    char virtual_path[PATH_MAX];
+    struct fsn_bridge_lookup lookup;
+    struct fsn_readdir_emit_context *context;
+    struct stat stbuf;
+
+    if (raw_context == NULL || name == NULL) {
+        return -EINVAL;
+    }
+
+    context = raw_context;
+    if (fsn_build_child_virtual_path(context->parent_path, name, virtual_path, sizeof(virtual_path)) != 0) {
+        return -ENAMETOOLONG;
+    }
+
+    if (fsn_lookup_path(context->session, virtual_path, &lookup) != 0) {
+        return -EIO;
+    }
+
+    memset(&stbuf, 0, sizeof(stbuf));
+    fsn_fill_stat_from_lookup(&lookup, &stbuf);
+    if (context->filler(context->buf, name, &stbuf, 0
+#ifdef __linux__
+        , 0
+#endif
+    ) != 0) {
+        return 1;
     }
 
     return 0;
@@ -1438,21 +1388,6 @@ static void fsn_fill_stat_from_lookup(const struct fsn_bridge_lookup *lookup, st
     stbuf->st_ino = (ino_t)lookup->inode;
 }
 
-static int fsn_build_virtual_path(const char *name, char *buf, size_t buf_size) {
-    int written;
-
-    if (name == NULL || buf == NULL || buf_size == 0) {
-        return -EINVAL;
-    }
-
-    written = snprintf(buf, buf_size, "/%s", name);
-    if (written < 0 || (size_t)written >= buf_size) {
-        return -ENAMETOOLONG;
-    }
-
-    return 0;
-}
-
 static int fsn_build_child_virtual_path(
     const char *parent_path,
     const char *name,
@@ -1466,10 +1401,10 @@ static int fsn_build_child_virtual_path(
     }
 
     if (fsn_is_root_path(parent_path)) {
-        return fsn_build_virtual_path(name, buf, buf_size);
+        written = snprintf(buf, buf_size, "/%s", name);
+    } else {
+        written = snprintf(buf, buf_size, "%s/%s", parent_path, name);
     }
-
-    written = snprintf(buf, buf_size, "%s/%s", parent_path, name);
     if (written < 0 || (size_t)written >= buf_size) {
         return -ENAMETOOLONG;
     }

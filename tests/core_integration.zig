@@ -113,6 +113,11 @@ fn expectEntriesContain(entries: []const []const u8, expected: []const []const u
     }
 }
 
+fn freeEntries(allocator: std.mem.Allocator, entries: []const []const u8) void {
+    for (entries) |entry| allocator.free(entry);
+    allocator.free(entries);
+}
+
 test "session exercise is covered by core assertions" {
     const allocator = std.testing.allocator;
     var fixture = try Fixture.init(allocator);
@@ -151,10 +156,7 @@ test "session exercise is covered by core assertions" {
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, note.kind);
 
     const entries = try session.rootEntries(allocator);
-    defer {
-        for (entries) |entry| allocator.free(entry);
-        allocator.free(entries);
-    }
+    defer freeEntries(allocator, entries);
     try expectEntriesContain(entries, &.{ seed_name, note_path[1..] });
 
     const seed_content = try session.readPath(allocator, seed_path);
@@ -180,6 +182,58 @@ test "session exercise is covered by core assertions" {
     defer allocator.free(reloaded_note);
     try std.testing.expectEqualStrings("hello from file-snitch\n", reloaded_note);
     try std.testing.expectEqual(@as(usize, 0), session.state.run_attempts);
+}
+
+test "directory entry composition is owned by Zig" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const nested_dir_path = try std.fmt.allocPrint(allocator, "{s}/nested", .{fixture.mount_path});
+    defer allocator.free(nested_dir_path);
+    try std.fs.makeDirAbsolute(nested_dir_path);
+
+    const nested_file_path = try std.fmt.allocPrint(allocator, "{s}/visible.txt", .{nested_dir_path});
+    defer allocator.free(nested_file_path);
+    var nested_file = try std.fs.createFileAbsolute(nested_file_path, .{ .truncate = true });
+    nested_file.close();
+
+    var preseed_store = fixture.guardedStore();
+    try preseed_store.putObject(allocator, "ghost-secret", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "synthetic secret\n",
+    });
+
+    const lock_anchor_path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch.ghost-lock-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(lock_anchor_path);
+    defer std.fs.deleteFileAbsolute(lock_anchor_path) catch {};
+
+    const guarded_entries = &.{filesystem.GuardedEntryConfig{
+        .relative_path = "ghost/secret.txt",
+        .object_id = "ghost-secret",
+        .lock_anchor_path = lock_anchor_path,
+    }};
+
+    var session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{}, null);
+    defer session.deinit();
+
+    const root_entries = try session.rootEntries(allocator);
+    defer freeEntries(allocator, root_entries);
+    try expectEntriesContain(root_entries, &.{ seed_name, "nested", "ghost" });
+
+    const nested_entries = try session.directoryEntries(allocator, "/nested");
+    defer freeEntries(allocator, nested_entries);
+    try expectEntriesContain(nested_entries, &.{"visible.txt"});
+
+    const synthetic_entries = try session.directoryEntries(allocator, "/ghost");
+    defer freeEntries(allocator, synthetic_entries);
+    try expectEntriesContain(synthetic_entries, &.{"secret.txt"});
 }
 
 test "session helper snapshots survive session teardown" {

@@ -127,6 +127,27 @@ pub const RawLock = extern struct {
     len: i64,
 };
 
+const RawDirectoryEntryEmitFn = *const fn (?*anyopaque, [*:0]const u8) callconv(.c) c_int;
+
+const DirectoryEntryEmitContext = struct {
+    raw_context: ?*anyopaque,
+    emit_fn: RawDirectoryEntryEmitFn,
+    result: c_int = 0,
+};
+
+const DirectoryEntryCollectContext = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayListUnmanaged([]const u8) = .{},
+
+    fn deinit(self: *DirectoryEntryCollectContext) void {
+        for (self.entries.items) |entry| {
+            self.allocator.free(entry);
+        }
+        self.entries.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
 const DecodedContext = struct {
     state: *State,
     path: []const u8,
@@ -242,37 +263,15 @@ pub const Session = struct {
     }
 
     pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
-        var real_entries: usize = 0;
-        var dir = self.state.filesystem.source_dir orelse return error.Unexpected;
-        var iterator = dir.iterate();
-        while (try iterator.next()) |entry| {
-            if (!std.mem.eql(u8, entry.name, ".") and !std.mem.eql(u8, entry.name, "..")) {
-                real_entries += 1;
-            }
-        }
+        return self.directoryEntries(allocator, "/");
+    }
 
-        const synthetic_count = self.state.filesystem.syntheticEntryCount("/");
-        var entries = try allocator.alloc([]const u8, real_entries + synthetic_count);
-        errdefer allocator.free(entries);
+    pub fn directoryEntries(self: Session, allocator: std.mem.Allocator, path: []const u8) ![]const []const u8 {
+        var context = DirectoryEntryCollectContext{ .allocator = allocator };
+        errdefer context.deinit();
 
-        var index: usize = 0;
-        iterator = dir.iterate();
-        while (try iterator.next()) |entry| {
-            if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
-            entries[index] = try allocator.dupe(u8, entry.name);
-            index += 1;
-        }
-
-        for (0..synthetic_count) |synthetic_index| {
-            var buffer: [std.fs.max_path_bytes]u8 = undefined;
-            const len = self.state.filesystem.syntheticEntryNameAt("/", @intCast(synthetic_index), &buffer) orelse {
-                return error.Unexpected;
-            };
-            entries[index] = try allocator.dupe(u8, buffer[0..len]);
-            index += 1;
-        }
-
-        return entries;
+        try self.state.filesystem.forEachDirectoryEntry(path, &context, collectDirectoryEntry);
+        return try context.entries.toOwnedSlice(allocator);
     }
 
     pub fn readPath(self: Session, allocator: std.mem.Allocator, path: [:0]const u8) ![]u8 {
@@ -577,6 +576,42 @@ fn errnoCode(err: std.posix.E) c_int {
     return -@as(c_int, @intFromEnum(err));
 }
 
+fn errnoCodeFromDirectoryError(err: anyerror) c_int {
+    return switch (err) {
+        error.FileNotFound => errnoCode(.NOENT),
+        error.NotDir => errnoCode(.NOTDIR),
+        error.AccessDenied => errnoCode(.ACCES),
+        error.NameTooLong => errnoCode(.NAMETOOLONG),
+        error.InvalidPath => errnoCode(.INVAL),
+        error.BufferTooSmall => errnoCode(.NAMETOOLONG),
+        error.EntryNotFound => errnoCode(.NOENT),
+        else => errnoCode(.IO),
+    };
+}
+
+fn collectDirectoryEntry(context: *DirectoryEntryCollectContext, name: []const u8) !bool {
+    const owned_name = try context.allocator.dupe(u8, name);
+    errdefer context.allocator.free(owned_name);
+    try context.entries.append(context.allocator, owned_name);
+    return true;
+}
+
+fn emitDirectoryEntryToRaw(context: *DirectoryEntryEmitContext, name: []const u8) !bool {
+    if (name.len + 1 > std.fs.max_path_bytes) return error.BufferTooSmall;
+
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    @memcpy(buffer[0..name.len], name);
+    buffer[name.len] = 0;
+
+    const name_z = buffer[0..name.len :0];
+    const result = context.emit_fn(context.raw_context, name_z.ptr);
+    if (result < 0) {
+        context.result = result;
+        return error.EmitFailed;
+    }
+    return result == 0;
+}
+
 pub export fn fsn_daemon_lookup_path(
     daemon_state: ?*anyopaque,
     raw_path: ?[*:0]const u8,
@@ -618,27 +653,21 @@ pub export fn fsn_daemon_open_guarded_lock_fd(
     return @intCast(state.filesystem.openGuardedLockFd(path, requested_flags));
 }
 
-pub export fn fsn_daemon_directory_entry_count(
+pub export fn fsn_daemon_for_each_directory_entry(
     daemon_state: ?*anyopaque,
     raw_path: ?[*:0]const u8,
-) u32 {
-    const state = requireState(daemon_state) orelse return 0;
-    const path = requirePath(raw_path) orelse return 0;
-    return state.filesystem.syntheticEntryCount(path);
-}
-
-pub export fn fsn_daemon_directory_entry_name(
-    daemon_state: ?*anyopaque,
-    raw_path: ?[*:0]const u8,
-    index: u32,
-    buffer: [*]u8,
-    buffer_size: usize,
+    raw_context: ?*anyopaque,
+    emit_fn: RawDirectoryEntryEmitFn,
 ) c_int {
     const state = requireState(daemon_state) orelse return errnoCode(.INVAL);
     const path = requirePath(raw_path) orelse return errnoCode(.INVAL);
-    if (buffer_size == 0) return errnoCode(.INVAL);
-    _ = state.filesystem.syntheticEntryNameAt(path, index, buffer[0..buffer_size]) orelse {
-        return errnoCode(.NOENT);
+    var context = DirectoryEntryEmitContext{
+        .raw_context = raw_context,
+        .emit_fn = emit_fn,
+    };
+    state.filesystem.forEachDirectoryEntry(path, &context, emitDirectoryEntryToRaw) catch |err| {
+        if (err == error.EmitFailed) return context.result;
+        return errnoCodeFromDirectoryError(err);
     };
     return 0;
 }

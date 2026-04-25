@@ -312,6 +312,51 @@ pub const Model = struct {
         return null;
     }
 
+    pub fn forEachDirectoryEntry(
+        self: *const Model,
+        directory_path: []const u8,
+        context: anytype,
+        comptime emit: fn (@TypeOf(context), []const u8) anyerror!bool,
+    ) !void {
+        try self.requireDirectoryPath(directory_path);
+
+        if (self.openSourceDirectory(directory_path)) |dir_handle| {
+            var dir = dir_handle;
+            defer dir.close();
+
+            var iterator = dir.iterate();
+            while (try iterator.next()) |entry| {
+                if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+                if (!try emit(context, entry.name)) return;
+            }
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
+
+        for (self.files.items, 0..) |file, file_index| {
+            const child_name = self.syntheticChildNameForFile(directory_path, &file) orelse continue;
+            if (self.syntheticChildAlreadySeen(directory_path, child_name, file_index)) continue;
+            if (!try emit(context, child_name)) return;
+        }
+    }
+
+    fn openSourceDirectory(self: *const Model, path: []const u8) !std.fs.Dir {
+        const dir = self.source_dir orelse return error.FileNotFound;
+        if (isRootPath(path)) {
+            return dir.openDir(".", .{ .iterate = true });
+        }
+        const relative_path = relativeMountedPath(path) orelse return error.InvalidPath;
+        return dir.openDir(relative_path, .{ .iterate = true });
+    }
+
+    fn requireDirectoryPath(self: *const Model, path: []const u8) !void {
+        return switch (self.lookupPath(path).open_kind) {
+            .directory => {},
+            .missing => error.FileNotFound,
+            else => error.NotDir,
+        };
+    }
+
     fn lookupEnrolledParentPath(self: *const Model, path: []const u8) Lookup {
         if (isRootPath(path)) {
             return self.lookupSourceDirectoryNode(path);
