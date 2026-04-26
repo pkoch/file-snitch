@@ -184,7 +184,10 @@ fn prepareMountPathForSpawn(mount_path: []const u8) bool {
             recovered_dir.close(runtime.io());
             return true;
         },
-        else => return true,
+        else => {
+            std.log.warn("mount path preflight for {s} failed with {}; proceeding with mount spawn", .{ mount_path, err });
+            return true;
+        },
     };
     dir.close(runtime.io());
     return true;

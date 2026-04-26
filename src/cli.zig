@@ -607,7 +607,18 @@ fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) !
     };
     errdefer allocator.free(resolved);
 
-    switch (try enrollment_ops.pathKind(resolved)) {
+    const target_kind = enrollment_ops.pathKind(resolved) catch |err| {
+        if (err == error.NoDevice) {
+            return invalidUsageWithOwnedPath(
+                "error: target file is on a stale or inaccessible device: {s}\nhint: restart `file-snitch run`; if this persists, unmount the affected parent directory and retry\n",
+                resolved,
+            );
+        }
+        std.debug.print("error: target file could not be inspected: {s}: {}\n", .{ resolved, err });
+        return error.InvalidUsage;
+    };
+
+    switch (target_kind) {
         .file => {},
         .directory => return invalidUsageWithOwnedPath("error: target file is a directory: {s}\n", resolved),
         .other => return invalidUsageWithOwnedPath("error: target file is not a regular file: {s}\n", resolved),
