@@ -822,7 +822,7 @@ fn printUsage() void {
         \\    --tty <path>
         \\      inherited stdio
         \\    user interaction timeout
-        \\      5000 ms
+        \\      30000 ms
         \\      override with $FILE_SNITCH_PROMPT_TIMEOUT_MS
         \\
         \\  run:

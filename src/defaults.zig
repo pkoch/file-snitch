@@ -42,7 +42,7 @@ pub const internal_mount_path_env = "FILE_SNITCH_INTERNAL_MOUNT_PATH";
 pub const internal_status_fifo_env = "FILE_SNITCH_INTERNAL_STATUS_FIFO";
 
 /// Default prompt timeout when `FILE_SNITCH_PROMPT_TIMEOUT_MS` is unset.
-pub const prompt_timeout_ms_default: u32 = 5_000;
+pub const prompt_timeout_ms_default: u32 = 30_000;
 
 /// Default protocol timeout for local agent socket messages.
 pub const protocol_timeout_ms_default: u32 = 1_000;
