@@ -324,6 +324,13 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
 fn appendTargetPathReport(writer: anytype, has_errors: *bool, target_path: []const u8) !void {
     const target_kind = enrollment.pathKind(target_path) catch |err| {
         has_errors.* = true;
+        if (err == error.NoDevice) {
+            try writer.print(
+                "error: target path is on a stale or inaccessible device: {s}\nhint: restart `file-snitch run`; if this persists, unmount the affected parent directory and retry\n",
+                .{target_path},
+            );
+            return;
+        }
         try writer.print("error: target path could not be inspected: {s}: {}\n", .{ target_path, err });
         return;
     };

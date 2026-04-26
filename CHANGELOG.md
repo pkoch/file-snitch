@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed macOS root directory listing so projected parent directories do not
+  hang after macFUSE mounts over the source path.
+- Recovered stale macOS macFUSE mounts before respawning mount workers, avoiding
+  launchd restart loops after a crashed worker.
+- Reported stale target devices in `doctor` with actionable guidance instead of
+  surfacing an unexpected errno stack trace.
+
 ## [0.3.3] - 2026-04-25
 
 ### Changed

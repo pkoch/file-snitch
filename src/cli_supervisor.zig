@@ -156,6 +156,10 @@ fn reconcileManagedMountChildren(
     defer allocator.free(exe_path);
 
     for (mount_plan.paths) |mount_path| {
+        if (!prepareMountPathForSpawn(mount_path)) {
+            continue;
+        }
+
         var child = try spawnManagedMountChild(exe_path, command, mount_path);
         children.append(allocator, child) catch |err| {
             signalChildBestEffort(child.child.id.?, std.posix.SIG.INT);
@@ -166,6 +170,27 @@ fn reconcileManagedMountChildren(
     }
 
     return next_expiration_unix_seconds;
+}
+
+fn prepareMountPathForSpawn(mount_path: []const u8) bool {
+    var dir = std.Io.Dir.openDirAbsolute(runtime.io(), mount_path, .{}) catch |err| switch (err) {
+        error.NoDevice => {
+            std.log.warn("stale mount at {s}; attempting to unmount before restart", .{mount_path});
+            bestEffortUnmount(mount_path);
+            var recovered_dir = std.Io.Dir.openDirAbsolute(runtime.io(), mount_path, .{}) catch |retry_err| {
+                std.log.err("stale mount at {s} is still inaccessible after unmount attempt: {}", .{ mount_path, retry_err });
+                return false;
+            };
+            recovered_dir.close(runtime.io());
+            return true;
+        },
+        else => {
+            std.log.warn("mount path preflight for {s} failed with {}; proceeding with mount spawn", .{ mount_path, err });
+            return true;
+        },
+    };
+    dir.close(runtime.io());
+    return true;
 }
 
 fn reconcileSleepNanos(next_expiration_unix_seconds: ?i64) u64 {
@@ -329,7 +354,9 @@ fn waitForManagedChildren(children: *std.ArrayListUnmanaged(ManagedMountChild), 
 fn bestEffortUnmount(mount_path: []const u8) void {
     switch (builtin.os.tag) {
         .macos => {
-            _ = runUnmountCommand(&.{ "umount", mount_path });
+            if (!runUnmountCommand(&.{ "umount", mount_path })) {
+                _ = runUnmountCommand(&.{ "diskutil", "unmount", "force", mount_path });
+            }
         },
         .linux => {
             if (!runUnmountCommand(&.{ "fusermount3", "-u", mount_path })) {
