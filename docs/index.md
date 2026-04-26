@@ -78,6 +78,12 @@ If you want a safe disposable walkthrough:
 If you want to install and try it on a real machine:
 - [install.md](./install.md)
 
+If you want the command surface:
+- [cli.md](./cli.md)
+
+If you want the policy file format:
+- [policy.md](./policy.md)
+
 If you want per-user services:
 - [services.md](./services.md)
 - `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
@@ -105,9 +111,11 @@ Operational recovery guidance lives in [operations.md](./operations.md).
 ## Read More
 
 - [install.md](./install.md)
+- [cli.md](./cli.md)
+- [policy.md](./policy.md)
 - [demo.md](./demo.md)
 - [services.md](./services.md)
 - [operations.md](./operations.md)
 - [threat-model.md](./threat-model.md)
-- [README.md](../README.md) for repo internals, architecture notes, and the
-  full verification workflow
+- [development.md](./development.md) for the full verification workflow
+- [README.md](../README.md) for repo layout and architecture notes

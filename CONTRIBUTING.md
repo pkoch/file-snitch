@@ -21,6 +21,8 @@ be treated skeptically.
 Install Anyzig so the `zig` command follows this repo's `build.zig.zon`
 `minimum_zig_version` pin.
 
+The full local workflow lives in [docs/development.md](./docs/development.md).
+
 Build:
 
 ```bash
@@ -37,6 +39,7 @@ CI also enforces a small hygiene layer:
 
 ```bash
 bash -n $(find scripts tests -type f -name '*.sh' | sort)
+./scripts/docs/check-docs.sh
 ./scripts/demo/check-demo-artifacts.sh
 ```
 
@@ -57,6 +60,7 @@ Run the smoke suite:
 
 # macOS only:
 ./tests/smoke/run-prompt-macos-ui.sh
+./tests/smoke/run-prompt-macos-ui-agent.sh
 ```
 
 Refresh `compile_commands.json` when needed:

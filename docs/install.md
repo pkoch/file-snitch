@@ -153,7 +153,7 @@ zig build
 ./scripts/demo/demo-session.sh
 ```
 
-For a recording-friendly version, see [docs/demo.md](./demo.md).
+For a recording-friendly version, see [demo.md](./demo.md).
 
 ## Reporting install or runtime problems
 
@@ -231,11 +231,14 @@ configuration.
 
 ## Notes
 
+- for command defaults and environment-variable precedence, see
+  [cli.md](./cli.md)
 - `policy.yml` lives at `FILE_SNITCH_POLICY_PATH` when set, otherwise at
   `XDG_CONFIG_HOME/file-snitch/policy.yml`, otherwise at
   `~/.config/file-snitch/policy.yml`.
-- the default local agent socket lives under `XDG_RUNTIME_DIR` when it is
-  set, otherwise under `~/.local/state/file-snitch/agent.sock`
+- the local agent socket lives at `FILE_SNITCH_AGENT_SOCKET` when set,
+  otherwise under `XDG_RUNTIME_DIR` when it is set, otherwise under
+  `~/.local/state/file-snitch/agent.sock`
 - set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a
   `terminal-pinentry` agent to use a specific terminal
 - `macos-ui` uses `osascript` on macOS and does not accept `--tty`

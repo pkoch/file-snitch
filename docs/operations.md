@@ -27,6 +27,20 @@ If you plan to file a bug, also export a dossier:
 file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 ```
 
+## Symptom Cheat Sheet
+
+| Symptom | First command | What to check next |
+| --- | --- | --- |
+| Guarded file is missing | `file-snitch status` | Confirm the path is enrolled. If it is, start `file-snitch run prompt` or `file-snitch run allow`. |
+| Prompt does not appear | `file-snitch status` | Confirm the file is enrolled, `run` is in `prompt` mode, the agent socket exists, and no remembered decision already applies. |
+| `pass` or GPG fails | `pass ls` | Fix the GPG or `pass` environment first, then rerun `file-snitch doctor`. |
+| User service cannot find `pass` | `file-snitch doctor` | Reinstall services with explicit `--bin` and `--pass-bin` paths. |
+| Policy edit does not apply | `file-snitch status` | Confirm you edited the same policy path the daemon is using and that the YAML parses. |
+| Unenroll refuses because target exists | `file-snitch status` | Stop the active projection, confirm the host path is gone, then rerun `unenroll`. |
+| Stale or inaccessible target device | `file-snitch doctor` | Restart `file-snitch run`; if it persists, unmount the affected parent directory and retry. |
+
+The policy file format is documented in [policy.md](./policy.md).
+
 ## If A Guarded File Is Missing
 
 That is often the expected failure mode.
@@ -56,7 +70,7 @@ file-snitch run prompt
 
 ## If You Expected A Prompt And Did Not Get One
 
-Check all three layers:
+Check these layers:
 
 1. The file must actually be enrolled.
 
