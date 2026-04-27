@@ -6,8 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `file-snitch services` commands to render, install, and uninstall the
+  embedded per-user launchd and systemd service definitions.
+
 ### Changed
 
+- Changed `doctor` to report stale per-user service files and stale loaded
+  service-manager config by comparing them with the current binary's render
+  output.
 - Changed remembered decisions to omit requester uid and apply by executable
   path, enrolled path, and approval class.
 - Changed daemon-to-agent prompt display paths to use `~/...` for enrolled

@@ -31,7 +31,7 @@ to behave normally.
   - `linux-ui` on Linux via `zenity`
 - shell completion generation for bash, zsh, and fish
 - formal GitHub Release artifacts plus Homebrew/Linuxbrew packaging
-- per-user service helpers for `launchd` and `systemd --user`
+- embedded per-user service management for `launchd` and `systemd --user`
 
 ## What It Does Not Do
 
@@ -115,7 +115,7 @@ Operational guidance and troubleshooting live in
 - `src/filesystem.zig`: Zig-owned filesystem behavior for enrolled-parent mounts
 - `c/`: thin C boundary for `libfuse` interop and syscall-adjacent helpers
 - `tests/`: Zig integration tests and smoke scenarios
-- `scripts/`: demo, release, service, and vendoring helpers
+- `scripts/`: demo, docs, release, and vendoring helpers
 - `docs/`: operator docs, contributor docs, and research notes
 
 ## Architecture Guardrails

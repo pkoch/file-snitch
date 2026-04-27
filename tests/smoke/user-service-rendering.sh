@@ -4,6 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$repo_root/tests/smoke/lib/assertions.sh"
 
+file_snitch_bin="$repo_root/zig-out/bin/file-snitch"
+[[ -x "$file_snitch_bin" ]] || {
+  echo "file-snitch binary is missing; run zig build first" >&2
+  exit 1
+}
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -23,13 +29,13 @@ macos_output_dir="$tmp_dir/macos"
 linux_output_dir="$tmp_dir/linux"
 mkdir -p "$macos_output_dir" "$linux_output_dir"
 
-"$repo_root/scripts/services/render-user-services.sh" \
+"$file_snitch_bin" services render \
   --platform macos \
   --bin "$tmp_dir/bin/file-snitch" \
   --pass-bin "$tmp_dir/bin/pass" \
   --output-dir "$macos_output_dir"
 
-"$repo_root/scripts/services/render-user-services.sh" \
+"$file_snitch_bin" services render \
   --platform linux \
   --bin "$tmp_dir/bin/file-snitch" \
   --pass-bin "$tmp_dir/bin/pass" \

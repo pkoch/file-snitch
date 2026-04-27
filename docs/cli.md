@@ -14,6 +14,9 @@ file-snitch enroll <path> [--policy <path>]
 file-snitch unenroll <path> [--policy <path>]
 file-snitch status [--policy <path>]
 file-snitch doctor [--policy <path>] [--export-debug-dossier <path>]
+file-snitch services render [--platform <macos|linux>] [--bin <path>] [--pass-bin <path>] --output-dir <dir>
+file-snitch services install [--platform <macos|linux>] [--bin <path>] [--pass-bin <path>]
+file-snitch services uninstall [--platform <macos|linux>]
 ```
 
 ## Normal Foreground Flow

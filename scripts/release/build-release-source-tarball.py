@@ -83,6 +83,10 @@ def main() -> None:
                 for rel_path in tracked_files(root):
                     source_path = root / rel_path
                     archive_path = prefix / rel_path.as_posix()
+                    try:
+                        file_info = source_path.lstat()
+                    except FileNotFoundError:
+                        continue
 
                     for parent in archive_path.parents:
                         parent_str = str(parent)
@@ -90,7 +94,6 @@ def main() -> None:
                             continue
                         add_directory_once(archive, added_dirs, parent_str)
 
-                    file_info = source_path.lstat()
                     info = tarfile.TarInfo(str(archive_path))
                     info.uid = 0
                     info.gid = 0

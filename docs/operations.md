@@ -109,13 +109,15 @@ If `pass` cannot decrypt its store, File Snitch cannot load guarded objects
 either.
 
 When using the per-user service, `doctor` also checks whether the run service
-can find `pass` from its own service environment. On macOS this is especially
-important because launchd does not inherit your interactive shell `PATH`; if
-Homebrew installed `pass` under `/opt/homebrew/bin`, reinstall the services
-with:
+can find `pass` from its own service environment. It also compares both the
+installed service files and the service manager's loaded config against the
+service definitions rendered by the current `file-snitch` binary. On macOS this
+is especially important because launchd does not inherit your interactive shell
+`PATH`; if Homebrew installed `pass` under `/opt/homebrew/bin`, reinstall the
+services with:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"
 ```

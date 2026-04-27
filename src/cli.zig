@@ -13,6 +13,7 @@ const supervisor = @import("cli_supervisor.zig");
 const prompt = @import("prompt.zig");
 const runtime = @import("runtime.zig");
 const store = @import("store.zig");
+const user_services = @import("user_services.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -109,6 +110,10 @@ pub fn run(args: []const []const u8) !void {
                 .export_debug_dossier_path = command.export_debug_dossier_path,
             });
         },
+        .services => |command| {
+            defer command.deinit(allocator);
+            try runServicesCommand(command);
+        },
     }
 }
 
@@ -122,6 +127,27 @@ const Command = union(enum) {
     unenroll: PathCommand,
     status: PolicyCommand,
     doctor: DoctorCommand,
+    services: ServicesCommand,
+};
+
+const ServicesAction = enum {
+    render,
+    install,
+    uninstall,
+};
+
+const ServicesCommand = struct {
+    action: ServicesAction,
+    platform: ?user_services.Platform = null,
+    bin_path: ?[]const u8 = null,
+    pass_bin_path: ?[]const u8 = null,
+    output_dir: ?[]const u8 = null,
+
+    fn deinit(self: ServicesCommand, alloc: std.mem.Allocator) void {
+        if (self.bin_path) |path| alloc.free(path);
+        if (self.pass_bin_path) |path| alloc.free(path);
+        if (self.output_dir) |path| alloc.free(path);
+    }
 };
 
 const AgentCommand = struct {
@@ -194,6 +220,9 @@ fn parseCommand(args: []const []const u8) !Command {
     if (std.mem.eql(u8, args[0], "completion")) {
         return .{ .completion = try parseCompletionCommand(args[1..]) };
     }
+    if (std.mem.eql(u8, args[0], "services")) {
+        return .{ .services = try parseServicesCommand(args[1..]) };
+    }
     if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "version")) {
         return .version;
     }
@@ -203,6 +232,85 @@ fn parseCommand(args: []const []const u8) !Command {
 
     printUsage();
     return error.InvalidUsage;
+}
+
+fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
+    if (args.len == 0) {
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    const action: ServicesAction = if (std.mem.eql(u8, args[0], "render"))
+        .render
+    else if (std.mem.eql(u8, args[0], "install"))
+        .install
+    else if (std.mem.eql(u8, args[0], "uninstall"))
+        .uninstall
+    else {
+        printUsage();
+        return error.InvalidUsage;
+    };
+
+    var command: ServicesCommand = .{ .action = action };
+    errdefer command.deinit(allocator);
+
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], "--platform")) {
+            index += 1;
+            if (index >= args.len) {
+                return invalidUsage("error: `services --platform` requires macos or linux\n", .{});
+            }
+            command.platform = user_services.Platform.parse(args[index]) orelse
+                return invalidUsage("error: unsupported services platform: {s}\n", .{args[index]});
+            continue;
+        }
+        if (std.mem.eql(u8, args[index], "--bin")) {
+            if (action == .uninstall) {
+                return invalidUsage("error: `services uninstall` does not accept --bin\n", .{});
+            }
+            index += 1;
+            if (index >= args.len) {
+                return invalidUsage("error: `services --bin` requires a path or command name\n", .{});
+            }
+            if (command.bin_path) |path| allocator.free(path);
+            command.bin_path = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, args[index], "--pass-bin")) {
+            if (action == .uninstall) {
+                return invalidUsage("error: `services uninstall` does not accept --pass-bin\n", .{});
+            }
+            index += 1;
+            if (index >= args.len) {
+                return invalidUsage("error: `services --pass-bin` requires a path or command name\n", .{});
+            }
+            if (command.pass_bin_path) |path| allocator.free(path);
+            command.pass_bin_path = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, args[index], "--output-dir")) {
+            if (action != .render) {
+                return invalidUsage("error: only `services render` accepts --output-dir\n", .{});
+            }
+            index += 1;
+            if (index >= args.len) {
+                return invalidUsage("error: `services render --output-dir` requires a directory\n", .{});
+            }
+            if (command.output_dir) |path| allocator.free(path);
+            command.output_dir = try resolvePathArgument(args[index]);
+            continue;
+        }
+
+        printUsage();
+        return error.InvalidUsage;
+    }
+
+    if (action == .render and command.output_dir == null) {
+        return invalidUsage("error: `services render` requires --output-dir <dir>\n", .{});
+    }
+
+    return command;
 }
 
 fn parseRunCommand(args: []const []const u8) !RunCommand {
@@ -473,6 +581,20 @@ fn runAgent(command: AgentCommand) !void {
     };
 
     try agent.runAgentService(&service_context);
+}
+
+fn runServicesCommand(command: ServicesCommand) !void {
+    const options: user_services.RenderOptions = .{
+        .platform = command.platform,
+        .bin_path = command.bin_path,
+        .pass_bin_path = command.pass_bin_path,
+    };
+
+    switch (command.action) {
+        .render => try user_services.renderToDirectory(allocator, options, command.output_dir.?),
+        .install => try user_services.install(allocator, options),
+        .uninstall => try user_services.uninstall(allocator, command.platform),
+    }
 }
 
 fn runStaticPolicy(command: RunCommand) !void {
@@ -810,6 +932,9 @@ fn printUsage() void {
         \\  file-snitch unenroll <path> [--policy <path>]
         \\  file-snitch status [--policy <path>]
         \\  file-snitch doctor [--policy <path>] [--export-debug-dossier <path>]
+        \\  file-snitch services render [--platform <macos|linux>] [--bin <path>] [--pass-bin <path>] --output-dir <dir>
+        \\  file-snitch services install [--platform <macos|linux>] [--bin <path>] [--pass-bin <path>]
+        \\  file-snitch services uninstall [--platform <macos|linux>]
         \\
         \\defaults:
         \\  agent:
@@ -861,6 +986,7 @@ fn printUsage() void {
         \\  - `enroll` migrates the plaintext file into the guarded store and records it in `policy.yml`
         \\  - `unenroll` restores the guarded file to its original path and removes remembered decisions for that path
         \\  - `status` inspects `policy.yml`; `doctor` also exits non-zero on actionable problems and can export a shareable debug dossier
+        \\  - `services` renders, installs, or uninstalls the per-user launchd/systemd service files embedded in this binary
         \\
     , .{});
 }
@@ -878,4 +1004,18 @@ test "parse command routes completion subcommand" {
 
 test "parse command rejects unsupported completion shell" {
     try std.testing.expectError(error.InvalidUsage, parseCommand(&.{ "completion", "elvish" }));
+}
+
+test "parse command routes services render" {
+    const command = try parseCommand(&.{ "services", "render", "--platform", "linux", "--bin", "file-snitch", "--pass-bin", "pass", "--output-dir", "/tmp/services" });
+    defer command.services.deinit(allocator);
+    try std.testing.expectEqual(ServicesAction.render, command.services.action);
+    try std.testing.expectEqual(user_services.Platform.linux, command.services.platform.?);
+    try std.testing.expectEqualStrings("file-snitch", command.services.bin_path.?);
+    try std.testing.expectEqualStrings("pass", command.services.pass_bin_path.?);
+    try std.testing.expectEqualStrings("/tmp/services", command.services.output_dir.?);
+}
+
+test "parse command rejects services render without output dir" {
+    try std.testing.expectError(error.InvalidUsage, parseCommand(&.{ "services", "render" }));
 }

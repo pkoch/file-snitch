@@ -8,6 +8,7 @@ const enrollment = @import("enrollment.zig");
 const fuse = @import("fuse/shim.zig");
 const runtime = @import("runtime.zig");
 const store = @import("store.zig");
+const user_services = @import("user_services.zig");
 
 const projection_teardown_timeout_ms = 10_000;
 const projection_teardown_poll_ms = 100;
@@ -331,13 +332,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
                 try report_writer.writeAll("hint: install or expose `osascript`, or use `--frontend terminal-pinentry`\n");
             }
 
-            const agent_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.agent.plist");
-            defer allocator.free(agent_service_path);
-            const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
-            defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, &has_errors, "launchd agent", agent_service_path);
-            try appendServicePathReport(report_writer, &has_errors, "launchd run", run_service_path);
-            try appendMacosRunServicePassReport(allocator, report_writer, &has_errors, run_service_path);
+            try appendUserServicesReport(allocator, report_writer, &has_errors, .macos, pass_command);
         },
         .linux => {
             const helper_command = try detectGuiHelperCommandAlloc(allocator, defaults.zenity_bin_env, "zenity");
@@ -349,12 +344,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
                 try report_writer.writeAll("hint: install `zenity`, or use `--frontend terminal-pinentry`\n");
             }
 
-            const agent_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-agent.service");
-            defer allocator.free(agent_service_path);
-            const run_service_path = try defaultLinuxUserUnitPathAlloc(allocator, home_dir, "file-snitch-run.service");
-            defer allocator.free(run_service_path);
-            try appendServicePathReport(report_writer, &has_errors, "systemd user agent", agent_service_path);
-            try appendServicePathReport(report_writer, &has_errors, "systemd user run", run_service_path);
+            try appendUserServicesReport(allocator, report_writer, &has_errors, .linux, pass_command);
         },
         else => {},
     }
@@ -731,7 +721,7 @@ fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
 
     const home_dir = try enrollment.currentUserHomeAlloc(allocator);
     defer allocator.free(home_dir);
-    const run_service_path = try defaultMacosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
+    const run_service_path = try user_services.macosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
     defer allocator.free(run_service_path);
 
     const service_exists = enrollment.pathExists(run_service_path) catch |err| {
@@ -747,7 +737,7 @@ fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
         );
         std.debug.print("hint: enrollment was aborted before moving the file into the guarded store\n", .{});
         std.debug.print(
-            "hint: reinstall the service with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
+            "hint: reinstall the service with `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
             .{},
         );
         return error.InvalidUsage;
@@ -761,7 +751,7 @@ fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
     );
     std.debug.print("hint: enrollment was aborted before moving the file into the guarded store\n", .{});
     std.debug.print(
-        "hint: reinstall the service with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
+        "hint: reinstall the service with `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n",
         .{},
     );
     std.debug.print("hint: or set FILE_SNITCH_PASS_BIN in {s}\n", .{run_service_path});
@@ -806,7 +796,7 @@ fn appendMacosRunServicePassReport(
         .{ probe.source, probe.command },
     );
     try writer.writeAll("hint: the run service uses launchd's restricted environment, not your interactive shell PATH\n");
-    try writer.writeAll("hint: reinstall the services with `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+    try writer.writeAll("hint: reinstall the services with `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
     try writer.print("hint: or set FILE_SNITCH_PASS_BIN in {s}\n", .{run_service_path});
 }
 
@@ -958,24 +948,171 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
     return std.fmt.allocPrint(allocator, "~{s}", .{suffix});
 }
 
-fn appendServicePathReport(
+fn appendUserServicesReport(
+    allocator: std.mem.Allocator,
     writer: anytype,
     has_errors: *bool,
-    label: []const u8,
-    path: []const u8,
+    platform: user_services.Platform,
+    pass_command: []const u8,
 ) !void {
-    const exists = enrollment.pathExists(path) catch |err| {
+    var rendered = user_services.renderExpectedAlloc(allocator, .{
+        .platform = platform,
+        .pass_bin_path = pass_command,
+    }) catch |err| {
         has_errors.* = true;
-        try writer.print("error: {s} service file could not be inspected: {s}: {}\n", .{ label, path, err });
+        try writer.print("error: could not render expected user services from this binary: {}\n", .{err});
+        try writer.writeAll("hint: make sure `file-snitch` and `pass` are executable, or pass explicit paths to `file-snitch services install`\n");
         return;
     };
+    defer rendered.deinit(allocator);
 
-    if (exists) {
-        try writer.print("ok: {s} service file exists: {s}\n", .{ label, path });
-    } else {
-        try writer.print("warn: {s} service file is absent: {s}\n", .{ label, path });
-        try writer.writeAll("hint: run `./scripts/services/install-user-services.sh --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+    switch (platform) {
+        .macos => {
+            try appendRenderedServiceReport(allocator, writer, has_errors, rendered, rendered.agent, "launchd agent");
+            try appendRenderedServiceReport(allocator, writer, has_errors, rendered, rendered.run, "launchd run");
+            try appendMacosRunServicePassReport(allocator, writer, has_errors, rendered.run.install_path);
+        },
+        .linux => {
+            try appendRenderedServiceReport(allocator, writer, has_errors, rendered, rendered.agent, "systemd user agent");
+            try appendRenderedServiceReport(allocator, writer, has_errors, rendered, rendered.run, "systemd user run");
+        },
     }
+}
+
+fn appendRenderedServiceReport(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    has_errors: *bool,
+    rendered: user_services.RenderedServices,
+    service: user_services.RenderedService,
+    label: []const u8,
+) !void {
+    const installed_matches = try appendRenderedServiceFileReport(
+        allocator,
+        writer,
+        has_errors,
+        service,
+        label,
+    );
+    try appendLoadedServiceReport(
+        allocator,
+        writer,
+        has_errors,
+        rendered,
+        service,
+        label,
+        installed_matches,
+    );
+}
+
+fn appendRenderedServiceFileReport(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    has_errors: *bool,
+    service: user_services.RenderedService,
+    label: []const u8,
+) !bool {
+    const installed = std.Io.Dir.cwd().readFileAlloc(runtime.io(), service.install_path, allocator, .limited(128 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            try writer.print("warn: {s} service file is absent: {s}\n", .{ label, service.install_path });
+            try writer.writeAll("hint: run `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+            return false;
+        },
+        else => {
+            has_errors.* = true;
+            try writer.print("error: {s} service file could not be inspected: {s}: {}\n", .{ label, service.install_path, err });
+            return false;
+        },
+    };
+    defer allocator.free(installed);
+
+    if (std.mem.eql(u8, installed, service.contents)) {
+        try writer.print("ok: {s} service file matches current render: {s}\n", .{ label, service.install_path });
+        return true;
+    }
+
+    has_errors.* = true;
+    try writer.print("error: {s} service file is stale: {s}\n", .{ label, service.install_path });
+    try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+    return false;
+}
+
+fn appendLoadedServiceReport(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    has_errors: *bool,
+    rendered: user_services.RenderedServices,
+    service: user_services.RenderedService,
+    label: []const u8,
+    installed_matches: bool,
+) !void {
+    const loaded = user_services.loadedConfigAlloc(allocator, rendered.platform, service) catch |err| {
+        has_errors.* = true;
+        try writer.print("error: {s} loaded config could not be inspected: {}\n", .{ label, err });
+        return;
+    } orelse {
+        if (installed_matches) {
+            has_errors.* = true;
+            try writer.print("error: {s} service file matches current render, but the service manager has no loaded config\n", .{label});
+            try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
+        } else {
+            try writer.print("warn: {s} loaded config is absent\n", .{label});
+        }
+        return;
+    };
+    defer allocator.free(loaded);
+
+    const matches_loaded = switch (rendered.platform) {
+        .macos => try macosLoadedServiceMatchesRender(allocator, rendered, service, loaded),
+        .linux => blk: {
+            const body = try user_services.systemdCatBodyAlloc(allocator, loaded);
+            defer allocator.free(body);
+            break :blk std.mem.eql(
+                u8,
+                std.mem.trim(u8, body, "\n"),
+                std.mem.trim(u8, service.contents, "\n"),
+            );
+        },
+    };
+
+    if (matches_loaded) {
+        try writer.print("ok: {s} loaded config matches current render\n", .{label});
+        return;
+    }
+
+    has_errors.* = true;
+    try writer.print("error: {s} loaded config is stale\n", .{label});
+    switch (rendered.platform) {
+        .macos => try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"` so launchd reloads the current plist\n"),
+        .linux => try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"` so systemd reloads the current unit\n"),
+    }
+}
+
+fn macosLoadedServiceMatchesRender(
+    allocator: std.mem.Allocator,
+    rendered: user_services.RenderedServices,
+    service: user_services.RenderedService,
+    loaded: []const u8,
+) !bool {
+    if (std.mem.indexOf(u8, loaded, rendered.bin_path) == null) return false;
+
+    if (std.mem.eql(u8, service.label, "dev.file-snitch.agent")) {
+        return std.mem.indexOf(u8, loaded, "agent") != null and
+            std.mem.indexOf(u8, loaded, "--frontend") != null and
+            std.mem.indexOf(u8, loaded, "macos-ui") != null;
+    }
+
+    if (std.mem.indexOf(u8, loaded, "run") == null or std.mem.indexOf(u8, loaded, "prompt") == null) {
+        return false;
+    }
+
+    const loaded_pass_bin = (try launchctlStringValueAlloc(allocator, loaded, defaults.pass_bin_env)) orelse return false;
+    defer allocator.free(loaded_pass_bin);
+    const loaded_path = (try launchctlStringValueAlloc(allocator, loaded, "PATH")) orelse return false;
+    defer allocator.free(loaded_path);
+
+    return std.mem.eql(u8, loaded_pass_bin, rendered.pass_bin_path) and
+        std.mem.eql(u8, loaded_path, rendered.service_path);
 }
 
 fn appendFuseReport(writer: anytype, has_errors: *bool) !void {
@@ -994,20 +1131,4 @@ fn appendFuseReport(writer: anytype, has_errors: *bool) !void {
         "ok: FUSE runtime is available: backend={s} fuse={d}.{d}\n",
         .{ environment.backend_name, environment.fuse_major_version, environment.fuse_minor_version },
     );
-}
-
-fn defaultMacosLaunchAgentPathAlloc(
-    allocator: std.mem.Allocator,
-    home_dir: []const u8,
-    filename: []const u8,
-) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home_dir, "Library", "LaunchAgents", filename });
-}
-
-fn defaultLinuxUserUnitPathAlloc(
-    allocator: std.mem.Allocator,
-    home_dir: []const u8,
-    filename: []const u8,
-) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home_dir, ".config", "systemd", "user", filename });
 }

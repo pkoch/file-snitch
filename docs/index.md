@@ -41,7 +41,7 @@ File Snitch is for the middle ground:
   - allow 5 min
   - always allow
   - always deny
-- Homebrew/Linuxbrew install path and per-user service helpers
+- Homebrew/Linuxbrew install path and embedded per-user service management
 
 ## What It Is Not
 
@@ -86,7 +86,7 @@ If you want the policy file format:
 
 If you want per-user services:
 - [services.md](./services.md)
-- `./scripts/services/install-user-services.sh --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
+- `file-snitch services install --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
 
 ## If Something Goes Wrong
 
