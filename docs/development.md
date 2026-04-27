@@ -66,7 +66,7 @@ Coverage map:
 - `doctor-debug-dossier.sh`: debug dossier export without guarded file contents
 - `run-policy-reload.sh`: live policy reload activates and tears down projections
 - `run-expired-decision-cleanup.sh`: expired durable decisions are pruned from `policy.yml`
-- `run-single-enrollment.sh`: one enrolled file is projected while siblings passthrough
+- `run-single-enrollment.sh`: one enrolled file is projected while siblings stay outside the projection
 - `run-multi-mount.sh`: one projection root handles multiple enrolled paths
 - `run-prompt-linux-ui.sh`: `linux-ui` through a fake `zenity` path suitable for CI
 - `run-prompt-macos-ui.sh`: `macos-ui` through a fake `osascript` path on macOS

@@ -52,7 +52,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.ssh/config")" \
     "ssh config" \
-    "expected unguarded siblings to passthrough under a second mount"
+    "expected unguarded siblings to remain outside the projection"
 
   platform_prime_guarded_path "$home_dir/.kube/config"
   platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
@@ -78,7 +78,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.ssh/config")" \
     "ssh config" \
-    "expected sibling passthrough files to survive shutdown"
+    "expected sibling files to survive shutdown"
 }
 
 main "$@"

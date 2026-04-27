@@ -115,8 +115,8 @@ Runtime notes:
 - transient policy read/stat failures keep the current projection active and report
   the real error
 - one `run` process supervises one projection root
-- multiple enrolled files are supported through the same projection root, including
-  nested guarded paths
+- multiple enrolled files are supported through the same projection root as
+  flat `<object_id>` projection entries
 - remembered decisions take effect on the next guarded access without requiring
   a remount
 - expired durable decisions are pruned from `policy.yml`

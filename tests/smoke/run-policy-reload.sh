@@ -45,7 +45,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected passthrough siblings to survive policy-driven mount activation"
+    "expected siblings to remain outside policy-driven projection activation"
 
   unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
   grep -F "file-snitch: waiting for active projection to stop: $home_dir/.kube/config" <<<"$unenroll_output" >/dev/null || fail "expected unenroll to wait for active projection teardown"
@@ -63,7 +63,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected passthrough siblings to remain after unenroll-driven teardown"
+    "expected siblings to remain after unenroll-driven teardown"
 }
 
 main "$@"

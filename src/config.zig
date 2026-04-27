@@ -40,13 +40,11 @@ pub const Decision = struct {
 pub const ProjectionEntry = struct {
     target_path: []u8,
     projection_path: []u8,
-    relative_path: []u8,
     object_id: []u8,
 
     fn deinit(self: *ProjectionEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.target_path);
         allocator.free(self.projection_path);
-        allocator.free(self.relative_path);
         allocator.free(self.object_id);
         self.* = undefined;
     }
@@ -139,11 +137,24 @@ pub const PolicyFile = struct {
         return null;
     }
 
+    fn findEnrollmentObjectIdIndex(self: *const PolicyFile, object_id: []const u8) ?usize {
+        for (self.enrollments, 0..) |enrollment, index| {
+            if (std.mem.eql(u8, enrollment.object_id, object_id)) {
+                return index;
+            }
+        }
+
+        return null;
+    }
+
     pub fn appendEnrollment(self: *PolicyFile, enrolled_path: []const u8, object_id: []const u8) !void {
         try validateEnrollment(.{
             .path = enrolled_path,
             .object_id = object_id,
         });
+        if (self.findEnrollmentObjectIdIndex(object_id) != null) {
+            return error.InvalidEnrollmentObjectId;
+        }
 
         const owned_path = try self.allocator.dupe(u8, enrolled_path);
         errdefer self.allocator.free(owned_path);
@@ -307,9 +318,7 @@ pub const PolicyFile = struct {
         }
 
         for (self.enrollments) |enrollment| {
-            const relative_path = try projectionRelativePathAlloc(allocator, enrollment.path);
-            errdefer allocator.free(relative_path);
-            const projection_path = try std.fs.path.join(allocator, &.{ root_path, relative_path });
+            const projection_path = try std.fs.path.join(allocator, &.{ root_path, enrollment.object_id });
             errdefer allocator.free(projection_path);
             const target_path = try allocator.dupe(u8, enrollment.path);
             errdefer allocator.free(target_path);
@@ -319,7 +328,6 @@ pub const PolicyFile = struct {
             entries[initialized] = .{
                 .target_path = target_path,
                 .projection_path = projection_path,
-                .relative_path = relative_path,
                 .object_id = object_id,
             };
             initialized += 1;
@@ -591,16 +599,6 @@ pub fn defaultProjectionRootPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ base, "file-snitch", "projection" });
 }
 
-fn projectionRelativePathAlloc(allocator: std.mem.Allocator, target_path: []const u8) ![]u8 {
-    if (!std.fs.path.isAbsolute(target_path)) {
-        return error.InvalidEnrollmentPath;
-    }
-    if (std.mem.eql(u8, target_path, "/")) {
-        return error.InvalidEnrollmentPath;
-    }
-    return allocator.dupe(u8, target_path[1..]);
-}
-
 fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
     if (!std.mem.startsWith(u8, candidate, base)) {
         return false;
@@ -737,6 +735,11 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
             .object_id = raw.object_id,
         });
         try requirePolicyPathWithinHome(allocator, owned_path, error.InvalidEnrollmentPath);
+        for (enrollments[0..initialized]) |existing| {
+            if (std.mem.eql(u8, existing.object_id, raw.object_id)) {
+                return error.InvalidEnrollmentObjectId;
+            }
+        }
         const owned_object_id = try allocator.dupe(u8, raw.object_id);
         errdefer allocator.free(owned_object_id);
         enrollments[index] = .{
@@ -818,9 +821,18 @@ fn validateEnrollment(raw: RawEnrollment) !void {
     if (!std.fs.path.isAbsolute(raw.path) or raw.path.len <= 1) {
         return error.InvalidEnrollmentPath;
     }
-    if (raw.object_id.len == 0) {
+    if (raw.object_id.len == 0 or raw.object_id[0] == '.') {
         return error.InvalidEnrollmentObjectId;
     }
+    for (raw.object_id) |byte| {
+        if (!isEnrollmentObjectIdByte(byte)) {
+            return error.InvalidEnrollmentObjectId;
+        }
+    }
+}
+
+fn isEnrollmentObjectIdByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '.';
 }
 
 fn validateDecision(raw: RawDecision) !void {

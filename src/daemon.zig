@@ -190,7 +190,6 @@ pub const Session = struct {
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
-            .source_dir_fd = state.filesystem.source_dir.?.handle,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
         });

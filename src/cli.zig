@@ -640,7 +640,6 @@ fn runStaticPolicy(command: RunCommand) !void {
     var guarded_entry_count: usize = 0;
     defer {
         for (guarded_entries[0..guarded_entry_count]) |entry| {
-            allocator.free(entry.relative_path);
             allocator.free(entry.object_id);
             allocator.free(entry.lock_anchor_path);
             if (entry.policy_path) |policy_path| allocator.free(policy_path);
@@ -655,7 +654,6 @@ fn runStaticPolicy(command: RunCommand) !void {
 
     for (projection_plan.entries, 0..) |entry, entry_index| {
         guarded_entries[entry_index] = .{
-            .relative_path = try allocator.dupe(u8, entry.relative_path),
             .object_id = try allocator.dupe(u8, entry.object_id),
             .lock_anchor_path = try enrollment_ops.defaultLockAnchorPathAlloc(allocator, entry.object_id),
             .policy_path = try allocator.dupe(u8, entry.target_path),

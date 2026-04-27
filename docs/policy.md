@@ -54,7 +54,7 @@ Current constraints:
 
 - `path` must be absolute after `~/...` expansion
 - `path` must be under the current user's home directory after expansion
-- `object_id` must be non-empty
+- `object_id` must be non-empty and must not contain `/`
 - the target file must be a user-owned regular file under the current user's
   home directory when enrolled through the CLI
 - exact-file enrollment is the product model; the state-directory projection is

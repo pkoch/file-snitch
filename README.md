@@ -76,8 +76,8 @@ Regenerate the embedded demo artifacts with:
 ```
 
 The checked-in demo is a tmux-driven session that shows the agent pane, the
-daemon pane, and a user shell triggering guarded access and sibling
-passthrough.
+daemon pane, and a user shell triggering guarded access while sibling files
+remain outside the projection.
 
 ## Reporting Problems
 
