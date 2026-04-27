@@ -10,6 +10,7 @@ const runtime = app_src.runtime;
 const store = app_src.store;
 const c = @cImport({
     @cInclude("fcntl.h");
+    @cInclude("stdlib.h");
 });
 
 pub const std_options: std.Options = .{
@@ -686,6 +687,72 @@ test "policy file save round-trips appended enrollments" {
     try std.testing.expectEqualStrings("/home/pkoch/.ssh/id_ed25519", reloaded.enrollments[1].path);
     try std.testing.expectEqualStrings("ssh-main", reloaded.enrollments[1].object_id);
     try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
+}
+
+test "policy file expands and saves home-relative paths" {
+    const allocator = std.testing.allocator;
+    var temp_dir = try TempDir.init(allocator, "home-relative-policy");
+    defer temp_dir.deinit();
+
+    const home_dir = try temp_dir.childPathAlloc("home");
+    defer allocator.free(home_dir);
+    try makeDirAbsolute(home_dir);
+
+    const old_home = runtime.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    defer if (old_home) |value| allocator.free(value);
+    const old_home_z = if (old_home) |value| try allocator.dupeZ(u8, value) else null;
+    defer if (old_home_z) |value| allocator.free(value);
+    defer {
+        if (old_home_z) |value| {
+            _ = c.setenv("HOME", value.ptr, 1);
+        } else {
+            _ = c.unsetenv("HOME");
+        }
+    }
+
+    const home_dir_z = try allocator.dupeZ(u8, home_dir);
+    defer allocator.free(home_dir_z);
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv("HOME", home_dir_z.ptr, 1));
+
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
+    defer allocator.free(policy_path);
+    const source =
+        \\version: 1
+        \\enrollments:
+        \\  - path: ~/secrets/gist
+        \\    object_id: gist-secret
+        \\decisions:
+        \\  - executable_path: /usr/bin/cat
+        \\    uid: 1000
+        \\    path: ~/secrets/gist
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: null
+    ;
+
+    var file = try createFileAbsolute(policy_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(source);
+
+    var canonical_home_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_home_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home_dir, &canonical_home_buffer);
+    const canonical_home_dir = canonical_home_buffer[0..canonical_home_len];
+    const expanded_secret_path = try std.fs.path.join(allocator, &.{ canonical_home_dir, "secrets", "gist" });
+    defer allocator.free(expanded_secret_path);
+
+    var loaded = try config.loadFromFile(allocator, policy_path);
+    defer loaded.deinit();
+    try std.testing.expectEqualStrings(expanded_secret_path, loaded.enrollments[0].path);
+    try std.testing.expectEqualStrings(expanded_secret_path, loaded.decisions[0].path);
+
+    try loaded.saveToFile();
+    const saved = try readFileAbsoluteAlloc(allocator, policy_path);
+    defer allocator.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "path: '~/secrets/gist'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, home_dir) == null);
 }
 
 test "policy file save removes enrollment and attached decisions" {

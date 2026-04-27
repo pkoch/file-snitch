@@ -42,7 +42,7 @@ wait_for_policy_allow_rule() {
 
   for _ in $(seq 1 "$attempts"); do
     if grep -F "approval_class: 'read_like'" "$policy_file" >/dev/null 2>&1 &&
-      grep -F "path: '$home_dir/.kube/config'" "$policy_file" >/dev/null 2>&1 &&
+      grep -F "path: '~/.kube/config'" "$policy_file" >/dev/null 2>&1 &&
       grep -F "outcome: 'allow'" "$policy_file" >/dev/null 2>&1; then
       return
     fi

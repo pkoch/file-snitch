@@ -33,24 +33,26 @@ changes.
 
 ## Enrollments
 
-Each enrollment maps one absolute target path to one guarded-store object.
+Each enrollment maps one target path to one guarded-store object. File Snitch
+writes paths under the current user's home directory as `~/...` so the policy
+can roam between machines, and expands them to absolute paths when loading.
 
 ```yaml
 version: 1
 enrollments:
-  - path: '/Users/alice/.kube/config'
+  - path: '~/.kube/config'
     object_id: '2c2188feb50066333c0723302c3ad32e'
 decisions: []
 ```
 
 Fields:
 
-- `path`: absolute path to the enrolled file
+- `path`: enrolled file path, either absolute or `~/...`
 - `object_id`: backend object identifier under `pass:file-snitch/<object_id>`
 
 Current constraints:
 
-- `path` must be absolute
+- `path` must be absolute after `~/...` expansion
 - `object_id` must be non-empty
 - the target file must be a user-owned regular file under the current user's
   home directory when enrolled through the CLI
@@ -65,12 +67,12 @@ temporary and durable choices are written into `policy.yml`.
 ```yaml
 version: 1
 enrollments:
-  - path: '/Users/alice/.kube/config'
+  - path: '~/.kube/config'
     object_id: '2c2188feb50066333c0723302c3ad32e'
 decisions:
   - executable_path: '/usr/local/bin/kubectl'
     uid: 501
-    path: '/Users/alice/.kube/config'
+    path: '~/.kube/config'
     approval_class: 'read_like'
     outcome: 'allow'
     expires_at: '2026-04-09T12:34:56Z'
@@ -80,7 +82,8 @@ Fields:
 
 - `executable_path`: executable path that requested access
 - `uid`: numeric user id that requested access
-- `path`: enrolled target path the decision applies to
+- `path`: enrolled target path the decision applies to, either absolute or
+  `~/...`
 - `approval_class`: approval class covered by the decision
 - `outcome`: remembered result
 - `expires_at`: RFC3339 UTC expiry timestamp or `null`

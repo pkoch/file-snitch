@@ -110,7 +110,9 @@ fn pathKindError(err: std.posix.E) !PathKind {
 pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {
     const home = try runtime.getEnvVarOwned(alloc, "HOME");
     errdefer alloc.free(home);
-    const canonical = try std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), home, alloc);
+    var canonical_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home, &canonical_buffer);
+    const canonical = try alloc.dupe(u8, canonical_buffer[0..canonical_len]);
     alloc.free(home);
     return canonical;
 }

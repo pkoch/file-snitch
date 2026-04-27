@@ -375,8 +375,11 @@ pub const PolicyFile = struct {
         } else {
             try writer.writeAll("enrollments:\n");
             for (self.enrollments) |enrollment| {
+                const serialized_path = try homeRelativePolicyPathAlloc(self.allocator, enrollment.path);
+                defer self.allocator.free(serialized_path);
+
                 try writer.writeAll("  - path: ");
-                try writeYamlString(writer, enrollment.path);
+                try writeYamlString(writer, serialized_path);
                 try writer.writeByte('\n');
                 try writer.writeAll("    object_id: ");
                 try writeYamlString(writer, enrollment.object_id);
@@ -391,12 +394,15 @@ pub const PolicyFile = struct {
 
         try writer.writeAll("decisions:\n");
         for (self.decisions) |decision| {
+            const serialized_path = try homeRelativePolicyPathAlloc(self.allocator, decision.path);
+            defer self.allocator.free(serialized_path);
+
             try writer.writeAll("  - executable_path: ");
             try writeYamlString(writer, decision.executable_path);
             try writer.writeByte('\n');
             try writer.print("    uid: {d}\n", .{decision.uid});
             try writer.writeAll("    path: ");
-            try writeYamlString(writer, decision.path);
+            try writeYamlString(writer, serialized_path);
             try writer.writeByte('\n');
             try writer.writeAll("    approval_class: ");
             try writeYamlString(writer, decision.approval_class);
@@ -684,9 +690,12 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
     }
 
     for (raw_enrollments, 0..) |raw, index| {
-        try validateEnrollment(raw);
-        const owned_path = try allocator.dupe(u8, raw.path);
+        const owned_path = try expandHomeRelativePolicyPathAlloc(allocator, raw.path);
         errdefer allocator.free(owned_path);
+        try validateEnrollment(.{
+            .path = owned_path,
+            .object_id = raw.object_id,
+        });
         const owned_object_id = try allocator.dupe(u8, raw.object_id);
         errdefer allocator.free(owned_object_id);
         enrollments[index] = .{
@@ -719,11 +728,18 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
     }
 
     for (raw_decisions, 0..) |raw, index| {
-        try validateDecision(raw);
+        const owned_path = try expandHomeRelativePolicyPathAlloc(allocator, raw.path);
+        errdefer allocator.free(owned_path);
+        try validateDecision(.{
+            .executable_path = raw.executable_path,
+            .uid = raw.uid,
+            .path = owned_path,
+            .approval_class = raw.approval_class,
+            .outcome = raw.outcome,
+            .expires_at = raw.expires_at,
+        });
         const owned_executable_path = try allocator.dupe(u8, raw.executable_path);
         errdefer allocator.free(owned_executable_path);
-        const owned_path = try allocator.dupe(u8, raw.path);
-        errdefer allocator.free(owned_path);
         const owned_approval_class = try allocator.dupe(u8, raw.approval_class);
         errdefer allocator.free(owned_approval_class);
         const owned_outcome = try allocator.dupe(u8, raw.outcome);
@@ -794,6 +810,51 @@ fn normalizeScalar(value: []const u8) ?[]const u8 {
 fn normalizeOptionalScalar(value: ?[]const u8) ?[]const u8 {
     const raw = value orelse return null;
     return normalizeScalar(raw);
+}
+
+fn expandHomeRelativePolicyPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (!isHomeRelativePolicyPath(path)) {
+        return allocator.dupe(u8, path);
+    }
+
+    const home_dir = try currentUserHomeAlloc(allocator);
+    defer allocator.free(home_dir);
+
+    if (path.len == 1) {
+        return allocator.dupe(u8, home_dir);
+    }
+
+    return std.fs.path.join(allocator, &.{ home_dir, path[2..] });
+}
+
+fn homeRelativePolicyPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const home_dir = currentUserHomeAlloc(allocator) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound, error.FileNotFound => return allocator.dupe(u8, path),
+        else => return err,
+    };
+    defer allocator.free(home_dir);
+
+    if (std.mem.eql(u8, path, home_dir)) {
+        return allocator.dupe(u8, "~");
+    }
+    if (isDescendantPath(home_dir, path)) {
+        return std.fmt.allocPrint(allocator, "~/{s}", .{path[home_dir.len + 1 ..]});
+    }
+    return allocator.dupe(u8, path);
+}
+
+fn isHomeRelativePolicyPath(path: []const u8) bool {
+    return std.mem.eql(u8, path, "~") or std.mem.startsWith(u8, path, "~/");
+}
+
+fn currentUserHomeAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const home = try runtime.getEnvVarOwned(allocator, "HOME");
+    errdefer allocator.free(home);
+    var canonical_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home, &canonical_buffer);
+    const canonical = try allocator.dupe(u8, canonical_buffer[0..canonical_len]);
+    allocator.free(home);
+    return canonical;
 }
 
 fn parseRawDecisionExpiration(value: []const u8) !?i64 {
