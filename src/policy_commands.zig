@@ -73,9 +73,14 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
         try waitForTargetPathToDisappear(pending.enrolled_path);
     }
 
-    try removeDecisionsForUnenrolledPath(allocator, policy_path, pending.enrolled_path);
     try enrollment.moveGuardedFileBack(allocator, &guarded_store, pending.object_id, pending.enrolled_path);
     restore_policy_on_error = false;
+    removeDecisionsForUnenrolledPath(allocator, policy_path, pending.enrolled_path) catch |err| {
+        std.debug.print(
+            "warn: unenrolled {s}, but failed to remove remembered decisions: {}\n",
+            .{ pending.enrolled_path, err },
+        );
+    };
 
     std.debug.print(
         "file-snitch: unenrolled {s} from {s}\n",
