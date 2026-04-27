@@ -77,6 +77,15 @@ const CountingPromptContext = struct {
     response: prompt.Response,
 };
 
+const CapturingPromptContext = struct {
+    count: usize = 0,
+    response: prompt.Response,
+    expected_path: []const u8,
+    expected_label: []const u8,
+    saw_expected_path: bool = false,
+    saw_expected_label: bool = false,
+};
+
 const TempDir = struct {
     allocator: std.mem.Allocator,
     path: []u8,
@@ -262,12 +271,31 @@ fn countingPromptBroker(context: *CountingPromptContext) prompt.Broker {
     };
 }
 
+fn capturingPromptBroker(context: *CapturingPromptContext) prompt.Broker {
+    return .{
+        .context = context,
+        .resolve_fn = resolveCapturingPrompt,
+    };
+}
+
 fn resolveCountingPrompt(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
     _ = request;
     const context = raw_context orelse return .{ .decision = .unavailable };
     const counting_context: *CountingPromptContext = @ptrCast(@alignCast(context));
     counting_context.count += 1;
     return counting_context.response;
+}
+
+fn resolveCapturingPrompt(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
+    const capturing_context: *CapturingPromptContext = @ptrCast(@alignCast(context));
+    capturing_context.count += 1;
+    capturing_context.saw_expected_path = std.mem.eql(u8, request.path, capturing_context.expected_path);
+    capturing_context.saw_expected_label = if (request.label) |label|
+        std.mem.eql(u8, label, capturing_context.expected_label)
+    else
+        false;
+    return capturing_context.response;
 }
 
 fn expectEntriesContain(entries: []const []const u8, expected: []const []const u8) !void {
@@ -545,6 +573,86 @@ test "policy and prompt paths are covered by core assertions" {
     defer default_prompt_audit.deinit();
     try expectAuditEvent(default_prompt_audit.items, "prompt", "read /guarded-note.txt", 1);
     try expectAuditEvent(default_prompt_audit.items, "read", guarded_note_path, 21);
+}
+
+test "daemon sends home-relative display labels to prompt broker" {
+    const allocator = std.testing.allocator;
+    var home = try TempDir.init(allocator, "home");
+    defer home.deinit();
+
+    var canonical_home_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_home_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home.path, &canonical_home_buffer);
+    const canonical_home = canonical_home_buffer[0..canonical_home_len];
+
+    var scoped_home = try ScopedHome.init(allocator, canonical_home);
+    defer scoped_home.deinit();
+
+    const source_parent = try std.fs.path.join(allocator, &.{ canonical_home, ".kube" });
+    defer allocator.free(source_parent);
+    try makeDirAbsolute(source_parent);
+
+    const source_guarded_path = try std.fs.path.join(allocator, &.{ source_parent, "config" });
+    defer allocator.free(source_guarded_path);
+
+    const lock_anchor_path = try home.childPathAlloc("config.lock");
+    defer allocator.free(lock_anchor_path);
+
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "kube-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded kubeconfig\n",
+    });
+
+    var prompt_context = CapturingPromptContext{
+        .response = .{ .decision = .allow },
+        .expected_path = source_guarded_path,
+        .expected_label = "read ~/.kube/config",
+    };
+
+    var session = try daemon.Session.initEnrolledParent(allocator, .{
+        .mount_path = source_parent,
+        .guarded_entries = &.{.{
+            .relative_path = "config",
+            .object_id = "kube-config",
+            .lock_anchor_path = lock_anchor_path,
+        }},
+        .guarded_store = &guarded_store,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .prompt,
+        .policy_path = null,
+        .policy_rule_views = &.{},
+        .prompt_broker = capturingPromptBroker(&prompt_context),
+    });
+    defer session.deinit();
+
+    var buffer: [64]u8 = undefined;
+    const context: filesystem.AccessContext = .{ .pid = 1234, .uid = 1000, .gid = 1000 };
+
+    const read_len = session.state.filesystem.readInto("/config", 0, &buffer, context, null);
+    try std.testing.expect(read_len > 0);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+    try std.testing.expect(prompt_context.saw_expected_path);
+    try std.testing.expect(prompt_context.saw_expected_label);
+
+    prompt_context.expected_label = "open O_RDONLY ~/.kube/config";
+    prompt_context.saw_expected_path = false;
+    prompt_context.saw_expected_label = false;
+
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile("/config", .{
+        .flags = c.O_RDONLY,
+        .handle_id = 0xfeed,
+    }, context));
+    try std.testing.expectEqual(@as(usize, 2), prompt_context.count);
+    try std.testing.expect(prompt_context.saw_expected_path);
+    try std.testing.expect(prompt_context.saw_expected_label);
 }
 
 test "open write handle grants mutation access until release" {

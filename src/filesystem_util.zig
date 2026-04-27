@@ -234,6 +234,29 @@ pub fn formatOpenPromptLabel(
     return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ operation, mode.items, path });
 }
 
+pub fn formatHomeRelativePathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const home = try runtime.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home);
+
+    var canonical_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home, &canonical_buffer);
+    return formatHomeRelativePathWithHomeAlloc(allocator, canonical_buffer[0..canonical_len], path);
+}
+
+pub fn formatHomeRelativePathWithHomeAlloc(allocator: std.mem.Allocator, home: []const u8, path: []const u8) ![]u8 {
+    if (std.mem.eql(u8, path, home)) {
+        return allocator.dupe(u8, "~");
+    }
+    if (isDescendantPath(home, path)) {
+        const relative_path = if (isRootPath(home))
+            path[1..]
+        else
+            path[home.len + 1 ..];
+        return std.fmt.allocPrint(allocator, "~/{s}", .{relative_path});
+    }
+    return allocator.dupe(u8, path);
+}
+
 pub fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
     return switch (access_class) {
         .read => "read",
@@ -369,6 +392,22 @@ test "formatOpenPromptLabel emits mode token then flags in declaration order" {
     const bare = try formatOpenPromptLabel(testing.allocator, "create", "/bar", c.O_RDONLY);
     defer testing.allocator.free(bare);
     try testing.expectEqualStrings("create O_RDONLY /bar", bare);
+}
+
+test "formatHomeRelativePathWithHomeAlloc emits tilde-relative paths inside home" {
+    const home = "/Users/test";
+
+    const home_label = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/test");
+    defer testing.allocator.free(home_label);
+    try testing.expectEqualStrings("~", home_label);
+
+    const child_label = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/test/.kube/config");
+    defer testing.allocator.free(child_label);
+    try testing.expectEqualStrings("~/.kube/config", child_label);
+
+    const prefix_trap = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/tester/.kube/config");
+    defer testing.allocator.free(prefix_trap);
+    try testing.expectEqualStrings("/Users/tester/.kube/config", prefix_trap);
 }
 
 test "mapFsError routes every enumerated branch and falls back to EIO" {

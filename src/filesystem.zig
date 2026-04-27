@@ -228,6 +228,14 @@ pub const EnrolledParentConfig = struct {
     audit_output_file: ?std.Io.File = null,
 };
 
+const AgentPromptLabel = union(enum) {
+    default,
+    open_flags: struct {
+        operation: []const u8,
+        flags: i32,
+    },
+};
+
 pub const Model = struct {
     allocator: std.mem.Allocator,
     mount_path: []u8,
@@ -606,7 +614,7 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         context: AccessContext,
     ) i32 {
-        return self.authorizeAccessDetailed(path, access_class, context, null);
+        return self.authorizeAccessDetailed(path, access_class, context, null, .default);
     }
 
     pub fn openFile(
@@ -632,7 +640,13 @@ pub const Model = struct {
             return errnoCode(.NOMEM);
         };
         defer self.allocator.free(label);
-        const auth_result = self.authorizeAccessDetailed(path, access_class, context, label);
+        const auth_result = self.authorizeAccessDetailed(
+            path,
+            access_class,
+            context,
+            label,
+            .{ .open_flags = .{ .operation = "open", .flags = file_request.flags } },
+        );
         if (auth_result != 0) {
             return auth_result;
         }
@@ -650,6 +664,7 @@ pub const Model = struct {
         access_class: policy.AccessClass,
         context: AccessContext,
         label: ?[]const u8,
+        agent_label: AgentPromptLabel,
     ) i32 {
         const policy_path = self.policyPathForVirtualPathAlloc(path) catch |err| switch (err) {
             error.OutOfMemory => return errnoCode(.NOMEM),
@@ -679,7 +694,7 @@ pub const Model = struct {
                 self.recordPolicyAudit(access_class, path, .deny, context, label);
                 break :blk errnoCode(.ACCES);
             },
-            .prompt => self.resolvePromptDecision(request, path, context, label),
+            .prompt => self.resolvePromptDecision(request, path, context, label, agent_label),
         };
     }
 
@@ -1145,7 +1160,13 @@ pub const Model = struct {
                 break :blk errnoCode(.NOMEM);
             };
             defer self.allocator.free(label);
-            break :blk self.authorizeAccessDetailed(path, .create, context, label);
+            break :blk self.authorizeAccessDetailed(
+                path,
+                .create,
+                context,
+                label,
+                .{ .open_flags = .{ .operation = "create", .flags = flags } },
+            );
         } else self.authorizeAccess(path, .create, context);
         if (auth_result != 0) {
             return auth_result;
@@ -1882,6 +1903,7 @@ pub const Model = struct {
         display_path: []const u8,
         context: AccessContext,
         label: ?[]const u8,
+        agent_label: AgentPromptLabel,
     ) i32 {
         const audit_event_path = label orelse blk: {
             break :blk std.fmt.allocPrint(
@@ -1892,11 +1914,17 @@ pub const Model = struct {
         };
         defer if (label == null) self.allocator.free(audit_event_path);
 
+        const agent_event_path = self.formatAgentPromptLabel(request, agent_label) catch |err| switch (err) {
+            error.OutOfMemory => return errnoCode(.NOMEM),
+            else => return errnoCode(.IO),
+        };
+        defer self.allocator.free(agent_event_path);
+
         const response = if (self.prompt_broker) |broker|
             broker.resolve(.{
                 .path = request.path,
                 .access_class = request.access_class,
-                .label = audit_event_path,
+                .label = agent_event_path,
                 .can_remember = request.executable_path != null,
                 .pid = request.pid,
                 .uid = request.uid,
@@ -1912,6 +1940,29 @@ pub const Model = struct {
         return switch (response.decision) {
             .allow => 0,
             .deny, .timeout, .unavailable => errnoCode(.ACCES),
+        };
+    }
+
+    fn formatAgentPromptLabel(
+        self: *Model,
+        request: policy.Request,
+        agent_label: AgentPromptLabel,
+    ) ![]u8 {
+        const display_path = try formatHomeRelativePathAlloc(self.allocator, request.path);
+        defer self.allocator.free(display_path);
+
+        return switch (agent_label) {
+            .default => std.fmt.allocPrint(
+                self.allocator,
+                "{s} {s}",
+                .{ accessClassLabel(request.access_class), display_path },
+            ),
+            .open_flags => |open_flags| formatOpenPromptLabel(
+                self.allocator,
+                open_flags.operation,
+                display_path,
+                open_flags.flags,
+            ),
         };
     }
 
@@ -2202,6 +2253,7 @@ const accessClassForOpenFlags = util.accessClassForOpenFlags;
 const authorizeReadFromOpenFlags = util.authorizeReadFromOpenFlags;
 const authorizeWriteFromOpenFlags = util.authorizeWriteFromOpenFlags;
 const formatOpenPromptLabel = util.formatOpenPromptLabel;
+const formatHomeRelativePathAlloc = util.formatHomeRelativePathAlloc;
 const accessClassLabel = util.accessClassLabel;
 const isRootPath = util.isRootPath;
 const isTransientVirtualPath = util.isTransientVirtualPath;
