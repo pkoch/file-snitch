@@ -62,6 +62,20 @@ main() {
   grep -F "ok: guarded object exists in store: pass:file-snitch/$object_id" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
   grep -F "ok: target path currently absent: $home_dir/.kube/config" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the evacuated target path"
 
+  cat >"$policy_file" <<EOF
+version: 1
+enrollments:
+  - path: $home_dir/.kube/config
+    object_id: $object_id
+decisions:
+  - executable_path: /usr/bin/cat
+    uid: 501
+    path: $home_dir/.kube/config
+    approval_class: read_like
+    outcome: allow
+    expires_at: null
+EOF
+
   unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
   grep -F "file-snitch: unenrolled $home_dir/.kube/config from $policy_file" <<<"$unenroll_output" >/dev/null || fail "expected unenroll output to mention the target path"
 
@@ -78,6 +92,7 @@ main() {
 
   status_output="$(capture_file_snitch status)"
   grep -F "enrollments: 0" <<<"$status_output" >/dev/null || fail "expected no enrollments after unenroll"
+  grep -F "decisions: 0" <<<"$status_output" >/dev/null || fail "expected no remembered decisions after unenroll"
   grep -F "planned_mounts: 0" <<<"$status_output" >/dev/null || fail "expected no planned mounts after unenroll"
 }
 

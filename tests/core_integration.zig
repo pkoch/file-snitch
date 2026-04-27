@@ -396,6 +396,8 @@ test "policy and prompt paths are covered by core assertions" {
     defer fixture.deinit();
 
     const guarded_note_path = "/guarded-note.txt";
+    const guarded_note_policy_path = try std.fmt.allocPrint(allocator, "{s}/guarded-note.txt", .{fixture.mount_path});
+    defer allocator.free(guarded_note_policy_path);
     const lock_anchor_path = try fixture.childPathAlloc("guard-policy.lock");
     defer allocator.free(lock_anchor_path);
 
@@ -427,12 +429,12 @@ test "policy and prompt paths are covered by core assertions" {
 
     var policy_session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{
         .{
-            .path_prefix = guarded_note_path,
+            .path_prefix = guarded_note_policy_path,
             .access_class = .read,
             .outcome = .prompt,
         },
         .{
-            .path_prefix = guarded_note_path,
+            .path_prefix = guarded_note_policy_path,
             .access_class = .write,
             .outcome = .deny,
         },
@@ -451,7 +453,7 @@ test "policy and prompt paths are covered by core assertions" {
     var allow_prompt_context = prompt.ScriptedContext.init(&.{.allow});
     var allowed_prompt_session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{
         .{
-            .path_prefix = guarded_note_path,
+            .path_prefix = guarded_note_policy_path,
             .access_class = .write,
             .outcome = .prompt,
         },
@@ -1071,6 +1073,7 @@ test "live policy reload suppresses repeated prompt without remount" {
 
     var policy_file = try config.loadFromFile(allocator, policy_path);
     defer policy_file.deinit();
+    try policy_file.appendEnrollment(source_guarded_path, "kube-config");
     try policy_file.saveToFile();
 
     var mock_state: store.MockState = .{};
@@ -1129,7 +1132,7 @@ test "live policy reload suppresses repeated prompt without remount" {
         try writable_policy.upsertDecision(
             "/usr/bin/demo",
             1000,
-            "/config",
+            source_guarded_path,
             "read_like",
             "allow",
             null,

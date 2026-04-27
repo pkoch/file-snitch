@@ -651,8 +651,14 @@ pub const Model = struct {
         context: AccessContext,
         label: ?[]const u8,
     ) i32 {
+        const policy_path = self.policyPathForVirtualPathAlloc(path) catch |err| switch (err) {
+            error.OutOfMemory => return errnoCode(.NOMEM),
+            else => return errnoCode(.INVAL),
+        };
+        defer self.allocator.free(policy_path);
+
         const request: policy.Request = .{
-            .path = path,
+            .path = policy_path,
             .access_class = access_class,
             .pid = context.pid,
             .uid = context.uid,
@@ -673,8 +679,16 @@ pub const Model = struct {
                 self.recordPolicyAudit(access_class, path, .deny, context, label);
                 break :blk errnoCode(.ACCES);
             },
-            .prompt => self.resolvePromptDecision(request, context, label),
+            .prompt => self.resolvePromptDecision(request, path, context, label),
         };
+    }
+
+    fn policyPathForVirtualPathAlloc(self: *const Model, path: []const u8) ![]u8 {
+        if (isRootPath(path)) {
+            return self.allocator.dupe(u8, self.mount_path);
+        }
+        const relative_path = relativeMountedPath(path) orelse return error.InvalidPath;
+        return std.fs.path.join(self.allocator, &.{ self.mount_path, relative_path });
     }
 
     pub fn readInto(
@@ -1862,12 +1876,18 @@ pub const Model = struct {
         });
     }
 
-    fn resolvePromptDecision(self: *Model, request: policy.Request, context: AccessContext, label: ?[]const u8) i32 {
+    fn resolvePromptDecision(
+        self: *Model,
+        request: policy.Request,
+        display_path: []const u8,
+        context: AccessContext,
+        label: ?[]const u8,
+    ) i32 {
         const audit_event_path = label orelse blk: {
             break :blk std.fmt.allocPrint(
                 self.allocator,
                 "{s} {s}",
-                .{ accessClassLabel(request.access_class), request.path },
+                .{ accessClassLabel(request.access_class), display_path },
             ) catch return errnoCode(.NOMEM);
         };
         defer if (label == null) self.allocator.free(audit_event_path);
@@ -1876,7 +1896,7 @@ pub const Model = struct {
             broker.resolve(.{
                 .path = request.path,
                 .access_class = request.access_class,
-                .label = label,
+                .label = audit_event_path,
                 .can_remember = request.executable_path != null,
                 .pid = request.pid,
                 .uid = request.uid,

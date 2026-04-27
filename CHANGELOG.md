@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed remembered decisions so they are stored and matched against the
+  enrolled path, and so `unenroll` removes decisions attached to that path.
+
 ## [0.5.0] - 2026-04-27
 
 ### Fixed
