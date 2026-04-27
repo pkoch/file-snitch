@@ -73,7 +73,7 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
         try waitForTargetPathToDisappear(pending.enrolled_path);
     }
 
-    try enrollment.moveGuardedFileBack(allocator, &guarded_store, pending.object_id, pending.enrolled_path);
+    try restoreGuardedFileBackIfStillUnenrolled(allocator, policy_path, &guarded_store, pending.object_id, pending.enrolled_path);
     restore_policy_on_error = false;
     removeDecisionsForUnenrolledPath(allocator, policy_path, pending.enrolled_path) catch |err| {
         std.debug.print(
@@ -150,6 +150,27 @@ fn rollbackUnenrollPolicyUpdate(
 
     try loaded_policy.appendEnrollment(enrolled_path, object_id);
     try loaded_policy.saveToFile();
+}
+
+fn restoreGuardedFileBackIfStillUnenrolled(
+    allocator: std.mem.Allocator,
+    policy_path: []const u8,
+    guarded_store: *store.Backend,
+    object_id: []const u8,
+    enrolled_path: []const u8,
+) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    defer policy_lock.deinit();
+
+    var loaded_policy = try config.loadFromFile(allocator, policy_path);
+    defer loaded_policy.deinit();
+
+    if (loaded_policy.findEnrollmentIndex(enrolled_path) != null) {
+        std.debug.print("error: enrollment reappeared during unenroll: {s}\n", .{enrolled_path});
+        return error.InvalidUsage;
+    }
+
+    try enrollment.moveGuardedFileBack(allocator, guarded_store, object_id, enrolled_path);
 }
 
 fn removeDecisionsForUnenrolledPath(
