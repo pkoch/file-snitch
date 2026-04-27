@@ -872,21 +872,21 @@ fn parseLinuxUiResponse(term: std.process.Child.Term, raw_output: []const u8) !p
 
 fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
     const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
-    if (std.mem.eql(u8, trimmed, "Allow once") or std.mem.eql(u8, trimmed, "allow")) {
+    if (std.mem.eql(u8, trimmed, "Allow once")) {
         return .{ .decision = .allow, .remember_kind = .once };
     }
-    if (std.mem.eql(u8, trimmed, "Deny once") or std.mem.eql(u8, trimmed, "deny")) {
+    if (std.mem.eql(u8, trimmed, "Deny once")) {
         return .{ .decision = .deny, .remember_kind = .once };
     }
-    if (std.mem.eql(u8, trimmed, "Allow 5 min") or std.mem.eql(u8, trimmed, "allow-5m")) return .{
+    if (std.mem.eql(u8, trimmed, "Allow 5 min")) return .{
         .decision = .allow,
         .remember_kind = .temporary,
         .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
     };
-    if (std.mem.eql(u8, trimmed, "Always allow") or std.mem.eql(u8, trimmed, "always-allow")) {
+    if (std.mem.eql(u8, trimmed, "Always allow")) {
         return .{ .decision = .allow, .remember_kind = .durable };
     }
-    if (std.mem.eql(u8, trimmed, "Always deny") or std.mem.eql(u8, trimmed, "always-deny")) {
+    if (std.mem.eql(u8, trimmed, "Always deny")) {
         return .{ .decision = .deny, .remember_kind = .durable };
     }
     return error.InvalidProtocolMessage;
@@ -1286,7 +1286,6 @@ fn outcomeFromLabel(label: []const u8) !prompt.Decision {
     if (std.mem.eql(u8, label, "deny")) return .deny;
     if (std.mem.eql(u8, label, "timeout")) return .timeout;
     if (std.mem.eql(u8, label, "unavailable")) return .unavailable;
-    if (std.mem.eql(u8, label, "cancel") or std.mem.eql(u8, label, "canceled")) return .deny;
     return error.InvalidProtocolMessage;
 }
 
@@ -1578,6 +1577,14 @@ test "parse linux ui response accepts known exit codes" {
     const remembered = try parseLinuxUiResponse(.{ .exited = 0 }, "Always deny");
     try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
     try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
+}
+
+test "parse linux ui response rejects hidden machine labels" {
+    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "allow"));
+    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "deny"));
+    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "allow-5m"));
+    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "always-allow"));
+    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "always-deny"));
 }
 
 test "stale socket cleanup rejects regular files" {
@@ -2023,14 +2030,11 @@ test "outcomeFromLabel maps canonical labels to decisions" {
     try std.testing.expectEqual(prompt.Decision.unavailable, try outcomeFromLabel("unavailable"));
 }
 
-test "outcomeFromLabel maps cancel aliases to deny" {
-    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("cancel"));
-    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("canceled"));
-}
-
 test "outcomeFromLabel rejects unknown and prefix-matching labels" {
     try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel(""));
     try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("abc"));
     try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("allowed"));
     try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("ALLOW"));
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("cancel"));
+    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("canceled"));
 }

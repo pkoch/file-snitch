@@ -194,7 +194,7 @@ fn parseCommand(args: []const []const u8) !Command {
     if (std.mem.eql(u8, args[0], "completion")) {
         return .{ .completion = try parseCompletionCommand(args[1..]) };
     }
-    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-V") or std.mem.eql(u8, args[0], "version")) {
+    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "version")) {
         return .version;
     }
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help")) {

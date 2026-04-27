@@ -57,7 +57,7 @@ const bash_script =
     \\    esac
     \\
     \\    if [[ ${COMP_CWORD} -eq 1 ]]; then
-    \\        COMPREPLY=( $(compgen -W "agent run enroll unenroll status doctor completion help version --help --version -V" -- "$cur") )
+    \\        COMPREPLY=( $(compgen -W "agent run enroll unenroll status doctor completion help version --help --version" -- "$cur") )
     \\        return 0
     \\    fi
     \\
@@ -101,7 +101,7 @@ const zsh_script =
     \\#compdef file-snitch
     \\
     \\local -a commands
-    \\commands=(agent run enroll unenroll status doctor completion help version --help --version -V)
+    \\commands=(agent run enroll unenroll status doctor completion help version --help --version)
     \\
     \\if (( CURRENT == 2 )); then
     \\    compadd -- $commands

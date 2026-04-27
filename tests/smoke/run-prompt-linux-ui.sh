@@ -48,22 +48,6 @@ if [[ -s "\$queue_path" ]]; then
 fi
 
 case "\$response" in
-  allow|"")
-    printf 'Allow once\n'
-    exit 0
-    ;;
-  allow-5m)
-    printf 'Allow 5 min\n'
-    exit 0
-    ;;
-  always-allow)
-    printf 'Always allow\n'
-    exit 0
-    ;;
-  always-deny)
-    printf 'Always deny\n'
-    exit 0
-    ;;
   "Allow once"|"Allow 5 min"|"Always allow"|"Always deny")
     printf '%s\n' "\$response"
     exit 0
@@ -100,7 +84,7 @@ verify_allow_read() {
 '
 
   trap cleanup_run_fixture EXIT
-  queue_fake_linux_ui_decisions "$fake_ui_queue_file" allow
+  queue_fake_linux_ui_decisions "$fake_ui_queue_file" "Allow once"
   start_linux_ui_prompt_run
   platform_prime_guarded_path "$home_dir/.kube/config"
 

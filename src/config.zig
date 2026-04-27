@@ -785,10 +785,7 @@ fn validateDecision(raw: RawDecision) !void {
 
 fn normalizeScalar(value: []const u8) ?[]const u8 {
     const raw = value;
-    if (std.ascii.eqlIgnoreCase(raw, "null")) {
-        return null;
-    }
-    if (std.mem.eql(u8, raw, "~")) {
+    if (std.mem.eql(u8, raw, "null")) {
         return null;
     }
     return raw;
@@ -969,6 +966,9 @@ test "parse decision expiration rejects invalid values" {
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("later-ish"));
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("4102444800"));
     try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("2026-13-01T00:00:00Z"));
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("NULL"));
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("Null"));
+    try std.testing.expectError(error.InvalidDecisionExpiration, parseRawDecisionExpiration("~"));
 }
 
 fn checkAppendEnrollmentAllocationFailures(allocator: std.mem.Allocator) !void {

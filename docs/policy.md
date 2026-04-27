@@ -129,8 +129,7 @@ Only temporary and durable choices are written to policy. `allow once` and
 
 `expires_at` accepts:
 
-- `null`
-- `~`
+- exact `null`
 - quoted or unquoted RFC3339 UTC timestamps in this exact shape:
   `YYYY-MM-DDTHH:MM:SSZ`
 

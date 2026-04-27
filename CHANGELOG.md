@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed permissive legacy input aliases for prompt outcomes, linux-ui
+  selections, policy expiry nulls, and the `file-snitch -V` version spelling.
+
 ### Fixed
 
 - Fixed remembered decisions so they are stored and matched against the
