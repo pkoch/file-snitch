@@ -53,6 +53,7 @@ Fields:
 Current constraints:
 
 - `path` must be absolute after `~/...` expansion
+- `path` must be under the current user's home directory after expansion
 - `object_id` must be non-empty
 - the target file must be a user-owned regular file under the current user's
   home directory when enrolled through the CLI
@@ -96,6 +97,9 @@ executable_path + uid + path + approval_class
 
 Writing a new remembered decision for the same key replaces the previous
 outcome and expiry.
+
+Decision paths must also be under the current user's home directory after
+`~/...` expansion.
 
 ## Approval Classes
 

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Changed policy writes to store enrolled home-directory paths as `~/...`, and
+  to expand that form when loading policies.
+- Rejected manually configured policy paths outside the current user's home
+  directory.
+
 ## [0.6.0] - 2026-04-27
 
 ### Removed

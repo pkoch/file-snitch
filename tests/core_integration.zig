@@ -3,6 +3,7 @@ const app_src = @import("app_src");
 const builtin = @import("builtin");
 const config = app_src.config;
 const daemon = app_src.daemon;
+const enrollment_ops = app_src.enrollment;
 const filesystem = app_src.filesystem;
 const policy = app_src.policy;
 const prompt = app_src.prompt;
@@ -144,6 +145,45 @@ const TempPolicyFile = struct {
         const allocator = self.dir.allocator;
         allocator.free(self.path);
         self.dir.deinit();
+        self.* = undefined;
+    }
+};
+
+const ScopedHome = struct {
+    allocator: std.mem.Allocator,
+    old_home_z: ?[:0]u8,
+
+    fn init(allocator: std.mem.Allocator, home_dir: []const u8) !ScopedHome {
+        const old_home = runtime.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        errdefer if (old_home) |value| allocator.free(value);
+
+        const old_home_z = if (old_home) |value| blk: {
+            const value_z = try allocator.dupeZ(u8, value);
+            allocator.free(value);
+            break :blk value_z;
+        } else null;
+        errdefer if (old_home_z) |value| allocator.free(value);
+
+        const home_dir_z = try allocator.dupeZ(u8, home_dir);
+        defer allocator.free(home_dir_z);
+        try std.testing.expectEqual(@as(c_int, 0), c.setenv("HOME", home_dir_z.ptr, 1));
+
+        return .{
+            .allocator = allocator,
+            .old_home_z = old_home_z,
+        };
+    }
+
+    fn deinit(self: *ScopedHome) void {
+        if (self.old_home_z) |value| {
+            _ = c.setenv("HOME", value.ptr, 1);
+            self.allocator.free(value);
+        } else {
+            _ = c.unsetenv("HOME");
+        }
         self.* = undefined;
     }
 };
@@ -627,16 +667,16 @@ test "policy file loader parses enrollments and collapses mount plan" {
     const source =
         \\version: 1
         \\enrollments:
-        \\  - path: /home/pkoch/.kube/config
+        \\  - path: ~/.kube/config
         \\    object_id: kube-config
-        \\  - path: /home/pkoch/.config/gh/hosts.yml
+        \\  - path: ~/.config/gh/hosts.yml
         \\    object_id: gh-hosts
-        \\  - path: /home/pkoch/.config/gh/extensions/foo/token.json
+        \\  - path: ~/.config/gh/extensions/foo/token.json
         \\    object_id: gh-extension-token
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /home/pkoch/.kube/config
+        \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: null
@@ -649,8 +689,15 @@ test "policy file loader parses enrollments and collapses mount plan" {
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
 
+    const kube_config_path = try currentHomePathAlloc(allocator, ".kube/config");
+    defer allocator.free(kube_config_path);
+    const kube_mount_path = try currentHomePathAlloc(allocator, ".kube");
+    defer allocator.free(kube_mount_path);
+    const gh_mount_path = try currentHomePathAlloc(allocator, ".config/gh");
+    defer allocator.free(gh_mount_path);
+
     try std.testing.expectEqual(@as(usize, 3), loaded.enrollments.len);
-    try std.testing.expectEqualStrings("/home/pkoch/.kube/config", loaded.enrollments[0].path);
+    try std.testing.expectEqualStrings(kube_config_path, loaded.enrollments[0].path);
     try std.testing.expectEqualStrings("kube-config", loaded.enrollments[0].object_id);
     try std.testing.expectEqual(@as(usize, 1), loaded.decisions.len);
     try std.testing.expectEqualStrings("/usr/bin/kubectl", loaded.decisions[0].executable_path);
@@ -661,8 +708,8 @@ test "policy file loader parses enrollments and collapses mount plan" {
     var mount_plan = try loaded.deriveMountPlan(allocator);
     defer mount_plan.deinit();
     try std.testing.expectEqual(@as(usize, 2), mount_plan.paths.len);
-    try std.testing.expectEqualStrings("/home/pkoch/.kube", mount_plan.paths[0]);
-    try std.testing.expectEqualStrings("/home/pkoch/.config/gh", mount_plan.paths[1]);
+    try std.testing.expectEqualStrings(kube_mount_path, mount_plan.paths[0]);
+    try std.testing.expectEqualStrings(gh_mount_path, mount_plan.paths[1]);
 }
 
 test "policy file save round-trips appended enrollments" {
@@ -674,17 +721,22 @@ test "policy file save round-trips appended enrollments" {
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
 
-    try loaded.appendEnrollment("/home/pkoch/.kube/config", "kube-config");
-    try loaded.appendEnrollment("/home/pkoch/.ssh/id_ed25519", "ssh-main");
+    const kube_config_path = try currentHomePathAlloc(allocator, ".kube/config");
+    defer allocator.free(kube_config_path);
+    const ssh_key_path = try currentHomePathAlloc(allocator, ".ssh/id_ed25519");
+    defer allocator.free(ssh_key_path);
+
+    try loaded.appendEnrollment(kube_config_path, "kube-config");
+    try loaded.appendEnrollment(ssh_key_path, "ssh-main");
     try loaded.saveToFile();
 
     var reloaded = try config.loadFromFile(allocator, path);
     defer reloaded.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), reloaded.enrollments.len);
-    try std.testing.expectEqualStrings("/home/pkoch/.kube/config", reloaded.enrollments[0].path);
+    try std.testing.expectEqualStrings(kube_config_path, reloaded.enrollments[0].path);
     try std.testing.expectEqualStrings("kube-config", reloaded.enrollments[0].object_id);
-    try std.testing.expectEqualStrings("/home/pkoch/.ssh/id_ed25519", reloaded.enrollments[1].path);
+    try std.testing.expectEqualStrings(ssh_key_path, reloaded.enrollments[1].path);
     try std.testing.expectEqualStrings("ssh-main", reloaded.enrollments[1].object_id);
     try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
 }
@@ -698,24 +750,8 @@ test "policy file expands and saves home-relative paths" {
     defer allocator.free(home_dir);
     try makeDirAbsolute(home_dir);
 
-    const old_home = runtime.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    defer if (old_home) |value| allocator.free(value);
-    const old_home_z = if (old_home) |value| try allocator.dupeZ(u8, value) else null;
-    defer if (old_home_z) |value| allocator.free(value);
-    defer {
-        if (old_home_z) |value| {
-            _ = c.setenv("HOME", value.ptr, 1);
-        } else {
-            _ = c.unsetenv("HOME");
-        }
-    }
-
-    const home_dir_z = try allocator.dupeZ(u8, home_dir);
-    defer allocator.free(home_dir_z);
-    try std.testing.expectEqual(@as(c_int, 0), c.setenv("HOME", home_dir_z.ptr, 1));
+    var scoped_home = try ScopedHome.init(allocator, home_dir);
+    defer scoped_home.deinit();
 
     const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
@@ -755,6 +791,46 @@ test "policy file expands and saves home-relative paths" {
     try std.testing.expect(std.mem.indexOf(u8, saved, home_dir) == null);
 }
 
+test "policy file rejects paths outside the current home" {
+    const allocator = std.testing.allocator;
+    var temp_dir = try TempDir.init(allocator, "outside-home-policy");
+    defer temp_dir.deinit();
+
+    const home_dir = try temp_dir.childPathAlloc("home");
+    defer allocator.free(home_dir);
+    try makeDirAbsolute(home_dir);
+
+    var scoped_home = try ScopedHome.init(allocator, home_dir);
+    defer scoped_home.deinit();
+
+    const outside_path = try temp_dir.childPathAlloc("outside/config");
+    defer allocator.free(outside_path);
+
+    const enrollment_policy_path = try temp_dir.childPathAlloc("outside-enrollment.yml");
+    defer allocator.free(enrollment_policy_path);
+    {
+        var file = try createFileAbsolute(enrollment_policy_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("version: 1\nenrollments:\n");
+        try file.writeAll("  - path: ");
+        try file.writeAll(outside_path);
+        try file.writeAll("\n    object_id: outside-secret\ndecisions: []\n");
+    }
+    try std.testing.expectError(error.InvalidEnrollmentPath, config.loadFromFile(allocator, enrollment_policy_path));
+
+    const decision_policy_path = try temp_dir.childPathAlloc("outside-decision.yml");
+    defer allocator.free(decision_policy_path);
+    {
+        var file = try createFileAbsolute(decision_policy_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("version: 1\nenrollments: []\ndecisions:\n");
+        try file.writeAll("  - executable_path: /usr/bin/cat\n    uid: 1000\n    path: ");
+        try file.writeAll(outside_path);
+        try file.writeAll("\n    approval_class: read_like\n    outcome: allow\n    expires_at: null\n");
+    }
+    try std.testing.expectError(error.InvalidDecisionPath, config.loadFromFile(allocator, decision_policy_path));
+}
+
 test "policy file save removes enrollment and attached decisions" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "remove");
@@ -764,12 +840,12 @@ test "policy file save removes enrollment and attached decisions" {
     const source =
         \\version: 1
         \\enrollments:
-        \\  - path: /home/pkoch/.kube/config
+        \\  - path: ~/.kube/config
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /home/pkoch/.kube/config
+        \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: null
@@ -782,8 +858,11 @@ test "policy file save removes enrollment and attached decisions" {
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
 
-    const index = loaded.findEnrollmentIndex("/home/pkoch/.kube/config").?;
-    loaded.removeDecisionsForPath("/home/pkoch/.kube/config");
+    const kube_config_path = try currentHomePathAlloc(allocator, ".kube/config");
+    defer allocator.free(kube_config_path);
+
+    const index = loaded.findEnrollmentIndex(kube_config_path).?;
+    loaded.removeDecisionsForPath(kube_config_path);
     var removed = loaded.removeEnrollmentAt(index);
     defer removed.deinit(allocator);
     try loaded.saveToFile();
@@ -804,18 +883,18 @@ test "compiled durable decisions respect executable path and uid" {
     const source =
         \\version: 1
         \\enrollments:
-        \\  - path: /tmp/guarded/config
+        \\  - path: ~/guarded/config
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: null
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
         \\    expires_at: null
@@ -827,6 +906,7 @@ test "compiled durable decisions respect executable path and uid" {
 
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
+    const guarded_config_path = loaded.enrollments[0].path;
 
     var compiled = try loaded.compilePolicyRuleViews(allocator);
     defer compiled.deinit();
@@ -835,7 +915,7 @@ test "compiled durable decisions respect executable path and uid" {
     defer engine.deinit();
 
     try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .read,
         .pid = 42,
         .uid = 1000,
@@ -844,7 +924,7 @@ test "compiled durable decisions respect executable path and uid" {
     }));
 
     try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
         .uid = 999,
@@ -853,7 +933,7 @@ test "compiled durable decisions respect executable path and uid" {
     }));
 
     try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
         .uid = 1000,
@@ -862,7 +942,7 @@ test "compiled durable decisions respect executable path and uid" {
     }));
 
     try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
         .uid = 1000,
@@ -880,18 +960,18 @@ test "compiled durable decisions ignore expired entries" {
     const source =
         \\version: 1
         \\enrollments:
-        \\  - path: /tmp/guarded/config
+        \\  - path: ~/guarded/config
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: deny
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
         \\    expires_at: '2100-01-01T00:00:00Z'
@@ -903,6 +983,7 @@ test "compiled durable decisions ignore expired entries" {
 
     var loaded = try config.loadFromFile(allocator, path);
     defer loaded.deinit();
+    const guarded_config_path = loaded.enrollments[0].path;
 
     var compiled = try loaded.compilePolicyRuleViews(allocator);
     defer compiled.deinit();
@@ -911,7 +992,7 @@ test "compiled durable decisions ignore expired entries" {
     defer engine.deinit();
 
     try std.testing.expectEqual(policy.Outcome.allow, engine.evaluateAt(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .read,
         .pid = 42,
         .uid = 1000,
@@ -920,7 +1001,7 @@ test "compiled durable decisions ignore expired entries" {
     }, 1_900_000_000));
 
     try std.testing.expectEqual(policy.Outcome.deny, engine.evaluateAt(.{
-        .path = "/tmp/guarded/config",
+        .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
         .uid = 1000,
@@ -938,12 +1019,12 @@ test "policy loader rejects invalid decision expiration" {
     const source =
         \\version: 1
         \\enrollments:
-        \\  - path: /tmp/guarded/config
+        \\  - path: ~/guarded/config
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: later-ish
@@ -968,13 +1049,13 @@ test "policy file prunes expired decisions in place" {
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
         \\    uid: 1000
-        \\    path: /tmp/guarded/config
+        \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
         \\    expires_at: null
@@ -1121,7 +1202,10 @@ test "live policy reload suppresses repeated prompt without remount" {
     const allocator = std.testing.allocator;
     var temp_dir = try TempDir.init(allocator, "live-policy-reload");
     defer temp_dir.deinit();
-    const source_parent = try temp_dir.childPathAlloc("source");
+    var scoped_home = try ScopedHome.init(allocator, temp_dir.path);
+    defer scoped_home.deinit();
+
+    const source_parent = try currentHomePathAlloc(allocator, "source");
     defer allocator.free(source_parent);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
     defer allocator.free(source_guarded_path);
@@ -1215,6 +1299,9 @@ test "live policy reload suppresses repeated prompt without remount" {
 
 test "generated policy engine behavior survives source teardown" {
     const allocator = std.testing.allocator;
+    var scoped_home = try ScopedHome.init(allocator, "/");
+    defer scoped_home.deinit();
+
     var prng = std.Random.DefaultPrng.init(0x5eed_cafe);
     const random = prng.random();
 
@@ -1250,6 +1337,9 @@ test "generated policy engine behavior survives source teardown" {
 
 test "generated policy save load preserves engine behavior" {
     const allocator = std.testing.allocator;
+    var scoped_home = try ScopedHome.init(allocator, "/");
+    defer scoped_home.deinit();
+
     var prng = std.Random.DefaultPrng.init(0x51a0_1eed);
     const random = prng.random();
 
@@ -1736,6 +1826,12 @@ fn readFileAbsoluteAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = try openFileAbsolute(path, .{ .mode = .read_only });
     defer file.close();
     return file.readToEndAlloc(allocator, 1024 * 1024);
+}
+
+fn currentHomePathAlloc(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
+    const home_dir = try enrollment_ops.currentUserHomeAlloc(allocator);
+    defer allocator.free(home_dir);
+    return std.fs.path.join(allocator, &.{ home_dir, relative_path });
 }
 
 fn expectAuditEvent(

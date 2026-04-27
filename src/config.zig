@@ -696,6 +696,7 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
             .path = owned_path,
             .object_id = raw.object_id,
         });
+        try requirePolicyPathWithinHome(allocator, owned_path, error.InvalidEnrollmentPath);
         const owned_object_id = try allocator.dupe(u8, raw.object_id);
         errdefer allocator.free(owned_object_id);
         enrollments[index] = .{
@@ -738,6 +739,7 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
             .outcome = raw.outcome,
             .expires_at = raw.expires_at,
         });
+        try requirePolicyPathWithinHome(allocator, owned_path, error.InvalidDecisionPath);
         const owned_executable_path = try allocator.dupe(u8, raw.executable_path);
         errdefer allocator.free(owned_executable_path);
         const owned_approval_class = try allocator.dupe(u8, raw.approval_class);
@@ -838,13 +840,26 @@ fn homeRelativePolicyPathAlloc(allocator: std.mem.Allocator, path: []const u8) !
         return allocator.dupe(u8, "~");
     }
     if (isDescendantPath(home_dir, path)) {
-        return std.fmt.allocPrint(allocator, "~/{s}", .{path[home_dir.len + 1 ..]});
+        const relative_path = if (std.mem.eql(u8, home_dir, "/"))
+            path[1..]
+        else
+            path[home_dir.len + 1 ..];
+        return std.fmt.allocPrint(allocator, "~/{s}", .{relative_path});
     }
     return allocator.dupe(u8, path);
 }
 
 fn isHomeRelativePolicyPath(path: []const u8) bool {
     return std.mem.eql(u8, path, "~") or std.mem.startsWith(u8, path, "~/");
+}
+
+fn requirePolicyPathWithinHome(allocator: std.mem.Allocator, path: []const u8, err: anyerror) !void {
+    const home_dir = try currentUserHomeAlloc(allocator);
+    defer allocator.free(home_dir);
+
+    if (!isDescendantPath(home_dir, path)) {
+        return err;
+    }
 }
 
 fn currentUserHomeAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -1102,6 +1117,35 @@ test "upsertDecision update handles allocation failures" {
     );
 }
 
+fn setHomeForTest(home: [:0]const u8) !?[:0]u8 {
+    const allocator = std.testing.allocator;
+    const old_home = runtime.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    errdefer if (old_home) |value| allocator.free(value);
+
+    const old_home_z = if (old_home) |value| blk: {
+        const value_z = try allocator.dupeZ(u8, value);
+        allocator.free(value);
+        break :blk value_z;
+    } else null;
+    errdefer if (old_home_z) |value| allocator.free(value);
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv("HOME", home.ptr, 1));
+    return old_home_z;
+}
+
+fn restoreHomeForTest(old_home_z: ?[:0]u8) void {
+    const allocator = std.testing.allocator;
+    if (old_home_z) |value| {
+        _ = c.setenv("HOME", value.ptr, 1);
+        allocator.free(value);
+    } else {
+        _ = c.unsetenv("HOME");
+    }
+}
+
 fn checkCopyEnrollmentsAllocationFailures(allocator: std.mem.Allocator) !void {
     const enrollments = try copyEnrollments(allocator, &.{.{
         .path = "/tmp/demo-secret",
@@ -1111,6 +1155,9 @@ fn checkCopyEnrollmentsAllocationFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "copyEnrollments handles allocation failures" {
+    const old_home_z = try setHomeForTest("/");
+    defer restoreHomeForTest(old_home_z);
+
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         checkCopyEnrollmentsAllocationFailures,
@@ -1131,6 +1178,9 @@ fn checkCopyDecisionsAllocationFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "copyDecisions handles allocation failures" {
+    const old_home_z = try setHomeForTest("/");
+    defer restoreHomeForTest(old_home_z);
+
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         checkCopyDecisionsAllocationFailures,
