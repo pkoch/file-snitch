@@ -47,21 +47,23 @@ main() {
     "plain sibling" \
     "expected passthrough siblings to survive policy-driven mount activation"
 
-  cat >"$policy_file" <<EOF
-version: 1
-enrollments: []
-decisions: []
-EOF
+  unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
+  grep -F "file-snitch: waiting for active projection to stop: $home_dir/.kube/config" <<<"$unenroll_output" >/dev/null || fail "expected unenroll to wait for active projection teardown"
+  grep -F "file-snitch: unenrolled $home_dir/.kube/config from $policy_file" <<<"$unenroll_output" >/dev/null || fail "expected unenroll output to mention the target path"
 
   wait_for_mounts_gone
 
-  assert_file_missing \
+  assert_file_exists \
     "$home_dir/.kube/config" \
-    "expected the reconciler to tear the projection down when the policy stops enrolling the file"
+    "expected unenroll to restore the file after tearing the projection down"
+  assert_eq \
+    "$(cat "$home_dir/.kube/config")" \
+    "host kube" \
+    "expected unenroll to restore the guarded file contents after active teardown"
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected passthrough siblings to remain after policy-driven teardown"
+    "expected passthrough siblings to remain after unenroll-driven teardown"
 }
 
 main "$@"

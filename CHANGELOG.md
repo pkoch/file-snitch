@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `unenroll` so it asks an active `file-snitch run` projection to stop,
+  waits for the projected path to disappear, and then restores the guarded file.
+
 ## [0.4.1] - 2026-04-26
 
 ### Changed

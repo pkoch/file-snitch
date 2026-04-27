@@ -9,6 +9,9 @@ const fuse = @import("fuse/shim.zig");
 const runtime = @import("runtime.zig");
 const store = @import("store.zig");
 
+const projection_teardown_timeout_ms = 10_000;
+const projection_teardown_poll_ms = 100;
+
 pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
     var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
     defer policy_lock.deinit();
@@ -49,44 +52,146 @@ pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path
 }
 
 pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path: []const u8) !void {
+    var guarded_store = try store.Backend.initPass(allocator);
+    defer guarded_store.deinit(allocator);
+
+    var pending = try beginUnenrollPolicyUpdate(allocator, policy_path, target_path);
+    defer pending.deinit(allocator);
+
+    var restore_policy_on_error = true;
+    errdefer if (restore_policy_on_error) {
+        rollbackUnenrollPolicyUpdate(allocator, policy_path, pending.enrolled_path, pending.object_id) catch |err| {
+            std.debug.panic("failed to roll back unenrollment policy update for {s}: {}", .{ pending.enrolled_path, err });
+        };
+    };
+
+    if (try enrollment.pathExists(pending.enrolled_path)) {
+        std.debug.print(
+            "file-snitch: waiting for active projection to stop: {s}\n",
+            .{pending.enrolled_path},
+        );
+        try waitForTargetPathToDisappear(pending.enrolled_path);
+    }
+
+    try removeDecisionsForUnenrolledPath(allocator, policy_path, pending.enrolled_path);
+    try enrollment.moveGuardedFileBack(allocator, &guarded_store, pending.object_id, pending.enrolled_path);
+    restore_policy_on_error = false;
+
+    std.debug.print(
+        "file-snitch: unenrolled {s} from {s}\n",
+        .{ pending.enrolled_path, pending.policy_source_path },
+    );
+}
+
+const PendingUnenroll = struct {
+    enrolled_path: []u8,
+    object_id: []u8,
+    policy_source_path: []u8,
+
+    fn deinit(self: *PendingUnenroll, allocator: std.mem.Allocator) void {
+        allocator.free(self.enrolled_path);
+        allocator.free(self.object_id);
+        allocator.free(self.policy_source_path);
+        self.* = undefined;
+    }
+};
+
+fn beginUnenrollPolicyUpdate(
+    allocator: std.mem.Allocator,
+    policy_path: []const u8,
+    target_path: []const u8,
+) !PendingUnenroll {
     var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
     defer policy_lock.deinit();
 
     var loaded_policy = try config.loadFromFile(allocator, policy_path);
     defer loaded_policy.deinit();
-    var guarded_store = try store.Backend.initPass(allocator);
-    defer guarded_store.deinit(allocator);
 
     const enrollment_index = findEnrollmentIndexByArgument(allocator, &loaded_policy, target_path) orelse {
         std.debug.print("error: not enrolled: {s}\n", .{target_path});
         return error.InvalidUsage;
     };
 
-    const enrolled_path = loaded_policy.enrollments[enrollment_index].path;
-    if (try enrollment.pathExists(enrolled_path)) {
-        std.debug.print(
-            "error: target path currently exists: {s}\nstop the active projection before unenrolling\n",
-            .{enrolled_path},
-        );
-        return error.InvalidUsage;
-    }
+    const policy_source_path = try allocator.dupe(u8, loaded_policy.source_path);
+    errdefer allocator.free(policy_source_path);
 
-    const object_id = loaded_policy.enrollments[enrollment_index].object_id;
-    try enrollment.moveGuardedFileBack(allocator, &guarded_store, object_id, enrolled_path);
-    errdefer enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, enrolled_path, object_id) catch |err| {
-        std.debug.panic("failed to roll back unenrollment for {s}: {}", .{ enrolled_path, err });
-    };
-
-    loaded_policy.removeDecisionsForPath(enrolled_path);
     var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
-    defer removed.deinit(allocator);
+    errdefer removed.deinit(allocator);
 
     try loaded_policy.saveToFile();
 
+    return .{
+        .enrolled_path = removed.path,
+        .object_id = removed.object_id,
+        .policy_source_path = policy_source_path,
+    };
+}
+
+fn rollbackUnenrollPolicyUpdate(
+    allocator: std.mem.Allocator,
+    policy_path: []const u8,
+    enrolled_path: []const u8,
+    object_id: []const u8,
+) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    defer policy_lock.deinit();
+
+    var loaded_policy = try config.loadFromFile(allocator, policy_path);
+    defer loaded_policy.deinit();
+
+    if (loaded_policy.findEnrollmentIndex(enrolled_path) != null) {
+        return;
+    }
+
+    try loaded_policy.appendEnrollment(enrolled_path, object_id);
+    try loaded_policy.saveToFile();
+}
+
+fn removeDecisionsForUnenrolledPath(
+    allocator: std.mem.Allocator,
+    policy_path: []const u8,
+    enrolled_path: []const u8,
+) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    defer policy_lock.deinit();
+
+    var loaded_policy = try config.loadFromFile(allocator, policy_path);
+    defer loaded_policy.deinit();
+
+    if (loaded_policy.findEnrollmentIndex(enrolled_path) != null) {
+        std.debug.print("error: enrollment reappeared during unenroll: {s}\n", .{enrolled_path});
+        return error.InvalidUsage;
+    }
+
+    loaded_policy.removeDecisionsForPath(enrolled_path);
+    try loaded_policy.saveToFile();
+}
+
+fn waitForTargetPathToDisappear(enrolled_path: []const u8) !void {
+    const deadline_ms = runtime.milliTimestamp() + projection_teardown_timeout_ms;
+    while (runtime.milliTimestamp() < deadline_ms) {
+        if (!try enrollment.pathExists(enrolled_path)) {
+            return;
+        }
+
+        std.Io.sleep(runtime.io(), .fromMilliseconds(projection_teardown_poll_ms), .awake) catch |err| {
+            std.debug.print("warn: projection teardown wait sleep failed: {}\n", .{err});
+        };
+    }
+
+    if (!try enrollment.pathExists(enrolled_path)) {
+        return;
+    }
+
     std.debug.print(
-        "file-snitch: unenrolled {s} from {s}\n",
-        .{ removed.path, loaded_policy.source_path },
+        "error: target path still exists after policy update: {s}\n",
+        .{enrolled_path},
     );
+    std.debug.print(
+        "hint: file-snitch restored the policy enrollment; stop the projection or remove the stale target path before retrying\n",
+        .{},
+    );
+    return error.InvalidUsage;
 }
 
 pub fn status(allocator: std.mem.Allocator, policy_path: []const u8) !void {
