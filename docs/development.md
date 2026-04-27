@@ -67,7 +67,7 @@ Coverage map:
 - `run-policy-reload.sh`: live policy reload activates and tears down projections
 - `run-expired-decision-cleanup.sh`: expired durable decisions are pruned from `policy.yml`
 - `run-single-enrollment.sh`: one enrolled file is projected while siblings passthrough
-- `run-multi-mount.sh`: one `run` process supervises multiple planned mounts
+- `run-multi-mount.sh`: one projection root handles multiple enrolled paths
 - `run-prompt-linux-ui.sh`: `linux-ui` through a fake `zenity` path suitable for CI
 - `run-prompt-macos-ui.sh`: `macos-ui` through a fake `osascript` path on macOS
 - `run-prompt-macos-ui-agent.sh`: macOS agent socket behavior with the `macos-ui` frontend

@@ -230,16 +230,16 @@ pub fn status(allocator: std.mem.Allocator, policy_path: []const u8) !void {
         null;
     defer if (guarded_store) |*backend| backend.deinit(allocator);
 
-    var mount_plan = try loaded_policy.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
+    var projection_plan = try loaded_policy.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
 
     std.debug.print("policy: {s}\n", .{loaded_policy.source_path});
     std.debug.print("enrollments: {d}\n", .{loaded_policy.enrollments.len});
     std.debug.print("decisions: {d}\n", .{loaded_policy.decisions.len});
-    std.debug.print("planned_mounts: {d}\n", .{mount_plan.paths.len});
-
-    for (mount_plan.paths) |mount_path| {
-        std.debug.print("mount: {s}\n", .{mount_path});
+    if (projection_plan.entries.len == 0) {
+        std.debug.print("projection: absent\n", .{});
+    } else {
+        std.debug.print("projection: {s}\n", .{projection_plan.root_path});
     }
 
     for (loaded_policy.enrollments) |entry| {
@@ -279,8 +279,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         null;
     defer if (guarded_store) |*backend| backend.deinit(allocator);
 
-    var mount_plan = try loaded_policy.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
+    var projection_plan = try loaded_policy.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
 
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
@@ -294,7 +294,11 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
     defer allocator.free(agent_socket_path);
 
     try report_writer.print("policy: ok ({s})\n", .{loaded_policy.source_path});
-    try report_writer.print("mount_plan: {d} mounts for {d} enrollments\n", .{ mount_plan.paths.len, loaded_policy.enrollments.len });
+    if (projection_plan.entries.len == 0) {
+        try report_writer.print("projection: absent for {d} enrollments\n", .{loaded_policy.enrollments.len});
+    } else {
+        try report_writer.print("projection: {s} for {d} enrollments\n", .{ projection_plan.root_path, loaded_policy.enrollments.len });
+    }
     try report_writer.print("store_limit: pass JSON/base64 payload <= {s}\n", .{store.pass_payload_limit_label});
     try appendFuseReport(report_writer, &has_errors);
 
@@ -429,7 +433,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             allocator,
             &loaded_policy,
             if (guarded_store) |*backend| backend else null,
-            mount_plan.paths,
+            if (projection_plan.entries.len == 0) null else projection_plan.root_path,
             home_dir,
             report.items,
             path,
@@ -493,7 +497,7 @@ fn writeDebugDossier(
     allocator: std.mem.Allocator,
     loaded_policy: *const config.PolicyFile,
     guarded_store: ?*store.Backend,
-    mount_paths: []const []const u8,
+    projection_path: ?[]const u8,
     home_dir: []const u8,
     report: []const u8,
     output_path: []const u8,
@@ -542,19 +546,15 @@ fn writeDebugDossier(
     try writer.writeAll("## Policy Summary\n\n");
     try writer.print("- enrollments: {d}\n", .{loaded_policy.enrollments.len});
     try writer.print("- decisions: {d}\n", .{loaded_policy.decisions.len});
-    try writer.print("- planned_mounts: {d}\n", .{mount_paths.len});
+    if (projection_path) |path| {
+        const redacted = try redactHomePathAlloc(allocator, home_dir, path);
+        defer allocator.free(redacted);
+        try writer.print("- projection: `{s}`\n", .{redacted});
+    } else {
+        try writer.writeAll("- projection: absent\n");
+    }
     try writer.print("- store_backend: `{s}`\n", .{backendName(guarded_store)});
     try writer.print("- store_payload_limit: `pass JSON/base64 payload <= {s}`\n\n", .{store.pass_payload_limit_label});
-
-    if (mount_paths.len != 0) {
-        try writer.writeAll("### Planned Mounts\n\n");
-        for (mount_paths) |mount_path| {
-            const redacted = try redactHomePathAlloc(allocator, home_dir, mount_path);
-            defer allocator.free(redacted);
-            try writer.print("- `{s}`\n", .{redacted});
-        }
-        try writer.writeByte('\n');
-    }
 
     if (loaded_policy.enrollments.len != 0) {
         try writer.writeAll("### Enrollments\n\n");

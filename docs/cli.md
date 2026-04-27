@@ -83,7 +83,7 @@ The user-interaction timeout defaults to 30000 ms. Override it with
 ## Run
 
 `file-snitch run` is the long-lived policy reconciler. It loads `policy.yml`,
-derives the mount plan, starts mount workers, and reconciles future policy
+derives the projection root, starts the projection child, and reconciles future policy
 changes without requiring a restart.
 
 Policy path precedence:
@@ -112,10 +112,10 @@ Runtime notes:
   falls back to polling where needed
 - the polling fallback compares full `policy.yml` content as well as file
   metadata
-- transient policy read/stat failures keep the current mounts active and report
+- transient policy read/stat failures keep the current projection active and report
   the real error
-- one `run` process can supervise multiple planned mounts
-- multiple enrolled files under one mounted tree are supported, including
+- one `run` process supervises one projection root
+- multiple enrolled files are supported through the same projection root, including
   nested guarded paths
 - remembered decisions take effect on the next guarded access without requiring
   a remount
@@ -157,7 +157,7 @@ remembered decisions, and daemon expiry pruning do not clobber each other.
 ## Status And Doctor
 
 `file-snitch status` prints the policy path, enrollment count, decision count,
-derived mount plan, and guarded-object refs.
+projection root, and guarded-object refs.
 
 `file-snitch doctor` validates policy, guarded objects, target-path health,
 agent reachability, frontend helpers, and service files where applicable. It

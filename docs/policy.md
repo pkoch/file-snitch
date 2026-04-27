@@ -57,8 +57,8 @@ Current constraints:
 - `object_id` must be non-empty
 - the target file must be a user-owned regular file under the current user's
   home directory when enrolled through the CLI
-- exact-file enrollment is the product model; parent-directory mounts are an
-  implementation detail
+- exact-file enrollment is the product model; the state-directory projection is
+  an implementation detail
 
 ## Decisions
 
@@ -157,6 +157,6 @@ file-snitch doctor
 file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 ```
 
-`status` prints enrollments, decisions, and the derived mount plan. `doctor`
+`status` prints enrollments, decisions, and the derived projection root. `doctor`
 also validates guarded objects, target-path health, agent reachability,
 frontend helpers, and service files where applicable.

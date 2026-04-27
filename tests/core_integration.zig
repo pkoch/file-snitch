@@ -252,7 +252,7 @@ fn initSession(
     policy_rule_views: []const policy.RuleView,
     prompt_broker: ?prompt.Broker,
 ) !daemon.Session {
-    return daemon.Session.initEnrolledParent(allocator, .{
+    return daemon.Session.initProjection(allocator, .{
         .mount_path = fixture.mount_path,
         .guarded_entries = guarded_entries,
         .guarded_store = fixture.guardedStore(),
@@ -617,7 +617,7 @@ test "daemon sends home-relative display labels to prompt broker" {
         .expected_label = "read ~/.kube/config",
     };
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "config",
@@ -761,12 +761,12 @@ test "policy file loader treats empty file as a no-op" {
     try std.testing.expectEqual(@as(usize, 0), loaded.enrollments.len);
     try std.testing.expectEqual(@as(usize, 0), loaded.decisions.len);
 
-    var mount_plan = try loaded.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
-    try std.testing.expectEqual(@as(usize, 0), mount_plan.paths.len);
+    var projection_plan = try loaded.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 0), projection_plan.entries.len);
 }
 
-test "policy file loader parses enrollments and collapses mount plan" {
+test "policy file loader parses enrollments and derives projection plan" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "planned");
     defer temp_policy.deinit();
@@ -798,10 +798,10 @@ test "policy file loader parses enrollments and collapses mount plan" {
 
     const kube_config_path = try currentHomePathAlloc(allocator, ".kube/config");
     defer allocator.free(kube_config_path);
-    const kube_mount_path = try currentHomePathAlloc(allocator, ".kube");
-    defer allocator.free(kube_mount_path);
-    const gh_mount_path = try currentHomePathAlloc(allocator, ".config/gh");
-    defer allocator.free(gh_mount_path);
+    const projection_root = try config.defaultProjectionRootPathAlloc(allocator);
+    defer allocator.free(projection_root);
+    const kube_projection_path = try std.fs.path.join(allocator, &.{ projection_root, kube_config_path[1..] });
+    defer allocator.free(kube_projection_path);
 
     try std.testing.expectEqual(@as(usize, 3), loaded.enrollments.len);
     try std.testing.expectEqualStrings(kube_config_path, loaded.enrollments[0].path);
@@ -812,11 +812,13 @@ test "policy file loader parses enrollments and collapses mount plan" {
     try std.testing.expectEqualStrings("allow", loaded.decisions[0].outcome);
     try std.testing.expect(loaded.decisions[0].expires_at == null);
 
-    var mount_plan = try loaded.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
-    try std.testing.expectEqual(@as(usize, 2), mount_plan.paths.len);
-    try std.testing.expectEqualStrings(kube_mount_path, mount_plan.paths[0]);
-    try std.testing.expectEqualStrings(gh_mount_path, mount_plan.paths[1]);
+    var projection_plan = try loaded.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 3), projection_plan.entries.len);
+    try std.testing.expectEqualStrings(projection_root, projection_plan.root_path);
+    try std.testing.expectEqualStrings(kube_config_path, projection_plan.entries[0].target_path);
+    try std.testing.expectEqualStrings(kube_projection_path, projection_plan.entries[0].projection_path);
+    try std.testing.expectEqualStrings(kube_config_path[1..], projection_plan.entries[0].relative_path);
 }
 
 test "policy file save round-trips appended enrollments" {
@@ -1344,7 +1346,7 @@ test "live policy reload suppresses repeated prompt without remount" {
         },
     };
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "config",
@@ -1526,9 +1528,9 @@ test "audit event snapshots remain immutable after later writes" {
     }
 }
 
-test "enrolled parent shadows the guarded file and passes through siblings" {
+test "projection shadows the guarded file and passes through siblings" {
     const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent");
+    var temp_dir = try TempDir.init(allocator, "projection");
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
@@ -1563,7 +1565,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
         .content = "guarded kubeconfig\n",
     });
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "config",
@@ -1608,9 +1610,9 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     try std.testing.expectEqualStrings("updated sibling\n", sibling_host_contents);
 }
 
-test "enrolled parent can shadow multiple guarded siblings under one mount" {
+test "projection can shadow multiple guarded siblings under one mount" {
     const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent-multi");
+    var temp_dir = try TempDir.init(allocator, "projection-multi");
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
@@ -1667,7 +1669,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         .content = "guarded second\n",
     });
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{
             .{
@@ -1731,9 +1733,9 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     }
 }
 
-test "enrolled parent can project a guarded file below a synthetic subdirectory" {
+test "projection can expose a guarded file below a synthetic subdirectory" {
     const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent-nested");
+    var temp_dir = try TempDir.init(allocator, "projection-nested");
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
@@ -1767,7 +1769,7 @@ test "enrolled parent can project a guarded file below a synthetic subdirectory"
         .content = "guarded nested token\n",
     });
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
             .relative_path = "extensions/foo/token.json",

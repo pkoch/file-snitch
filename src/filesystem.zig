@@ -97,6 +97,7 @@ const StoredFile = struct {
     path: [:0]u8,
     backing_object_id: ?[]u8 = null,
     lock_anchor_path: ?[]u8 = null,
+    policy_path: ?[]u8 = null,
     content: std.ArrayListUnmanaged(u8) = .empty,
     mode: u32,
     uid: u32,
@@ -113,6 +114,9 @@ const StoredFile = struct {
             allocator.free(value);
         }
         if (self.lock_anchor_path) |value| {
+            allocator.free(value);
+        }
+        if (self.policy_path) |value| {
             allocator.free(value);
         }
         self.content.deinit(allocator);
@@ -213,7 +217,7 @@ const RenameMutation = struct {
 
 pub const GuardedEntryConfig = types.GuardedEntryConfig;
 
-pub const EnrolledParentConfig = struct {
+pub const ProjectionConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const GuardedEntryConfig,
     /// Borrowed; the caller retains ownership and is the sole `deinit` site.
@@ -258,7 +262,7 @@ pub const Model = struct {
     root_timestamp: Timestamp,
     output_mutex: std.Io.Mutex = .init,
 
-    pub fn initEnrolledParent(allocator: std.mem.Allocator, init_config: EnrolledParentConfig) !Model {
+    pub fn initProjection(allocator: std.mem.Allocator, init_config: ProjectionConfig) !Model {
         var source_dir = try std.Io.Dir.openDirAbsolute(runtime.io(), init_config.mount_path, .{ .iterate = true });
         errdefer source_dir.close(runtime.io());
 
@@ -306,6 +310,7 @@ pub const Model = struct {
                 object.metadata.gid,
                 entry.object_id,
                 entry.lock_anchor_path,
+                entry.policy_path,
             );
             imported.atime = timestampFromNanos(object.metadata.atime_nsec);
             imported.mtime = timestampFromNanos(object.metadata.mtime_nsec);
@@ -354,7 +359,7 @@ pub const Model = struct {
     }
 
     pub fn lookupPath(self: *const Model, path: []const u8) !Lookup {
-        return self.lookupEnrolledParentPath(path);
+        return self.lookupProjectionPath(path);
     }
 
     pub fn syntheticEntryCount(self: *const Model, directory_path: []const u8) !u32 {
@@ -438,7 +443,7 @@ pub const Model = struct {
         };
     }
 
-    fn lookupEnrolledParentPath(self: *const Model, path: []const u8) !Lookup {
+    fn lookupProjectionPath(self: *const Model, path: []const u8) !Lookup {
         if (isRootPath(path)) {
             return self.lookupSourceDirectoryNode(path);
         }
@@ -699,6 +704,11 @@ pub const Model = struct {
     }
 
     fn policyPathForVirtualPathAlloc(self: *const Model, path: []const u8) ![]u8 {
+        if (self.findFile(path)) |file| {
+            if (file.policy_path) |policy_path| {
+                return self.allocator.dupe(u8, policy_path);
+            }
+        }
         if (isRootPath(path)) {
             return self.allocator.dupe(u8, self.mount_path);
         }
@@ -1172,7 +1182,7 @@ pub const Model = struct {
             return auth_result;
         }
 
-        const file = self.appendFile(path, mode, currentUid(), currentGid(), null, null) catch |err| {
+        const file = self.appendFile(path, mode, currentUid(), currentGid(), null, null, null) catch |err| {
             return mapFsError(err);
         };
         errdefer self.removeFileAtIndex(self.files.items.len - 1);
@@ -1374,7 +1384,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         if (!isTransientVirtualPath(from) and !isTransientVirtualPath(to)) {
-            return self.renameEnrolledParentPath(from, to, context);
+            return self.renameProjectionPath(from, to, context);
         }
 
         if (std.mem.eql(u8, from, to)) {
@@ -1412,7 +1422,7 @@ pub const Model = struct {
         return 0;
     }
 
-    fn renameEnrolledParentPath(
+    fn renameProjectionPath(
         self: *Model,
         from: []const u8,
         to: []const u8,
@@ -1735,6 +1745,7 @@ pub const Model = struct {
         gid: u32,
         backing_object_id: ?[]const u8,
         lock_anchor_path: ?[]const u8,
+        policy_path: ?[]const u8,
     ) !*StoredFile {
         const now = currentTimestamp();
         const name = try self.allocator.dupeZ(u8, path[1..]);
@@ -1751,12 +1762,18 @@ pub const Model = struct {
         else
             null;
         errdefer if (owned_lock_anchor_path) |value| self.allocator.free(value);
+        const owned_policy_path = if (policy_path) |value|
+            try self.allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (owned_policy_path) |value| self.allocator.free(value);
 
         try self.files.append(self.allocator, .{
             .name = name,
             .path = owned_path,
             .backing_object_id = owned_backing_object_id,
             .lock_anchor_path = owned_lock_anchor_path,
+            .policy_path = owned_policy_path,
             .mode = mode & 0o777,
             .uid = uid,
             .gid = gid,

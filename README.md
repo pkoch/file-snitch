@@ -22,8 +22,8 @@ to behave normally.
 - exact-file enrollment for user-owned regular files under your home directory
 - policy-driven `run`, `enroll`, `unenroll`, `status`, and `doctor` commands
 - guarded-object custody through `pass:file-snitch/<object_id>`
-- in-place FUSE projection back into real parent directories
-- sibling passthrough under mounted parents
+- FUSE projection under the user state directory with target-path symlinks
+- unguarded siblings remain on the normal filesystem
 - remembered decisions in `policy.yml`, including RFC3339 UTC expiry
 - local agent frontends:
   - `terminal-pinentry`
@@ -110,9 +110,9 @@ Operational guidance and troubleshooting live in
 - `src/cli.zig`: command-line parsing, env loading, and runtime dispatch
 - `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
-- `src/config.zig`: `policy.yml` loading, mutation, and mount-plan derivation
+- `src/config.zig`: `policy.yml` loading, mutation, and projection-plan derivation
 - `src/agent.zig`: local requester/agent socket protocol and frontends
-- `src/filesystem.zig`: Zig-owned filesystem behavior for enrolled-parent mounts
+- `src/filesystem.zig`: Zig-owned filesystem behavior for projection mount
 - `c/`: thin C boundary for `libfuse` interop and syscall-adjacent helpers
 - `tests/`: Zig integration tests and smoke scenarios
 - `scripts/`: demo, docs, release, and vendoring helpers

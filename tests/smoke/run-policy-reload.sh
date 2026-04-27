@@ -34,7 +34,7 @@ main() {
   fi
 
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   wait_for_mounts_ready
   platform_prime_guarded_path "$home_dir/.kube/config"
 

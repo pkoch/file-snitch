@@ -37,15 +37,32 @@ pub const Decision = struct {
     }
 };
 
-pub const MountPlan = struct {
-    allocator: std.mem.Allocator,
-    paths: [][]u8,
+pub const ProjectionEntry = struct {
+    target_path: []u8,
+    projection_path: []u8,
+    relative_path: []u8,
+    object_id: []u8,
 
-    pub fn deinit(self: *MountPlan) void {
-        for (self.paths) |path| {
-            self.allocator.free(path);
+    fn deinit(self: *ProjectionEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.target_path);
+        allocator.free(self.projection_path);
+        allocator.free(self.relative_path);
+        allocator.free(self.object_id);
+        self.* = undefined;
+    }
+};
+
+pub const ProjectionPlan = struct {
+    allocator: std.mem.Allocator,
+    root_path: []u8,
+    entries: []ProjectionEntry,
+
+    pub fn deinit(self: *ProjectionPlan) void {
+        for (self.entries) |*entry| {
+            entry.deinit(self.allocator);
         }
-        self.allocator.free(self.paths);
+        self.allocator.free(self.entries);
+        self.allocator.free(self.root_path);
         self.* = undefined;
     }
 };
@@ -275,40 +292,43 @@ pub const PolicyFile = struct {
         return next_expiration;
     }
 
-    pub fn deriveMountPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !MountPlan {
-        var parents: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (parents.items) |path| {
-                allocator.free(path);
+    pub fn deriveProjectionPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !ProjectionPlan {
+        const root_path = try defaultProjectionRootPathAlloc(allocator);
+        errdefer allocator.free(root_path);
+
+        var entries = try allocator.alloc(ProjectionEntry, self.enrollments.len);
+        errdefer allocator.free(entries);
+
+        var initialized: usize = 0;
+        errdefer {
+            for (entries[0..initialized]) |*entry| {
+                entry.deinit(allocator);
             }
-            parents.deinit(allocator);
         }
 
         for (self.enrollments) |enrollment| {
-            const parent = std.fs.path.dirname(enrollment.path) orelse return error.InvalidEnrollmentPath;
-            try parents.append(allocator, try allocator.dupe(u8, parent));
-        }
+            const relative_path = try projectionRelativePathAlloc(allocator, enrollment.path);
+            errdefer allocator.free(relative_path);
+            const projection_path = try std.fs.path.join(allocator, &.{ root_path, relative_path });
+            errdefer allocator.free(projection_path);
+            const target_path = try allocator.dupe(u8, enrollment.path);
+            errdefer allocator.free(target_path);
+            const object_id = try allocator.dupe(u8, enrollment.object_id);
+            errdefer allocator.free(object_id);
 
-        std.mem.sort([]u8, parents.items, {}, lessThanPathLength);
-
-        var planned: std.ArrayListUnmanaged([]u8) = .empty;
-        errdefer {
-            for (planned.items) |path| {
-                allocator.free(path);
-            }
-            planned.deinit(allocator);
-        }
-
-        for (parents.items) |candidate| {
-            if (isCoveredByExistingMount(planned.items, candidate)) {
-                continue;
-            }
-            try planned.append(allocator, try allocator.dupe(u8, candidate));
+            entries[initialized] = .{
+                .target_path = target_path,
+                .projection_path = projection_path,
+                .relative_path = relative_path,
+                .object_id = object_id,
+            };
+            initialized += 1;
         }
 
         return .{
             .allocator = allocator,
-            .paths = try planned.toOwnedSlice(allocator),
+            .root_path = root_path,
+            .entries = entries,
         };
     }
 
@@ -563,6 +583,35 @@ pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const base = try defaults.xdgBasePathAlloc(allocator, "XDG_CONFIG_HOME", ".config");
     defer allocator.free(base);
     return std.fs.path.join(allocator, &.{ base, "file-snitch", "policy.yml" });
+}
+
+pub fn defaultProjectionRootPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const base = try defaults.xdgBasePathAlloc(allocator, defaults.xdg_state_path_env, ".local/state");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "projection" });
+}
+
+fn projectionRelativePathAlloc(allocator: std.mem.Allocator, target_path: []const u8) ![]u8 {
+    if (!std.fs.path.isAbsolute(target_path)) {
+        return error.InvalidEnrollmentPath;
+    }
+    if (std.mem.eql(u8, target_path, "/")) {
+        return error.InvalidEnrollmentPath;
+    }
+    return allocator.dupe(u8, target_path[1..]);
+}
+
+fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, base)) {
+        return false;
+    }
+    if (candidate.len == base.len) {
+        return true;
+    }
+    if (std.mem.eql(u8, base, "/")) {
+        return true;
+    }
+    return candidate[base.len] == '/';
 }
 
 fn loadPolicySource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -966,38 +1015,6 @@ fn accessClassesForApprovalClass(value: []const u8) ![]const policy.AccessClass 
         };
     }
     return error.InvalidApprovalClass;
-}
-
-fn lessThanPathLength(_: void, left: []u8, right: []u8) bool {
-    if (left.len != right.len) {
-        return left.len < right.len;
-    }
-    return std.mem.lessThan(u8, left, right);
-}
-
-fn isCoveredByExistingMount(existing: []const []u8, candidate: []const u8) bool {
-    for (existing) |mount_path| {
-        if (std.mem.eql(u8, mount_path, candidate)) {
-            return true;
-        }
-        if (isDescendantPath(mount_path, candidate)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
-    if (!std.mem.startsWith(u8, candidate, base)) {
-        return false;
-    }
-    if (candidate.len == base.len) {
-        return true;
-    }
-    if (std.mem.eql(u8, base, "/")) {
-        return true;
-    }
-    return candidate[base.len] == '/';
 }
 
 test "parse decision expiration accepts RFC3339 UTC" {

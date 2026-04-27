@@ -36,7 +36,7 @@ main() {
   guarded_store_write_for "$home_dir/.ssh/id_ed25519" 'guarded ssh
 '
 
-  mount_paths=("$home_dir/.kube" "$home_dir/.ssh")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   start_file_snitch_run allow
   platform_prime_guarded_path "$home_dir/.kube/config"
   platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"

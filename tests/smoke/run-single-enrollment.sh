@@ -31,7 +31,7 @@ main() {
   guarded_store_write_for "$home_dir/.kube/config" 'guarded kube
 '
 
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   start_file_snitch_run allow
   platform_prime_guarded_path "$home_dir/.kube/config"
 

@@ -29,8 +29,8 @@ File Snitch is for the middle ground:
 
 - exact-file enrollment for user-owned regular files under your home directory
 - guarded-object custody through `pass:file-snitch/<object_id>`
-- in-place projection back into the real parent directory
-- sibling passthrough under the same mounted tree
+- state-directory projection linked back to the target path
+- unguarded siblings remain on the normal filesystem
 - a local requester/agent socket with:
   - `terminal-pinentry`
   - `macos-ui` via `osascript`

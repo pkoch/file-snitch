@@ -319,14 +319,14 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
         .default_mutation_outcome = .deny,
         .protocol_timeout_ms = defaults.protocol_timeout_ms_default,
         .status_fifo_path = null,
-        .mount_path_filter = null,
+        .is_projection_child = false,
     };
     errdefer command.deinit(allocator);
 
     command.policy_path = try config.defaultPolicyPathAlloc(allocator);
     command.protocol_timeout_ms = try loadProtocolTimeoutMs();
     command.status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env);
-    command.mount_path_filter = try loadOptionalInternalPath(defaults.internal_mount_path_env);
+    command.is_projection_child = try loadInternalFlag(defaults.internal_projection_child_env);
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -507,7 +507,7 @@ fn parseOutcome(arg: []const u8) ?policy.Outcome {
 }
 
 fn runWithPolicy(command: RunCommand) !void {
-    if (command.mount_path_filter == null) {
+    if (!command.is_projection_child) {
         try supervisor.reconcilePolicyInForeground(command);
         return;
     }
@@ -609,27 +609,11 @@ fn runStaticPolicy(command: RunCommand) !void {
     var compiled_rule_views = try loaded_policy.compilePolicyRuleViews(allocator);
     defer compiled_rule_views.deinit();
 
-    var mount_plan = try loaded_policy.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
+    var projection_plan = try loaded_policy.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
 
-    if (command.mount_path_filter) |filtered_mount| {
-        var filtered: usize = 0;
-        for (mount_plan.paths) |mount_path| {
-            if (std.mem.eql(u8, mount_path, filtered_mount)) {
-                mount_plan.paths[0] = mount_path;
-                filtered = 1;
-                break;
-            }
-        }
-        mount_plan.paths.len = filtered;
-        if (filtered == 0) {
-            std.debug.print("error: requested mount path is not part of the current plan: {s}\n", .{filtered_mount});
-            return error.InvalidUsage;
-        }
-    }
-
-    if (mount_plan.paths.len == 0) {
-        std.debug.print("file-snitch: no planned mounts derived from {s}; nothing to do\n", .{loaded_policy.source_path});
+    if (projection_plan.entries.len == 0) {
+        std.debug.print("file-snitch: no projection entries derived from {s}; nothing to do\n", .{loaded_policy.source_path});
         return;
     }
 
@@ -652,71 +636,48 @@ fn runStaticPolicy(command: RunCommand) !void {
         null;
     defer if (prompt_requester) |requester| allocator.free(requester.socket_path);
 
-    const PlannedMount = struct {
-        mount_path: []const u8,
-        guarded_entries: []filesystem.GuardedEntryConfig,
-    };
-
-    var planned_mounts = try allocator.alloc(PlannedMount, mount_plan.paths.len);
+    var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, projection_plan.entries.len);
+    var guarded_entry_count: usize = 0;
     defer {
-        for (planned_mounts) |planned| {
-            for (planned.guarded_entries) |entry| {
-                allocator.free(entry.relative_path);
-                allocator.free(entry.object_id);
-                allocator.free(entry.lock_anchor_path);
-            }
-            allocator.free(planned.guarded_entries);
+        for (guarded_entries[0..guarded_entry_count]) |entry| {
+            allocator.free(entry.relative_path);
+            allocator.free(entry.object_id);
+            allocator.free(entry.lock_anchor_path);
+            if (entry.policy_path) |policy_path| allocator.free(policy_path);
         }
-        allocator.free(planned_mounts);
+        allocator.free(guarded_entries);
     }
 
     var guarded_store = try store.Backend.initPass(allocator);
     errdefer guarded_store.deinit(allocator);
 
-    for (mount_plan.paths, 0..) |mount_path, mount_index| {
-        var entry_count: usize = 0;
-        for (loaded_policy.enrollments) |enrollment| {
-            if (coversEnrollmentPath(mount_path, enrollment.path)) {
-                entry_count += 1;
-            }
-        }
+    try prepareProjectionPlan(&projection_plan);
 
-        var guarded_entries = try allocator.alloc(filesystem.GuardedEntryConfig, entry_count);
-        var entry_index: usize = 0;
-        for (loaded_policy.enrollments) |enrollment| {
-            if (!coversEnrollmentPath(mount_path, enrollment.path)) continue;
-            guarded_entries[entry_index] = .{
-                .relative_path = try relativeEnrollmentPath(allocator, mount_path, enrollment.path),
-                .object_id = try allocator.dupe(u8, enrollment.object_id),
-                .lock_anchor_path = try enrollment_ops.defaultLockAnchorPathAlloc(allocator, enrollment.object_id),
-            };
-            entry_index += 1;
-        }
-
-        planned_mounts[mount_index] = .{
-            .mount_path = mount_path,
-            .guarded_entries = guarded_entries,
+    for (projection_plan.entries, 0..) |entry, entry_index| {
+        guarded_entries[entry_index] = .{
+            .relative_path = try allocator.dupe(u8, entry.relative_path),
+            .object_id = try allocator.dupe(u8, entry.object_id),
+            .lock_anchor_path = try enrollment_ops.defaultLockAnchorPathAlloc(allocator, entry.object_id),
+            .policy_path = try allocator.dupe(u8, entry.target_path),
         };
+        guarded_entry_count += 1;
     }
 
-    if (planned_mounts.len == 1) {
-        try daemon.mountEnrolledParent(allocator, .{
-            .mount_path = planned_mounts[0].mount_path,
-            .guarded_entries = planned_mounts[0].guarded_entries,
-            .guarded_store = &guarded_store,
-            .run_in_foreground = true,
-            .default_mutation_outcome = command.default_mutation_outcome,
-            .policy_path = command.policy_path,
-            .policy_rule_views = compiled_rule_views.items,
-            .prompt_broker = if (command.default_mutation_outcome == .prompt)
-                agent.socketBroker(@constCast(&prompt_requester.?))
-            else
-                null,
-            .status_output_file = status_output_file,
-            .audit_output_file = std.Io.File.stdout(),
-        });
-        return;
-    }
+    try daemon.mountProjection(allocator, .{
+        .mount_path = projection_plan.root_path,
+        .guarded_entries = guarded_entries,
+        .guarded_store = &guarded_store,
+        .run_in_foreground = true,
+        .default_mutation_outcome = command.default_mutation_outcome,
+        .policy_path = command.policy_path,
+        .policy_rule_views = compiled_rule_views.items,
+        .prompt_broker = if (command.default_mutation_outcome == .prompt)
+            agent.socketBroker(@constCast(&prompt_requester.?))
+        else
+            null,
+        .status_output_file = status_output_file,
+        .audit_output_file = std.Io.File.stdout(),
+    });
 }
 
 fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) ![]const u8 {
@@ -764,12 +725,6 @@ fn resolvePathArgument(raw_path: []const u8) ![]const u8 {
 fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     const lexical_path = try resolvePathArgument(raw_path);
     errdefer allocator.free(lexical_path);
-
-    if (try enrollment_ops.pathExists(lexical_path)) {
-        const canonical = try std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), lexical_path, allocator);
-        allocator.free(lexical_path);
-        return canonical;
-    }
 
     const parent_dir = std.fs.path.dirname(lexical_path) orelse {
         std.debug.print("error: invalid target path: {s}\n", .{lexical_path});
@@ -859,6 +814,15 @@ fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
     return resolved;
 }
 
+fn loadInternalFlag(env_name: []const u8) !bool {
+    const raw_value = runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return err,
+    };
+    allocator.free(raw_value);
+    return true;
+}
+
 fn parseFrontendKind(raw: []const u8) ?agent.FrontendKind {
     if (std.mem.eql(u8, raw, "terminal-pinentry")) return .terminal_pinentry;
     if (std.mem.eql(u8, raw, "macos-ui")) return .macos_ui;
@@ -879,24 +843,23 @@ fn openStatusFifo(path: []const u8) !std.Io.File {
     return std.Io.Dir.cwd().openFile(runtime.io(), path, .{ .mode = .write_only });
 }
 
-fn relativeEnrollmentPath(
-    alloc: std.mem.Allocator,
-    mount_path: []const u8,
-    enrollment_path: []const u8,
-) ![]u8 {
-    if (!std.mem.startsWith(u8, enrollment_path, mount_path)) {
-        return error.InvalidPath;
-    }
-    if (enrollment_path.len <= mount_path.len or enrollment_path[mount_path.len] != '/') {
-        return error.InvalidPath;
-    }
-    return alloc.dupe(u8, enrollment_path[mount_path.len + 1 ..]);
-}
+fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !void {
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), projection_plan.root_path);
 
-fn coversEnrollmentPath(mount_path: []const u8, enrollment_path: []const u8) bool {
-    return std.mem.startsWith(u8, enrollment_path, mount_path) and
-        enrollment_path.len > mount_path.len and
-        enrollment_path[mount_path.len] == '/';
+    for (projection_plan.entries) |entry| {
+        const projection_parent = std.fs.path.dirname(entry.projection_path) orelse return error.InvalidPath;
+        try std.Io.Dir.cwd().createDirPath(runtime.io(), projection_parent);
+        enrollment_ops.ensureProjectionSymlink(allocator, entry.target_path, entry.projection_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {
+                std.debug.print(
+                    "error: target path exists and is not this projection symlink: {s}\n",
+                    .{entry.target_path},
+                );
+                return error.InvalidUsage;
+            },
+            else => return err,
+        };
+    }
 }
 
 fn parsePolicyFlag(args: []const []const u8, index: *usize, policy_path: *[]const u8) !void {
