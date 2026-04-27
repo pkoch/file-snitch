@@ -131,7 +131,7 @@ pub const AuditEvent = struct {
 };
 
 pub const GuardedEntryConfig = struct {
-    relative_path: []const u8,
     object_id: []const u8,
     lock_anchor_path: []const u8,
+    policy_path: ?[]const u8 = null,
 };

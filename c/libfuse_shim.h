@@ -29,7 +29,6 @@ struct fsn_fuse_session;
 
 struct fsn_fuse_session_config {
     const char *mount_path;
-    int32_t source_dir_fd;
     void *daemon_state;
     uint8_t run_in_foreground;
     uint8_t reserved[7];

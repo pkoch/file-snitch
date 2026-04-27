@@ -149,7 +149,7 @@ When reviewing code, be suspicious of:
 The current packaging story is:
 - tagged release artifacts from this repo
 - Homebrew/Linuxbrew formula in `pkoch/homebrew-tap`
-- per-user service helpers in `scripts/services/`
+- per-user service management embedded in the `file-snitch` binary
 - FUSE remains an external system prerequisite
 - `pass` is the only guarded-object backend today
 

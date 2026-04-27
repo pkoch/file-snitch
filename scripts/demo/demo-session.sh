@@ -174,7 +174,7 @@ run_demo_controller() {
     sleep 1.2
     pane_send "$user_pane" "fs enroll ~/.kube/config"
     wait_for_file_contains "$policy_file" "$home_dir/.kube/config"
-    mount_paths=("$home_dir/.kube")
+    mount_paths=("$home_dir/.local/state/file-snitch/projection")
     wait_for_mount_active_without_pid "$home_dir/.kube"
     sleep 0.8
     pane_send "$user_pane" "ls ~/.kube"

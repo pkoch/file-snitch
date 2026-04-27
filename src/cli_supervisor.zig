@@ -16,14 +16,11 @@ pub const RunCommand = struct {
     default_mutation_outcome: policy.Outcome,
     protocol_timeout_ms: u32,
     status_fifo_path: ?[]const u8 = null,
-    mount_path_filter: ?[]const u8 = null,
+    is_projection_child: bool = false,
 
     pub fn deinit(self: RunCommand, alloc: std.mem.Allocator) void {
         alloc.free(self.policy_path);
         if (self.status_fifo_path) |path| {
-            alloc.free(path);
-        }
-        if (self.mount_path_filter) |path| {
             alloc.free(path);
         }
     }
@@ -31,15 +28,15 @@ pub const RunCommand = struct {
 
 const PolicyMarker = config.PolicyMarker;
 
-const ManagedMountChild = struct {
+const ManagedProjectionChild = struct {
     child: std.process.Child,
     argv: []const []const u8,
-    mount_path: []u8,
+    projection_path: []u8,
     alive: bool,
     term: ?std.process.Child.Term = null,
 
-    fn deinit(self: *ManagedMountChild) void {
-        allocator.free(self.mount_path);
+    fn deinit(self: *ManagedProjectionChild) void {
+        allocator.free(self.projection_path);
         allocator.free(self.argv);
         self.* = undefined;
     }
@@ -49,8 +46,8 @@ pub fn reconcilePolicyInForeground(command: RunCommand) !void {
     const signal_handlers = installSupervisorSignalHandlers();
     defer signal_handlers.restore();
 
-    var children: std.ArrayListUnmanaged(ManagedMountChild) = .empty;
-    defer stopManagedMountChildren(&children);
+    var child: ?ManagedProjectionChild = null;
+    defer stopManagedProjectionChild(&child);
 
     var change_source = policy_watch.ChangeSource.init(allocator, command.policy_path);
     defer change_source.deinit();
@@ -77,12 +74,12 @@ pub fn reconcilePolicyInForeground(command: RunCommand) !void {
             continue;
         };
         if (needs_reconcile or last_marker == null or !last_marker.?.eql(marker)) {
-            next_expiration_unix_seconds = try reconcileManagedMountChildren(command, marker, &children);
+            next_expiration_unix_seconds = try reconcileManagedProjectionChild(command, marker, &child);
             last_marker = marker;
             needs_reconcile = false;
         }
 
-        if (reapExitedMountChildren(&children)) {
+        if (reapExitedProjectionChild(&child)) {
             needs_reconcile = true;
         }
 
@@ -99,10 +96,10 @@ fn changeSourceWait(change_source: *policy_watch.ChangeSource, next_expiration_u
     }
 }
 
-fn reconcileManagedMountChildren(
+fn reconcileManagedProjectionChild(
     command: RunCommand,
     marker: PolicyMarker,
-    children: *std.ArrayListUnmanaged(ManagedMountChild),
+    child: *?ManagedProjectionChild,
 ) !?i64 {
     _ = marker;
 
@@ -140,52 +137,44 @@ fn reconcileManagedMountChildren(
     };
     defer compiled_rule_views.deinit();
 
-    var mount_plan = loaded_policy.deriveMountPlan(allocator) catch |err| {
-        std.log.err("failed to derive mount plan from {s}: {}", .{ loaded_policy.source_path, err });
+    var projection_plan = loaded_policy.deriveProjectionPlan(allocator) catch |err| {
+        std.log.err("failed to derive projection plan from {s}: {}", .{ loaded_policy.source_path, err });
         return next_expiration_unix_seconds;
     };
-    defer mount_plan.deinit();
+    defer projection_plan.deinit();
 
-    stopManagedMountChildren(children);
+    stopManagedProjectionChild(child);
 
-    if (mount_plan.paths.len == 0) {
+    if (projection_plan.entries.len == 0) {
         return next_expiration_unix_seconds;
     }
 
     const exe_path = try std.process.executablePathAlloc(runtime.io(), allocator);
     defer allocator.free(exe_path);
 
-    for (mount_plan.paths) |mount_path| {
-        if (!prepareMountPathForSpawn(mount_path)) {
-            continue;
-        }
-
-        var child = try spawnManagedMountChild(exe_path, command, mount_path);
-        children.append(allocator, child) catch |err| {
-            signalChildBestEffort(child.child.id.?, std.posix.SIG.INT);
-            _ = pollMountChild(&child);
-            child.deinit();
-            return err;
-        };
+    if (!prepareProjectionPathForSpawn(projection_plan.root_path)) {
+        return next_expiration_unix_seconds;
     }
+
+    child.* = try spawnManagedProjectionChild(exe_path, command, projection_plan.root_path);
 
     return next_expiration_unix_seconds;
 }
 
-fn prepareMountPathForSpawn(mount_path: []const u8) bool {
-    var dir = std.Io.Dir.openDirAbsolute(runtime.io(), mount_path, .{}) catch |err| switch (err) {
+fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
+    var dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |err| switch (err) {
         error.NoDevice => {
-            std.log.warn("stale mount at {s}; attempting to unmount before restart", .{mount_path});
-            bestEffortUnmount(mount_path);
-            var recovered_dir = std.Io.Dir.openDirAbsolute(runtime.io(), mount_path, .{}) catch |retry_err| {
-                std.log.err("stale mount at {s} is still inaccessible after unmount attempt: {}", .{ mount_path, retry_err });
+            std.log.warn("stale projection mount at {s}; attempting to unmount before restart", .{projection_path});
+            bestEffortUnmount(projection_path);
+            var recovered_dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |retry_err| {
+                std.log.err("stale projection mount at {s} is still inaccessible after unmount attempt: {}", .{ projection_path, retry_err });
                 return false;
             };
             recovered_dir.close(runtime.io());
             return true;
         },
         else => {
-            std.log.warn("mount path preflight for {s} failed with {}; proceeding with mount spawn", .{ mount_path, err });
+            std.log.warn("projection path preflight for {s} failed with {}; proceeding with projection spawn", .{ projection_path, err });
             return true;
         },
     };
@@ -204,13 +193,13 @@ fn reconcileSleepNanos(next_expiration_unix_seconds: ?i64) u64 {
     return @min(default_sleep_ns, remaining_ns);
 }
 
-fn spawnManagedMountChild(
+fn spawnManagedProjectionChild(
     exe_path: []const u8,
     command: RunCommand,
-    mount_path: []const u8,
-) !ManagedMountChild {
-    const mount_path_owned = try allocator.dupe(u8, mount_path);
-    errdefer allocator.free(mount_path_owned);
+    projection_path: []const u8,
+) !ManagedProjectionChild {
+    const projection_path_owned = try allocator.dupe(u8, projection_path);
+    errdefer allocator.free(projection_path_owned);
 
     const argv = try allocator.alloc([]const u8, 5);
     errdefer allocator.free(argv);
@@ -221,7 +210,7 @@ fn spawnManagedMountChild(
     argv[3] = "--policy";
     argv[4] = command.policy_path;
 
-    var env_map = try buildMountChildEnv(command, mount_path_owned);
+    var env_map = try buildProjectionChildEnv(command);
     defer env_map.deinit();
     const child = try std.process.spawn(runtime.io(), .{
         .argv = argv,
@@ -234,19 +223,19 @@ fn spawnManagedMountChild(
     return .{
         .child = child,
         .argv = argv,
-        .mount_path = mount_path_owned,
+        .projection_path = projection_path_owned,
         .alive = true,
     };
 }
 
-fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.Environ.Map {
+fn buildProjectionChildEnv(command: RunCommand) !std.process.Environ.Map {
     var env_map = if (runtime.envMap()) |env|
         try env.clone(allocator)
     else
         std.process.Environ.Map.init(allocator);
     errdefer env_map.deinit();
 
-    try env_map.put(defaults.internal_mount_path_env, mount_path);
+    try env_map.put(defaults.internal_projection_child_env, "1");
     if (command.status_fifo_path) |status_fifo_path| {
         try env_map.put(defaults.internal_status_fifo_env, status_fifo_path);
     } else {
@@ -256,29 +245,24 @@ fn buildMountChildEnv(command: RunCommand, mount_path: []const u8) !std.process.
     return env_map;
 }
 
-fn reapExitedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) bool {
-    var reaped_any = false;
+fn reapExitedProjectionChild(child: *?ManagedProjectionChild) bool {
+    const runner = &(child.* orelse return false);
+    if (!runner.alive) return false;
 
-    for (children.items) |*runner| {
-        if (!runner.alive) continue;
+    const term = pollProjectionChild(runner) orelse return false;
+    runner.alive = false;
+    runner.term = term;
 
-        if (pollMountChild(runner)) |term| {
-            runner.alive = false;
-            runner.term = term;
-            reaped_any = true;
-
-            switch (term) {
-                .exited => |code| std.log.warn("mount child for {s} exited with code {d}", .{ runner.mount_path, code }),
-                .signal => |sig| std.log.warn("mount child for {s} exited on signal {d}", .{ runner.mount_path, @intFromEnum(sig) }),
-                else => std.log.warn("mount child for {s} terminated unexpectedly", .{runner.mount_path}),
-            }
-        }
+    switch (term) {
+        .exited => |code| std.log.warn("projection child for {s} exited with code {d}", .{ runner.projection_path, code }),
+        .signal => |sig| std.log.warn("projection child for {s} exited on signal {d}", .{ runner.projection_path, @intFromEnum(sig) }),
+        else => std.log.warn("projection child for {s} terminated unexpectedly", .{runner.projection_path}),
     }
 
-    return reaped_any;
+    return true;
 }
 
-fn pollMountChild(runner: *ManagedMountChild) ?std.process.Child.Term {
+fn pollProjectionChild(runner: *ManagedProjectionChild) ?std.process.Child.Term {
     var status: c_int = 0;
     const waited = std.c.waitpid(runner.child.id.?, &status, std.c.W.NOHANG);
     if (waited == 0) return null;
@@ -286,65 +270,46 @@ fn pollMountChild(runner: *ManagedMountChild) ?std.process.Child.Term {
     return termFromWaitStatus(@intCast(status));
 }
 
-fn stopManagedMountChildren(children: *std.ArrayListUnmanaged(ManagedMountChild)) void {
+fn stopManagedProjectionChild(child: *?ManagedProjectionChild) void {
+    var runner = child.* orelse return;
     defer {
-        for (children.items) |*runner| {
-            runner.deinit();
-        }
-        children.clearAndFree(allocator);
+        runner.deinit();
+        child.* = null;
     }
 
-    if (children.items.len == 0) return;
+    if (!runner.alive) return;
 
-    for (children.items) |*runner| {
-        if (!runner.alive) continue;
-        signalChildBestEffort(runner.child.id.?, std.posix.SIG.INT);
-    }
+    signalChildBestEffort(runner.child.id.?, std.posix.SIG.INT);
 
-    if (waitForManagedChildren(children, 20)) {
+    if (waitForManagedProjectionChild(&runner, 20)) {
         return;
     }
 
-    for (children.items) |*runner| {
-        if (!runner.alive) continue;
-        bestEffortUnmount(runner.mount_path);
-    }
+    bestEffortUnmount(runner.projection_path);
 
-    if (waitForManagedChildren(children, 20)) {
+    if (waitForManagedProjectionChild(&runner, 20)) {
         return;
     }
 
-    for (children.items) |*runner| {
-        if (!runner.alive) continue;
-        signalChildBestEffort(runner.child.id.?, std.posix.SIG.TERM);
-    }
+    signalChildBestEffort(runner.child.id.?, std.posix.SIG.TERM);
 
-    _ = waitForManagedChildren(children, 20);
+    _ = waitForManagedProjectionChild(&runner, 20);
 }
 
-fn waitForManagedChildren(children: *std.ArrayListUnmanaged(ManagedMountChild), attempts: usize) bool {
-    var remaining = true;
+fn waitForManagedProjectionChild(runner: *ManagedProjectionChild, attempts: usize) bool {
     var attempt: usize = 0;
 
     while (attempt < attempts) : (attempt += 1) {
-        remaining = false;
+        if (!runner.alive) return true;
 
-        for (children.items) |*runner| {
-            if (!runner.alive) continue;
-            if (pollMountChild(runner)) |term| {
-                runner.alive = false;
-                runner.term = term;
-            } else {
-                remaining = true;
-            }
-        }
-
-        if (!remaining) {
+        if (pollProjectionChild(runner)) |term| {
+            runner.alive = false;
+            runner.term = term;
             return true;
         }
 
         std.Io.sleep(runtime.io(), .fromMilliseconds(50), .awake) catch |err| {
-            std.log.warn("mount child wait sleep failed: {}", .{err});
+            std.log.warn("projection child wait sleep failed: {}", .{err});
         };
     }
 
@@ -387,16 +352,9 @@ fn runUnmountCommand(argv: []const []const u8) bool {
     };
 }
 
-fn signalChildrenForShutdown(children: anytype, signal: std.posix.SIG) void {
-    for (children) |runner| {
-        if (!runner.alive) continue;
-        signalChildBestEffort(runner.child.id.?, signal);
-    }
-}
-
 fn signalChildBestEffort(child_id: std.process.Child.Id, signal: std.posix.SIG) void {
     std.posix.kill(child_id, signal) catch |err| {
-        std.log.warn("failed to signal mount child {d}: {}", .{ child_id, err });
+        std.log.warn("failed to signal projection child {d}: {}", .{ child_id, err });
     };
 }
 
@@ -494,34 +452,34 @@ test "termFromWaitStatus decodes exit, signal, and stop encodings" {
     }
 }
 
-test "buildMountChildEnv sets mount path and removes status fifo when missing" {
+test "buildProjectionChildEnv marks child and removes status fifo when missing" {
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .deny,
         .protocol_timeout_ms = 100,
         .status_fifo_path = null,
-        .mount_path_filter = null,
+        .is_projection_child = false,
     };
 
-    var env = try buildMountChildEnv(command, "/tmp/mount");
+    var env = try buildProjectionChildEnv(command);
     defer env.deinit();
 
-    try std.testing.expectEqualStrings("/tmp/mount", env.get(defaults.internal_mount_path_env).?);
+    try std.testing.expectEqualStrings("1", env.get(defaults.internal_projection_child_env).?);
     try std.testing.expect(env.get(defaults.internal_status_fifo_env) == null);
 }
 
-test "buildMountChildEnv propagates status fifo when provided" {
+test "buildProjectionChildEnv propagates status fifo when provided" {
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .allow,
         .protocol_timeout_ms = 100,
         .status_fifo_path = "/tmp/status.fifo",
-        .mount_path_filter = null,
+        .is_projection_child = false,
     };
 
-    var env = try buildMountChildEnv(command, "/tmp/mount");
+    var env = try buildProjectionChildEnv(command);
     defer env.deinit();
 
-    try std.testing.expectEqualStrings("/tmp/mount", env.get(defaults.internal_mount_path_env).?);
+    try std.testing.expectEqualStrings("1", env.get(defaults.internal_projection_child_env).?);
     try std.testing.expectEqualStrings("/tmp/status.fifo", env.get(defaults.internal_status_fifo_env).?);
 }

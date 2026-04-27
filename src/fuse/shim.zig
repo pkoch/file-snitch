@@ -17,7 +17,6 @@ const c = struct {
 
     pub const RawSessionConfig = extern struct {
         mount_path: [*:0]const u8,
-        source_dir_fd: i32,
         daemon_state: ?*anyopaque,
         run_in_foreground: u8,
         reserved: [7]u8,
@@ -56,7 +55,6 @@ comptime {
     });
     assertAbi(c.RawSessionConfig, c_header.struct_fsn_fuse_session_config, &.{
         .{ "mount_path", "mount_path" },
-        .{ "source_dir_fd", "source_dir_fd" },
         .{ "daemon_state", "daemon_state" },
         .{ "run_in_foreground", "run_in_foreground" },
         .{ "reserved", "reserved" },
@@ -199,7 +197,6 @@ pub const Environment = struct {
 
 pub const SessionConfig = struct {
     mount_path: [*:0]const u8,
-    source_dir_fd: i32 = -1,
     daemon_state: ?*anyopaque = null,
     run_in_foreground: bool,
 };
@@ -244,7 +241,6 @@ pub fn probe() Error!Environment {
 pub fn createSession(config: SessionConfig) Error!*RawSession {
     var raw_config = c.RawSessionConfig{
         .mount_path = config.mount_path,
-        .source_dir_fd = config.source_dir_fd,
         .daemon_state = config.daemon_state,
         .run_in_foreground = @intFromBool(config.run_in_foreground),
         .reserved = std.mem.zeroes([7]u8),

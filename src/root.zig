@@ -13,3 +13,4 @@ pub const policy = @import("policy.zig");
 pub const prompt = @import("prompt.zig");
 pub const runtime = @import("runtime.zig");
 pub const store = @import("store.zig");
+pub const user_services = @import("user_services.zig");

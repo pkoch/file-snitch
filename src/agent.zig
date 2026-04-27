@@ -954,7 +954,6 @@ fn persistRememberedDecision(
 
     try loaded_policy.upsertDecision(
         executable_path,
-        request.uid,
         request.path,
         accessClassLabel(request.access_class),
         switch (response.decision) {

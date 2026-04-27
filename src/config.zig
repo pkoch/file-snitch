@@ -20,7 +20,6 @@ pub const Enrollment = struct {
 
 pub const Decision = struct {
     executable_path: []u8,
-    uid: u32,
     path: []u8,
     approval_class: []u8,
     outcome: []u8,
@@ -38,15 +37,30 @@ pub const Decision = struct {
     }
 };
 
-pub const MountPlan = struct {
-    allocator: std.mem.Allocator,
-    paths: [][]u8,
+pub const ProjectionEntry = struct {
+    target_path: []u8,
+    projection_path: []u8,
+    object_id: []u8,
 
-    pub fn deinit(self: *MountPlan) void {
-        for (self.paths) |path| {
-            self.allocator.free(path);
+    fn deinit(self: *ProjectionEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.target_path);
+        allocator.free(self.projection_path);
+        allocator.free(self.object_id);
+        self.* = undefined;
+    }
+};
+
+pub const ProjectionPlan = struct {
+    allocator: std.mem.Allocator,
+    root_path: []u8,
+    entries: []ProjectionEntry,
+
+    pub fn deinit(self: *ProjectionPlan) void {
+        for (self.entries) |*entry| {
+            entry.deinit(self.allocator);
         }
-        self.allocator.free(self.paths);
+        self.allocator.free(self.entries);
+        self.allocator.free(self.root_path);
         self.* = undefined;
     }
 };
@@ -123,11 +137,24 @@ pub const PolicyFile = struct {
         return null;
     }
 
+    fn findEnrollmentObjectIdIndex(self: *const PolicyFile, object_id: []const u8) ?usize {
+        for (self.enrollments, 0..) |enrollment, index| {
+            if (std.mem.eql(u8, enrollment.object_id, object_id)) {
+                return index;
+            }
+        }
+
+        return null;
+    }
+
     pub fn appendEnrollment(self: *PolicyFile, enrolled_path: []const u8, object_id: []const u8) !void {
         try validateEnrollment(.{
             .path = enrolled_path,
             .object_id = object_id,
         });
+        if (self.findEnrollmentObjectIdIndex(object_id) != null) {
+            return error.InvalidEnrollmentObjectId;
+        }
 
         const owned_path = try self.allocator.dupe(u8, enrolled_path);
         errdefer self.allocator.free(owned_path);
@@ -175,7 +202,6 @@ pub const PolicyFile = struct {
     pub fn upsertDecision(
         self: *PolicyFile,
         executable_path: []const u8,
-        uid: u32,
         enrolled_path: []const u8,
         approval_class: []const u8,
         outcome: []const u8,
@@ -183,7 +209,6 @@ pub const PolicyFile = struct {
     ) !void {
         try validateDecision(.{
             .executable_path = executable_path,
-            .uid = uid,
             .path = enrolled_path,
             .approval_class = approval_class,
             .outcome = outcome,
@@ -192,7 +217,6 @@ pub const PolicyFile = struct {
 
         for (self.decisions) |*decision| {
             if (!std.mem.eql(u8, decision.executable_path, executable_path)) continue;
-            if (decision.uid != uid) continue;
             if (!std.mem.eql(u8, decision.path, enrolled_path)) continue;
             if (!std.mem.eql(u8, decision.approval_class, approval_class)) continue;
 
@@ -232,7 +256,6 @@ pub const PolicyFile = struct {
 
         self.decisions[previous_len] = .{
             .executable_path = owned_executable_path,
-            .uid = uid,
             .path = owned_path,
             .approval_class = owned_approval_class,
             .outcome = owned_outcome,
@@ -280,40 +303,40 @@ pub const PolicyFile = struct {
         return next_expiration;
     }
 
-    pub fn deriveMountPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !MountPlan {
-        var parents: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (parents.items) |path| {
-                allocator.free(path);
+    pub fn deriveProjectionPlan(self: *const PolicyFile, allocator: std.mem.Allocator) !ProjectionPlan {
+        const root_path = try defaultProjectionRootPathAlloc(allocator);
+        errdefer allocator.free(root_path);
+
+        var entries = try allocator.alloc(ProjectionEntry, self.enrollments.len);
+        errdefer allocator.free(entries);
+
+        var initialized: usize = 0;
+        errdefer {
+            for (entries[0..initialized]) |*entry| {
+                entry.deinit(allocator);
             }
-            parents.deinit(allocator);
         }
 
         for (self.enrollments) |enrollment| {
-            const parent = std.fs.path.dirname(enrollment.path) orelse return error.InvalidEnrollmentPath;
-            try parents.append(allocator, try allocator.dupe(u8, parent));
-        }
+            const projection_path = try std.fs.path.join(allocator, &.{ root_path, enrollment.object_id });
+            errdefer allocator.free(projection_path);
+            const target_path = try allocator.dupe(u8, enrollment.path);
+            errdefer allocator.free(target_path);
+            const object_id = try allocator.dupe(u8, enrollment.object_id);
+            errdefer allocator.free(object_id);
 
-        std.mem.sort([]u8, parents.items, {}, lessThanPathLength);
-
-        var planned: std.ArrayListUnmanaged([]u8) = .empty;
-        errdefer {
-            for (planned.items) |path| {
-                allocator.free(path);
-            }
-            planned.deinit(allocator);
-        }
-
-        for (parents.items) |candidate| {
-            if (isCoveredByExistingMount(planned.items, candidate)) {
-                continue;
-            }
-            try planned.append(allocator, try allocator.dupe(u8, candidate));
+            entries[initialized] = .{
+                .target_path = target_path,
+                .projection_path = projection_path,
+                .object_id = object_id,
+            };
+            initialized += 1;
         }
 
         return .{
             .allocator = allocator,
-            .paths = try planned.toOwnedSlice(allocator),
+            .root_path = root_path,
+            .entries = entries,
         };
     }
 
@@ -330,7 +353,6 @@ pub const PolicyFile = struct {
                     .path_prefix = decision.path,
                     .access_class = access_class,
                     .outcome = outcome,
-                    .uid = decision.uid,
                     .executable_path = decision.executable_path,
                     .exact_path = true,
                     .expires_at_unix_seconds = expires_at_unix_seconds,
@@ -400,7 +422,6 @@ pub const PolicyFile = struct {
             try writer.writeAll("  - executable_path: ");
             try writeYamlString(writer, decision.executable_path);
             try writer.writeByte('\n');
-            try writer.print("    uid: {d}\n", .{decision.uid});
             try writer.writeAll("    path: ");
             try writeYamlString(writer, serialized_path);
             try writer.writeByte('\n');
@@ -459,7 +480,6 @@ const RawEnrollment = struct {
 
 const RawDecision = struct {
     executable_path: []const u8,
-    uid: u32,
     path: []const u8,
     approval_class: []const u8,
     outcome: []const u8,
@@ -573,6 +593,25 @@ pub fn defaultPolicyPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ base, "file-snitch", "policy.yml" });
 }
 
+pub fn defaultProjectionRootPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const base = try defaults.xdgBasePathAlloc(allocator, defaults.xdg_state_path_env, ".local/state");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "projection" });
+}
+
+fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, base)) {
+        return false;
+    }
+    if (candidate.len == base.len) {
+        return true;
+    }
+    if (std.mem.eql(u8, base, "/")) {
+        return true;
+    }
+    return candidate[base.len] == '/';
+}
+
 fn loadPolicySource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = try std.Io.Dir.openFileAbsolute(runtime.io(), path, .{ .mode = .read_only });
     defer file.close(runtime.io());
@@ -626,7 +665,6 @@ fn parseRawDecisions(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const 
         const map = try entry.asMap();
         decisions[index] = .{
             .executable_path = try requiredStringField(arena, map, "executable_path"),
-            .uid = @intCast(try requiredIntField(map, "uid")),
             .path = try requiredStringField(arena, map, "path"),
             .approval_class = try requiredStringField(arena, map, "approval_class"),
             .outcome = try requiredStringField(arena, map, "outcome"),
@@ -697,6 +735,11 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
             .object_id = raw.object_id,
         });
         try requirePolicyPathWithinHome(allocator, owned_path, error.InvalidEnrollmentPath);
+        for (enrollments[0..initialized]) |existing| {
+            if (std.mem.eql(u8, existing.object_id, raw.object_id)) {
+                return error.InvalidEnrollmentObjectId;
+            }
+        }
         const owned_object_id = try allocator.dupe(u8, raw.object_id);
         errdefer allocator.free(owned_object_id);
         enrollments[index] = .{
@@ -733,7 +776,6 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
         errdefer allocator.free(owned_path);
         try validateDecision(.{
             .executable_path = raw.executable_path,
-            .uid = raw.uid,
             .path = owned_path,
             .approval_class = raw.approval_class,
             .outcome = raw.outcome,
@@ -753,7 +795,6 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
         errdefer if (owned_expires_at) |value| allocator.free(value);
         decisions[index] = .{
             .executable_path = owned_executable_path,
-            .uid = raw.uid,
             .path = owned_path,
             .approval_class = owned_approval_class,
             .outcome = owned_outcome,
@@ -780,9 +821,18 @@ fn validateEnrollment(raw: RawEnrollment) !void {
     if (!std.fs.path.isAbsolute(raw.path) or raw.path.len <= 1) {
         return error.InvalidEnrollmentPath;
     }
-    if (raw.object_id.len == 0) {
+    if (raw.object_id.len == 0 or raw.object_id[0] == '.') {
         return error.InvalidEnrollmentObjectId;
     }
+    for (raw.object_id) |byte| {
+        if (!isEnrollmentObjectIdByte(byte)) {
+            return error.InvalidEnrollmentObjectId;
+        }
+    }
+}
+
+fn isEnrollmentObjectIdByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '.';
 }
 
 fn validateDecision(raw: RawDecision) !void {
@@ -979,38 +1029,6 @@ fn accessClassesForApprovalClass(value: []const u8) ![]const policy.AccessClass 
     return error.InvalidApprovalClass;
 }
 
-fn lessThanPathLength(_: void, left: []u8, right: []u8) bool {
-    if (left.len != right.len) {
-        return left.len < right.len;
-    }
-    return std.mem.lessThan(u8, left, right);
-}
-
-fn isCoveredByExistingMount(existing: []const []u8, candidate: []const u8) bool {
-    for (existing) |mount_path| {
-        if (std.mem.eql(u8, mount_path, candidate)) {
-            return true;
-        }
-        if (isDescendantPath(mount_path, candidate)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn isDescendantPath(base: []const u8, candidate: []const u8) bool {
-    if (!std.mem.startsWith(u8, candidate, base)) {
-        return false;
-    }
-    if (candidate.len == base.len) {
-        return true;
-    }
-    if (std.mem.eql(u8, base, "/")) {
-        return true;
-    }
-    return candidate[base.len] == '/';
-}
-
 test "parse decision expiration accepts RFC3339 UTC" {
     try std.testing.expectEqual(@as(?i64, null), try parseOptionalDecisionExpiration(null));
     try std.testing.expectEqual(@as(?i64, null), try parseRawDecisionExpiration("null"));
@@ -1070,7 +1088,6 @@ fn checkUpsertDecisionInsertAllocationFailures(allocator: std.mem.Allocator) !vo
 
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "allow",
@@ -1093,7 +1110,6 @@ fn checkUpsertDecisionUpdateAllocationFailures(allocator: std.mem.Allocator) !vo
 
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "allow",
@@ -1101,7 +1117,6 @@ fn checkUpsertDecisionUpdateAllocationFailures(allocator: std.mem.Allocator) !vo
     );
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "deny",
@@ -1168,7 +1183,6 @@ test "copyEnrollments handles allocation failures" {
 fn checkCopyDecisionsAllocationFailures(allocator: std.mem.Allocator) !void {
     const decisions = try copyDecisions(allocator, &.{.{
         .executable_path = "/bin/cat",
-        .uid = 501,
         .path = "/tmp/demo-secret",
         .approval_class = "read_like",
         .outcome = "allow",

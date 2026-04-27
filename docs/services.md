@@ -1,13 +1,13 @@
 # User Services
 
-File Snitch now has real per-user service install helpers:
+File Snitch embeds its per-user service definitions in the binary:
 - Linux with `systemd --user`
 - macOS with `launchd`
 
 Render the service files without installing them:
 
 ```bash
-./scripts/services/render-user-services.sh \
+file-snitch services render \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)" \
   --output-dir ./out
@@ -16,7 +16,7 @@ Render the service files without installing them:
 Install the default service set for the current platform:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"
 ```
@@ -24,7 +24,7 @@ Install the default service set for the current platform:
 Remove them again:
 
 ```bash
-./scripts/services/uninstall-user-services.sh
+file-snitch services uninstall
 ```
 
 Current platform stance:
@@ -46,7 +46,7 @@ Templates:
 Install it with:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --platform linux \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"
@@ -55,6 +55,7 @@ Install it with:
 Then inspect it with:
 
 ```bash
+file-snitch doctor
 systemctl --user status file-snitch-run.service
 systemctl --user status file-snitch-agent.service
 journalctl --user -u file-snitch-run.service
@@ -70,7 +71,7 @@ Templates:
 Install them with:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --platform macos \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"
@@ -79,20 +80,23 @@ Install them with:
 Then inspect it with:
 
 ```bash
+file-snitch doctor
 launchctl print gui/$(id -u)/dev.file-snitch.agent
 launchctl print gui/$(id -u)/dev.file-snitch.run
 ```
 
 ## Notes
 
-- The install helper resolves and embeds an absolute `file-snitch` binary path.
-- The install helper resolves and embeds an absolute `pass` binary path into
+- The services command resolves and embeds an absolute `file-snitch` binary path.
+- The services command resolves and embeds an absolute `pass` binary path into
   the run service so launchd/systemd do not depend on an interactive shell
   `PATH`.
 - Both examples assume the default policy path:
   `~/.config/file-snitch/policy.yml`
 - Rendered macOS plists log to `~/.local/state/file-snitch/log/`.
-- The helper installs per-user services only. It does not create a system
+- The command installs per-user services only. It does not create a system
   daemon or root-owned service.
+- `file-snitch doctor` compares installed service files and loaded service
+  manager config against the render output from the current binary.
 - Linux service installation expects `zenity` to be on `PATH` unless you set
   `FILE_SNITCH_ZENITY_BIN` in the service environment yourself.

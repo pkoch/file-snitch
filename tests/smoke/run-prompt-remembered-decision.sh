@@ -32,7 +32,7 @@ start_prompt_run() {
   mkfifo "$prompt_fifo"
   exec 3<>"$prompt_fifo"
   agent_input_fd=3
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_agent
   FILE_SNITCH_PROMPT_TIMEOUT_MS=250 start_file_snitch_run prompt
 }
@@ -60,11 +60,11 @@ wait_for_stable_read_without_prompt() {
   for _ in $(seq 1 "$attempts"); do
     if [[ "$(cat "$target_path" 2>/dev/null || true)" == "guarded seeded kube" ]]; then
       local prompt_count_after_first_read=0
-      prompt_count_after_first_read="$(grep -c '"action":"prompt","path":"open O_RDONLY /config"' "$log_file" || true)"
+      prompt_count_after_first_read="$(grep -c "\"action\":\"prompt\",\"path\":\"open O_RDONLY $home_dir/.kube/config\"" "$log_file" || true)"
       if [[ "$prompt_count_after_first_read" == "$prompt_count_before" ]] &&
         [[ "$(cat "$target_path" 2>/dev/null || true)" == "guarded seeded kube" ]]; then
         local prompt_count_after_second_read=0
-        prompt_count_after_second_read="$(grep -c '"action":"prompt","path":"open O_RDONLY /config"' "$log_file" || true)"
+        prompt_count_after_second_read="$(grep -c "\"action\":\"prompt\",\"path\":\"open O_RDONLY $home_dir/.kube/config\"" "$log_file" || true)"
         if [[ "$prompt_count_after_second_read" == "$prompt_count_before" ]]; then
           return
         fi
@@ -97,7 +97,7 @@ verify_durable_allow_read() {
   wait_for_policy_allow_rule
 
   local prompt_count_before=0
-  prompt_count_before="$(grep -c '"action":"prompt","path":"open O_RDONLY /config"' "$log_file" || true)"
+  prompt_count_before="$(grep -c "\"action\":\"prompt\",\"path\":\"open O_RDONLY $home_dir/.kube/config\"" "$log_file" || true)"
   wait_for_stable_read_without_prompt "$home_dir/.kube/config" 50 "$prompt_count_before"
 
   cleanup_run_fixture

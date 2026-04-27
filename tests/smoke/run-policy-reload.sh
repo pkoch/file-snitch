@@ -34,7 +34,7 @@ main() {
   fi
 
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   wait_for_mounts_ready
   platform_prime_guarded_path "$home_dir/.kube/config"
 
@@ -45,7 +45,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected passthrough siblings to survive policy-driven mount activation"
+    "expected siblings to remain outside policy-driven projection activation"
 
   unenroll_output="$(capture_file_snitch unenroll "$home_dir/.kube/config")"
   grep -F "file-snitch: waiting for active projection to stop: $home_dir/.kube/config" <<<"$unenroll_output" >/dev/null || fail "expected unenroll to wait for active projection teardown"
@@ -63,7 +63,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected passthrough siblings to remain after unenroll-driven teardown"
+    "expected siblings to remain after unenroll-driven teardown"
 }
 
 main "$@"

@@ -168,16 +168,13 @@ environment diagnostics, but not guarded file contents.
 
 ## User services
 
-Per-user service installation now has real helper scripts:
+Per-user service installation is built into the `file-snitch` binary:
 - [docs/services.md](./services.md)
-- [scripts/services/render-user-services.sh](../scripts/services/render-user-services.sh)
-- [scripts/services/install-user-services.sh](../scripts/services/install-user-services.sh)
-- [scripts/services/uninstall-user-services.sh](../scripts/services/uninstall-user-services.sh)
 
 macOS first-class path:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --platform macos \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"
@@ -186,7 +183,7 @@ macOS first-class path:
 Linux first-class path:
 
 ```bash
-./scripts/services/install-user-services.sh \
+file-snitch services install \
   --platform linux \
   --bin "$(command -v file-snitch)" \
   --pass-bin "$(command -v pass)"

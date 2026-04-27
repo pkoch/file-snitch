@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `file-snitch services` commands to render, install, and uninstall the
+  embedded per-user launchd and systemd service definitions.
+
+### Changed
+
+- Changed `doctor` to report stale per-user service files and stale loaded
+  service-manager config by comparing them with the current binary's render
+  output.
+- Changed remembered decisions to omit requester uid and apply by executable
+  path, enrolled path, and approval class.
+- Changed daemon-to-agent prompt display paths to use `~/...` for enrolled
+  paths under the current user's home directory.
+- Changed enrollment projection to mount guarded files from the state
+  projection directory by `object_id`, instead of mounting over the target's
+  original parent directory.
+
+### Fixed
+
+- Fixed invalid projection states caused by unsafe or duplicate enrollment
+  object IDs and unsupported transient rename targets.
+
 ## [0.6.1] - 2026-04-27
 
 ### Changed

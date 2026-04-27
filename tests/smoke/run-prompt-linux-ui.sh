@@ -67,7 +67,7 @@ EOF
 }
 
 start_linux_ui_prompt_run() {
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   agent_frontend_args=(--frontend linux-ui)
   FILE_SNITCH_PROMPT_TIMEOUT_MS=2000 start_file_snitch_agent
   FILE_SNITCH_PROMPT_TIMEOUT_MS=2000 start_file_snitch_run prompt
@@ -92,7 +92,7 @@ verify_allow_read() {
     "$(cat "$home_dir/.kube/config")" \
     "guarded seeded kube" \
     "expected linux-ui allow to permit a read of the enrolled file"
-  assert_log_contains '"action":"prompt","path":"open O_RDONLY /config","result":1'
+  assert_log_contains "\"action\":\"prompt\",\"path\":\"open O_RDONLY $home_dir/.kube/config\",\"result\":1"
 
   cleanup_run_fixture
   trap - EXIT
@@ -114,7 +114,7 @@ verify_deny_write() {
   if bash -c 'printf "denied write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected linux-ui deny to block a write"
   fi
-  assert_log_matches '"action":"prompt","path":"open O_WRONLY(\|O_TRUNC)? /config","result":2'
+  assert_log_matches "\"action\":\"prompt\",\"path\":\"open O_WRONLY(\\|O_TRUNC)? $home_dir/.kube/config\",\"result\":2"
 
   cleanup_run_fixture
   trap - EXIT
@@ -136,7 +136,7 @@ verify_timeout_write() {
   if bash -c 'printf "timed out write\n" >"$1"' _ "$home_dir/.kube/config" >/dev/null 2>&1; then
     fail "expected linux-ui timeout to block a write"
   fi
-  assert_log_matches '"action":"prompt","path":"open O_WRONLY(\|O_TRUNC)? /config","result":3'
+  assert_log_matches "\"action\":\"prompt\",\"path\":\"open O_WRONLY(\\|O_TRUNC)? $home_dir/.kube/config\",\"result\":3"
 
   cleanup_run_fixture
   trap - EXIT

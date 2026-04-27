@@ -48,13 +48,12 @@ main() {
   status_output="$(capture_file_snitch status)"
   grep -F "policy: $policy_file" <<<"$status_output" >/dev/null || fail "expected status to print the policy path"
   grep -F "enrollments: 1" <<<"$status_output" >/dev/null || fail "expected one enrollment in status"
-  grep -F "planned_mounts: 1" <<<"$status_output" >/dev/null || fail "expected one planned mount in status"
-  grep -F "mount: $home_dir/.kube" <<<"$status_output" >/dev/null || fail "expected the kube parent mount in status"
+  grep -F "projection: $home_dir/.local/state/file-snitch/projection" <<<"$status_output" >/dev/null || fail "expected the projection root in status"
   grep -F "enrollment: path=$home_dir/.kube/config " <<<"$status_output" >/dev/null || fail "expected enrollment details in status"
 
   doctor_output="$(capture_file_snitch doctor)"
   grep -F "policy: ok ($policy_file)" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the policy file"
-  grep -F "mount_plan: 1 mounts for 1 enrollments" <<<"$doctor_output" >/dev/null || fail "expected doctor to report one mount"
+  grep -F "projection: $home_dir/.local/state/file-snitch/projection for 1 enrollments" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the projection root"
   grep -F "ok: FUSE runtime is available:" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the FUSE runtime"
   grep -F "ok: pass backend is usable: pass" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate pass usability"
   grep -F 'hint: start `file-snitch agent` or install the per-user agent service' <<<"$doctor_output" >/dev/null || fail "expected doctor to explain how to fix a missing agent socket"
@@ -69,7 +68,6 @@ enrollments:
     object_id: $object_id
 decisions:
   - executable_path: /usr/bin/cat
-    uid: 501
     path: $home_dir/.kube/config
     approval_class: read_like
     outcome: allow
@@ -93,7 +91,7 @@ EOF
   status_output="$(capture_file_snitch status)"
   grep -F "enrollments: 0" <<<"$status_output" >/dev/null || fail "expected no enrollments after unenroll"
   grep -F "decisions: 0" <<<"$status_output" >/dev/null || fail "expected no remembered decisions after unenroll"
-  grep -F "planned_mounts: 0" <<<"$status_output" >/dev/null || fail "expected no planned mounts after unenroll"
+  grep -F "projection: absent" <<<"$status_output" >/dev/null || fail "expected no projection after unenroll"
 }
 
 main "$@"

@@ -36,7 +36,7 @@ main() {
   guarded_store_write_for "$home_dir/.ssh/id_ed25519" 'guarded ssh
 '
 
-  mount_paths=("$home_dir/.kube" "$home_dir/.ssh")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   start_file_snitch_run allow
   platform_prime_guarded_path "$home_dir/.kube/config"
   platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
@@ -52,7 +52,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.ssh/config")" \
     "ssh config" \
-    "expected unguarded siblings to passthrough under a second mount"
+    "expected unguarded siblings to remain outside the projection"
 
   platform_prime_guarded_path "$home_dir/.kube/config"
   platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
@@ -78,7 +78,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.ssh/config")" \
     "ssh config" \
-    "expected sibling passthrough files to survive shutdown"
+    "expected sibling files to survive shutdown"
 }
 
 main "$@"

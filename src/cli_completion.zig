@@ -46,8 +46,12 @@ const bash_script =
     \\    prev="${COMP_WORDS[COMP_CWORD-1]}"
     \\
     \\    case "$prev" in
-    \\        --policy|--socket|--tty|--export-debug-dossier)
+    \\        --policy|--socket|--tty|--export-debug-dossier|--bin|--pass-bin|--output-dir)
     \\            COMPREPLY=( $(compgen -f -- "$cur") )
+    \\            return 0
+    \\            ;;
+    \\        --platform)
+    \\            COMPREPLY=( $(compgen -W "macos linux" -- "$cur") )
     \\            return 0
     \\            ;;
     \\        --frontend)
@@ -57,7 +61,7 @@ const bash_script =
     \\    esac
     \\
     \\    if [[ ${COMP_CWORD} -eq 1 ]]; then
-    \\        COMPREPLY=( $(compgen -W "agent run enroll unenroll status doctor completion help version --help --version" -- "$cur") )
+    \\        COMPREPLY=( $(compgen -W "agent run enroll unenroll status doctor completion services help version --help --version" -- "$cur") )
     \\        return 0
     \\    fi
     \\
@@ -90,6 +94,23 @@ const bash_script =
     \\        completion)
     \\            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
     \\            ;;
+    \\        services)
+    \\            if [[ ${COMP_CWORD} -eq 2 ]]; then
+    \\                COMPREPLY=( $(compgen -W "render install uninstall" -- "$cur") )
+    \\                return 0
+    \\            fi
+    \\            case "${COMP_WORDS[2]}" in
+    \\                render)
+    \\                    COMPREPLY=( $(compgen -W "--platform --bin --pass-bin --output-dir" -- "$cur") )
+    \\                    ;;
+    \\                install)
+    \\                    COMPREPLY=( $(compgen -W "--platform --bin --pass-bin" -- "$cur") )
+    \\                    ;;
+    \\                uninstall)
+    \\                    COMPREPLY=( $(compgen -W "--platform" -- "$cur") )
+    \\                    ;;
+    \\            esac
+    \\            ;;
     \\    esac
     \\}
     \\
@@ -101,7 +122,7 @@ const zsh_script =
     \\#compdef file-snitch
     \\
     \\local -a commands
-    \\commands=(agent run enroll unenroll status doctor completion help version --help --version)
+    \\commands=(agent run enroll unenroll status doctor completion services help version --help --version)
     \\
     \\if (( CURRENT == 2 )); then
     \\    compadd -- $commands
@@ -171,6 +192,33 @@ const zsh_script =
     \\            compadd -- bash zsh fish
     \\        fi
     \\        ;;
+    \\    services)
+    \\        case "${words[CURRENT-1]}" in
+    \\            --bin|--pass-bin|--output-dir)
+    \\                _files
+    \\                return
+    \\                ;;
+    \\            --platform)
+    \\                compadd -- macos linux
+    \\                return
+    \\                ;;
+    \\        esac
+    \\        if (( CURRENT == 3 )); then
+    \\            compadd -- render install uninstall
+    \\            return
+    \\        fi
+    \\        case "${words[3]}" in
+    \\            render)
+    \\                compadd -- --platform --bin --pass-bin --output-dir
+    \\                ;;
+    \\            install)
+    \\                compadd -- --platform --bin --pass-bin
+    \\                ;;
+    \\            uninstall)
+    \\                compadd -- --platform
+    \\                ;;
+    \\        esac
+    \\        ;;
     \\esac
     \\
 ;
@@ -192,7 +240,7 @@ const fish_script =
     \\
     \\complete -c file-snitch -n "__fish_use_subcommand" -l help
     \\complete -c file-snitch -n "__fish_use_subcommand" -l version -s V
-    \\complete -c file-snitch -n "__fish_use_subcommand" -f -a "agent run enroll unenroll status doctor completion help version"
+    \\complete -c file-snitch -n "__fish_use_subcommand" -f -a "agent run enroll unenroll status doctor completion services help version"
     \\
     \\complete -c file-snitch -n "__fish_seen_subcommand_from agent" -l socket -r -F
     \\complete -c file-snitch -n "__fish_seen_subcommand_from agent" -l frontend -r -f -a "terminal-pinentry macos-ui linux-ui"
@@ -210,6 +258,12 @@ const fish_script =
     \\complete -c file-snitch -n "__fish_seen_subcommand_from doctor" -l export-debug-dossier -r -F
     \\
     \\complete -c file-snitch -n "__fish_seen_subcommand_from completion" -f -a "bash zsh fish"
+    \\
+    \\complete -c file-snitch -n "__fish_seen_subcommand_from services; and not __fish_seen_subcommand_from render install uninstall" -f -a "render install uninstall"
+    \\complete -c file-snitch -n "__fish_seen_subcommand_from services" -l platform -r -f -a "macos linux"
+    \\complete -c file-snitch -n "__fish_seen_subcommand_from services; and __fish_seen_subcommand_from render install" -l bin -r -F
+    \\complete -c file-snitch -n "__fish_seen_subcommand_from services; and __fish_seen_subcommand_from render install" -l pass-bin -r -F
+    \\complete -c file-snitch -n "__fish_seen_subcommand_from services; and __fish_seen_subcommand_from render" -l output-dir -r -F
     \\
 ;
 
@@ -235,8 +289,20 @@ test "scripts include current command surface" {
         "status",
         "doctor",
         "completion",
+        "services",
         "help",
         "version",
+    };
+    const service_subcommands = [_][]const u8{
+        "render",
+        "install",
+        "uninstall",
+    };
+    const service_flags = [_][]const u8{
+        "--platform",
+        "--bin",
+        "--pass-bin",
+        "--output-dir",
     };
     const frontend_choices = [_][]const u8{
         "terminal-pinentry",
@@ -262,6 +328,8 @@ test "scripts include current command surface" {
     try expectContainsAll(scriptFor(.bash), &run_outcomes);
     try expectContainsAll(scriptFor(.bash), &bash_doctor_flags);
     try expectContainsAll(scriptFor(.bash), &completion_shells);
+    try expectContainsAll(scriptFor(.bash), &service_subcommands);
+    try expectContainsAll(scriptFor(.bash), &service_flags);
 
     const zsh_agent_flags = [_][]const u8{ "--socket", "--frontend", "--tty" };
     const zsh_doctor_flags = [_][]const u8{ "--policy", "--export-debug-dossier" };
@@ -271,15 +339,20 @@ test "scripts include current command surface" {
     try expectContainsAll(scriptFor(.zsh), &run_outcomes);
     try expectContainsAll(scriptFor(.zsh), &zsh_doctor_flags);
     try expectContainsAll(scriptFor(.zsh), &completion_shells);
+    try expectContainsAll(scriptFor(.zsh), &service_subcommands);
+    try expectContainsAll(scriptFor(.zsh), &service_flags);
 
     const fish_agent_flags = [_][]const u8{ "-l socket", "-l frontend", "-l tty" };
     const fish_doctor_flags = [_][]const u8{ "-l policy", "-l export-debug-dossier" };
+    const fish_service_flags = [_][]const u8{ "-l platform", "-l bin", "-l pass-bin", "-l output-dir" };
     try expectContainsAll(scriptFor(.fish), &shared_subcommands);
     try expectContainsAll(scriptFor(.fish), &fish_agent_flags);
     try expectContainsAll(scriptFor(.fish), &frontend_choices);
     try expectContainsAll(scriptFor(.fish), &run_outcomes);
     try expectContainsAll(scriptFor(.fish), &fish_doctor_flags);
     try expectContainsAll(scriptFor(.fish), &completion_shells);
+    try expectContainsAll(scriptFor(.fish), &service_subcommands);
+    try expectContainsAll(scriptFor(.fish), &fish_service_flags);
 }
 
 test "scripts include expected entry points" {

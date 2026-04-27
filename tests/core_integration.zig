@@ -18,10 +18,8 @@ pub const std_options: std.Options = .{
     .log_level = .info,
 };
 
-const seed_name = "seed-from-store.txt";
-const seed_path = "/" ++ seed_name;
-const created_note_path = "/demo-note.txt";
-const note_path = "/renamed-note.txt";
+const created_note_path = "/._demo-note.txt";
+const note_path = "/._renamed-note.txt";
 const blocked_note_path = "/blocked-note.txt";
 const prompted_note_path = "/prompted-note.txt";
 const allowed_prompt_note_path = "/allowed-prompt-note.txt";
@@ -75,6 +73,15 @@ fn openFileAbsolute(path: []const u8, options: std.Io.Dir.OpenFileOptions) !Test
 const CountingPromptContext = struct {
     count: usize = 0,
     response: prompt.Response,
+};
+
+const CapturingPromptContext = struct {
+    count: usize = 0,
+    response: prompt.Response,
+    expected_path: []const u8,
+    expected_label: []const u8,
+    saw_expected_path: bool = false,
+    saw_expected_label: bool = false,
 };
 
 const TempDir = struct {
@@ -204,13 +211,6 @@ const Fixture = struct {
 
         try makeDirAbsolute(mount_path);
 
-        const seed_host_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_path, seed_name });
-        defer allocator.free(seed_host_path);
-
-        var seed_file = try createFileAbsolute(seed_host_path, .{ .truncate = true });
-        defer seed_file.close();
-        try seed_file.writeAll("seeded from source dir\n");
-
         return .{
             .allocator = allocator,
             .temp_dir = temp_dir,
@@ -243,7 +243,7 @@ fn initSession(
     policy_rule_views: []const policy.RuleView,
     prompt_broker: ?prompt.Broker,
 ) !daemon.Session {
-    return daemon.Session.initEnrolledParent(allocator, .{
+    return daemon.Session.initProjection(allocator, .{
         .mount_path = fixture.mount_path,
         .guarded_entries = guarded_entries,
         .guarded_store = fixture.guardedStore(),
@@ -262,12 +262,31 @@ fn countingPromptBroker(context: *CountingPromptContext) prompt.Broker {
     };
 }
 
+fn capturingPromptBroker(context: *CapturingPromptContext) prompt.Broker {
+    return .{
+        .context = context,
+        .resolve_fn = resolveCapturingPrompt,
+    };
+}
+
 fn resolveCountingPrompt(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
     _ = request;
     const context = raw_context orelse return .{ .decision = .unavailable };
     const counting_context: *CountingPromptContext = @ptrCast(@alignCast(context));
     counting_context.count += 1;
     return counting_context.response;
+}
+
+fn resolveCapturingPrompt(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
+    const context = raw_context orelse return .{ .decision = .unavailable };
+    const capturing_context: *CapturingPromptContext = @ptrCast(@alignCast(context));
+    capturing_context.count += 1;
+    capturing_context.saw_expected_path = std.mem.eql(u8, request.path, capturing_context.expected_path);
+    capturing_context.saw_expected_label = if (request.label) |label|
+        std.mem.eql(u8, label, capturing_context.expected_label)
+    else
+        false;
+    return capturing_context.response;
 }
 
 fn expectEntriesContain(entries: []const []const u8, expected: []const []const u8) !void {
@@ -320,19 +339,13 @@ test "session exercise is covered by core assertions" {
     try std.testing.expectEqualStrings(fixture.mount_path, plan.args[2]);
 
     const root = try session.inspectPath("/");
-    const seed = try session.inspectPath(seed_path);
     const note = try session.inspectPath(note_path);
     try std.testing.expectEqual(filesystem.NodeKind.directory, root.kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, seed.kind);
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, note.kind);
 
     const entries = try session.rootEntries(allocator);
     defer freeEntries(allocator, entries);
-    try expectEntriesContain(entries, &.{ seed_name, note_path[1..] });
-
-    const seed_content = try session.readPath(allocator, seed_path);
-    defer allocator.free(seed_content);
-    try std.testing.expectEqualStrings("seeded from source dir\n", seed_content);
+    try expectEntriesContain(entries, &.{note_path[1..]});
 
     const note_content = try session.readPath(allocator, note_path);
     defer allocator.free(note_content);
@@ -346,12 +359,6 @@ test "session exercise is covered by core assertions" {
     try expectRenameAudit(audit_snapshot.items, created_note_path, note_path, 0);
     try expectAuditEvent(audit_snapshot.items, "fsync", note_path, 0);
 
-    var reloaded_session = try initSession(allocator, &fixture, &.{}, .deny, &.{}, null);
-    defer reloaded_session.deinit();
-
-    const reloaded_note = try reloaded_session.readPath(allocator, note_path);
-    defer allocator.free(reloaded_note);
-    try std.testing.expectEqualStrings("hello from file-snitch\n", reloaded_note);
     try std.testing.expectEqual(@as(usize, 0), session.state.run_attempts);
 }
 
@@ -359,15 +366,6 @@ test "directory entry composition is owned by Zig" {
     const allocator = std.testing.allocator;
     var fixture = try Fixture.init(allocator);
     defer fixture.deinit();
-
-    const nested_dir_path = try std.fmt.allocPrint(allocator, "{s}/nested", .{fixture.mount_path});
-    defer allocator.free(nested_dir_path);
-    try makeDirAbsolute(nested_dir_path);
-
-    const nested_file_path = try std.fmt.allocPrint(allocator, "{s}/visible.txt", .{nested_dir_path});
-    defer allocator.free(nested_file_path);
-    var nested_file = try createFileAbsolute(nested_file_path, .{ .truncate = true });
-    nested_file.close();
 
     var preseed_store = fixture.guardedStore();
     try preseed_store.putObject(allocator, "ghost-secret", .{
@@ -378,14 +376,13 @@ test "directory entry composition is owned by Zig" {
             .atime_nsec = 0,
             .mtime_nsec = 0,
         },
-        .content = "synthetic secret\n",
+        .content = "guarded secret\n",
     });
 
     const lock_anchor_path = try fixture.childPathAlloc("ghost.lock");
     defer allocator.free(lock_anchor_path);
 
     const guarded_entries = &.{filesystem.GuardedEntryConfig{
-        .relative_path = "ghost/secret.txt",
         .object_id = "ghost-secret",
         .lock_anchor_path = lock_anchor_path,
     }};
@@ -395,15 +392,9 @@ test "directory entry composition is owned by Zig" {
 
     const root_entries = try session.rootEntries(allocator);
     defer freeEntries(allocator, root_entries);
-    try expectEntriesContain(root_entries, &.{ seed_name, "nested", "ghost" });
+    try expectEntriesContain(root_entries, &.{"ghost-secret"});
 
-    const nested_entries = try session.directoryEntries(allocator, "/nested");
-    defer freeEntries(allocator, nested_entries);
-    try expectEntriesContain(nested_entries, &.{"visible.txt"});
-
-    const synthetic_entries = try session.directoryEntries(allocator, "/ghost");
-    defer freeEntries(allocator, synthetic_entries);
-    try expectEntriesContain(synthetic_entries, &.{"secret.txt"});
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/nested")).kind);
 }
 
 test "session helper snapshots survive session teardown" {
@@ -431,6 +422,61 @@ test "session helper snapshots survive session teardown" {
     audit_snapshot.deinit();
 }
 
+test "transient files cannot rename into regular projection entries" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
+    defer session.deinit();
+
+    try session.debugCreateFile("/._tmp", 0o600);
+    try std.testing.expectError(
+        error.DebugRenameFailed,
+        session.debugRenameFile("/._tmp", "/regular"),
+    );
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/regular")).kind);
+
+    try session.debugRenameFile("/._tmp", "/._renamed-tmp");
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._renamed-tmp")).kind);
+
+    try session.debugCreateFile("/._nested-source", 0o600);
+    try std.testing.expectError(
+        error.DebugRenameFailed,
+        session.debugRenameFile("/._nested-source", "/._nested/._target"),
+    );
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._nested-source")).kind);
+
+    var preseed_store = fixture.guardedStore();
+    try preseed_store.putObject(allocator, "regular", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded regular\n",
+    });
+    const lock_anchor_path = try fixture.childPathAlloc("regular.lock");
+    defer allocator.free(lock_anchor_path);
+    var guarded_session = try initSession(allocator, &fixture, &.{.{
+        .object_id = "regular",
+        .lock_anchor_path = lock_anchor_path,
+    }}, .allow, &.{}, null);
+    defer guarded_session.deinit();
+
+    try guarded_session.debugCreateFile("/._tmp", 0o600);
+    try std.testing.expectError(
+        error.DebugRenameFailed,
+        guarded_session.debugRenameFile("/._tmp", "/regular"),
+    );
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try guarded_session.inspectPath("/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try guarded_session.inspectPath("/regular")).kind);
+}
+
 test "policy and prompt paths are covered by core assertions" {
     const allocator = std.testing.allocator;
     var fixture = try Fixture.init(allocator);
@@ -443,7 +489,7 @@ test "policy and prompt paths are covered by core assertions" {
     defer allocator.free(lock_anchor_path);
 
     var preseed_store = fixture.guardedStore();
-    try preseed_store.putObject(allocator, "guarded-note", .{
+    try preseed_store.putObject(allocator, "guarded-note.txt", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -455,8 +501,7 @@ test "policy and prompt paths are covered by core assertions" {
     });
 
     const guarded_entries = &.{filesystem.GuardedEntryConfig{
-        .relative_path = "guarded-note.txt",
-        .object_id = "guarded-note",
+        .object_id = "guarded-note.txt",
         .lock_anchor_path = lock_anchor_path,
     }};
 
@@ -505,23 +550,28 @@ test "policy and prompt paths are covered by core assertions" {
 
     var readonly_audit = try readonly_session.auditEventSnapshot(allocator);
     defer readonly_audit.deinit();
-    try expectAuditEvent(readonly_audit.items, "policy", "write /guarded-note.txt", 2);
+    const guarded_note_policy_label = try std.fmt.allocPrint(allocator, "write {s}", .{guarded_note_policy_path});
+    defer allocator.free(guarded_note_policy_label);
+    const guarded_note_read_prompt_label = try std.fmt.allocPrint(allocator, "read {s}", .{guarded_note_policy_path});
+    defer allocator.free(guarded_note_read_prompt_label);
+
+    try expectAuditEvent(readonly_audit.items, "policy", guarded_note_policy_label, 2);
     try expectAuditEvent(readonly_audit.items, "write", guarded_note_path, -13);
 
     var policy_audit = try policy_session.auditEventSnapshot(allocator);
     defer policy_audit.deinit();
-    try expectAuditEvent(policy_audit.items, "prompt", "read /guarded-note.txt", 4);
+    try expectAuditEvent(policy_audit.items, "prompt", guarded_note_read_prompt_label, 4);
     try expectAuditEvent(policy_audit.items, "read", guarded_note_path, -13);
-    try expectAuditEvent(policy_audit.items, "policy", "write /guarded-note.txt", 2);
+    try expectAuditEvent(policy_audit.items, "policy", guarded_note_policy_label, 2);
     try expectAuditEvent(policy_audit.items, "write", guarded_note_path, -13);
 
     var allowed_prompt_audit = try allowed_prompt_session.auditEventSnapshot(allocator);
     defer allowed_prompt_audit.deinit();
-    try expectAuditEvent(allowed_prompt_audit.items, "prompt", "write /guarded-note.txt", 1);
+    try expectAuditEvent(allowed_prompt_audit.items, "prompt", guarded_note_policy_label, 1);
     try expectAuditEvent(allowed_prompt_audit.items, "write", guarded_note_path, 21);
 
     {
-        var stored = try fixture.mock_state.loadObject(allocator, "guarded-note");
+        var stored = try fixture.mock_state.loadObject(allocator, "guarded-note.txt");
         defer stored.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded note\n", stored.content);
     }
@@ -543,8 +593,87 @@ test "policy and prompt paths are covered by core assertions" {
 
     var default_prompt_audit = try default_prompt_session.auditEventSnapshot(allocator);
     defer default_prompt_audit.deinit();
-    try expectAuditEvent(default_prompt_audit.items, "prompt", "read /guarded-note.txt", 1);
+    try expectAuditEvent(default_prompt_audit.items, "prompt", guarded_note_read_prompt_label, 1);
     try expectAuditEvent(default_prompt_audit.items, "read", guarded_note_path, 21);
+}
+
+test "daemon sends home-relative display labels to prompt broker" {
+    const allocator = std.testing.allocator;
+    var home = try TempDir.init(allocator, "home");
+    defer home.deinit();
+
+    var canonical_home_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_home_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home.path, &canonical_home_buffer);
+    const canonical_home = canonical_home_buffer[0..canonical_home_len];
+
+    var scoped_home = try ScopedHome.init(allocator, canonical_home);
+    defer scoped_home.deinit();
+
+    const source_parent = try std.fs.path.join(allocator, &.{ canonical_home, ".kube" });
+    defer allocator.free(source_parent);
+    try makeDirAbsolute(source_parent);
+
+    const source_guarded_path = try std.fs.path.join(allocator, &.{ source_parent, "config" });
+    defer allocator.free(source_guarded_path);
+
+    const lock_anchor_path = try home.childPathAlloc("config.lock");
+    defer allocator.free(lock_anchor_path);
+
+    var mock_state: store.MockState = .{};
+    defer mock_state.deinit(allocator);
+    var guarded_store = store.Backend.initMock(&mock_state);
+    try guarded_store.putObject(allocator, "config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded kubeconfig\n",
+    });
+
+    var prompt_context = CapturingPromptContext{
+        .response = .{ .decision = .allow },
+        .expected_path = source_guarded_path,
+        .expected_label = "read ~/.kube/config",
+    };
+
+    var session = try daemon.Session.initProjection(allocator, .{
+        .mount_path = source_parent,
+        .guarded_entries = &.{.{
+            .object_id = "config",
+            .lock_anchor_path = lock_anchor_path,
+        }},
+        .guarded_store = &guarded_store,
+        .run_in_foreground = true,
+        .default_mutation_outcome = .prompt,
+        .policy_path = null,
+        .policy_rule_views = &.{},
+        .prompt_broker = capturingPromptBroker(&prompt_context),
+    });
+    defer session.deinit();
+
+    var buffer: [64]u8 = undefined;
+    const context: filesystem.AccessContext = .{ .pid = 1234, .uid = 1000, .gid = 1000 };
+
+    const read_len = session.state.filesystem.readInto("/config", 0, &buffer, context, null);
+    try std.testing.expect(read_len > 0);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+    try std.testing.expect(prompt_context.saw_expected_path);
+    try std.testing.expect(prompt_context.saw_expected_label);
+
+    prompt_context.expected_label = "open O_RDONLY ~/.kube/config";
+    prompt_context.saw_expected_path = false;
+    prompt_context.saw_expected_label = false;
+
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile("/config", .{
+        .flags = c.O_RDONLY,
+        .handle_id = 0xfeed,
+    }, context));
+    try std.testing.expectEqual(@as(usize, 2), prompt_context.count);
+    try std.testing.expect(prompt_context.saw_expected_path);
+    try std.testing.expect(prompt_context.saw_expected_label);
 }
 
 test "open write handle grants mutation access until release" {
@@ -557,7 +686,7 @@ test "open write handle grants mutation access until release" {
     defer allocator.free(lock_anchor_path);
 
     var preseed_store = fixture.guardedStore();
-    try preseed_store.putObject(allocator, "handle-granted-note", .{
+    try preseed_store.putObject(allocator, "handle-granted-note.txt", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -569,8 +698,7 @@ test "open write handle grants mutation access until release" {
     });
 
     const guarded_entries = &.{filesystem.GuardedEntryConfig{
-        .relative_path = "handle-granted-note.txt",
-        .object_id = "handle-granted-note",
+        .object_id = "handle-granted-note.txt",
         .lock_anchor_path = lock_anchor_path,
     }};
 
@@ -653,12 +781,12 @@ test "policy file loader treats empty file as a no-op" {
     try std.testing.expectEqual(@as(usize, 0), loaded.enrollments.len);
     try std.testing.expectEqual(@as(usize, 0), loaded.decisions.len);
 
-    var mount_plan = try loaded.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
-    try std.testing.expectEqual(@as(usize, 0), mount_plan.paths.len);
+    var projection_plan = try loaded.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 0), projection_plan.entries.len);
 }
 
-test "policy file loader parses enrollments and collapses mount plan" {
+test "policy file loader parses enrollments and derives projection plan" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "planned");
     defer temp_policy.deinit();
@@ -675,7 +803,6 @@ test "policy file loader parses enrollments and collapses mount plan" {
         \\    object_id: gh-extension-token
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -691,10 +818,10 @@ test "policy file loader parses enrollments and collapses mount plan" {
 
     const kube_config_path = try currentHomePathAlloc(allocator, ".kube/config");
     defer allocator.free(kube_config_path);
-    const kube_mount_path = try currentHomePathAlloc(allocator, ".kube");
-    defer allocator.free(kube_mount_path);
-    const gh_mount_path = try currentHomePathAlloc(allocator, ".config/gh");
-    defer allocator.free(gh_mount_path);
+    const projection_root = try config.defaultProjectionRootPathAlloc(allocator);
+    defer allocator.free(projection_root);
+    const kube_projection_path = try std.fs.path.join(allocator, &.{ projection_root, "kube-config" });
+    defer allocator.free(kube_projection_path);
 
     try std.testing.expectEqual(@as(usize, 3), loaded.enrollments.len);
     try std.testing.expectEqualStrings(kube_config_path, loaded.enrollments[0].path);
@@ -705,11 +832,13 @@ test "policy file loader parses enrollments and collapses mount plan" {
     try std.testing.expectEqualStrings("allow", loaded.decisions[0].outcome);
     try std.testing.expect(loaded.decisions[0].expires_at == null);
 
-    var mount_plan = try loaded.deriveMountPlan(allocator);
-    defer mount_plan.deinit();
-    try std.testing.expectEqual(@as(usize, 2), mount_plan.paths.len);
-    try std.testing.expectEqualStrings(kube_mount_path, mount_plan.paths[0]);
-    try std.testing.expectEqualStrings(gh_mount_path, mount_plan.paths[1]);
+    var projection_plan = try loaded.deriveProjectionPlan(allocator);
+    defer projection_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 3), projection_plan.entries.len);
+    try std.testing.expectEqualStrings(projection_root, projection_plan.root_path);
+    try std.testing.expectEqualStrings(kube_config_path, projection_plan.entries[0].target_path);
+    try std.testing.expectEqualStrings(kube_projection_path, projection_plan.entries[0].projection_path);
+    try std.testing.expectEqualStrings("kube-config", projection_plan.entries[0].object_id);
 }
 
 test "policy file save round-trips appended enrollments" {
@@ -727,6 +856,7 @@ test "policy file save round-trips appended enrollments" {
     defer allocator.free(ssh_key_path);
 
     try loaded.appendEnrollment(kube_config_path, "kube-config");
+    try std.testing.expectError(error.InvalidEnrollmentObjectId, loaded.appendEnrollment(ssh_key_path, "kube-config"));
     try loaded.appendEnrollment(ssh_key_path, "ssh-main");
     try loaded.saveToFile();
 
@@ -762,7 +892,6 @@ test "policy file expands and saves home-relative paths" {
         \\    object_id: gist-secret
         \\decisions:
         \\  - executable_path: /usr/bin/cat
-        \\    uid: 1000
         \\    path: ~/secrets/gist
         \\    approval_class: read_like
         \\    outcome: allow
@@ -789,6 +918,69 @@ test "policy file expands and saves home-relative paths" {
     defer allocator.free(saved);
     try std.testing.expect(std.mem.indexOf(u8, saved, "path: '~/secrets/gist'") != null);
     try std.testing.expect(std.mem.indexOf(u8, saved, home_dir) == null);
+}
+
+test "policy file rejects object ids that are unsafe projection path components" {
+    const allocator = std.testing.allocator;
+    var temp_dir = try TempDir.init(allocator, "reserved-object-id-policy");
+    defer temp_dir.deinit();
+
+    const home_dir = try temp_dir.childPathAlloc("home");
+    defer allocator.free(home_dir);
+    try makeDirAbsolute(home_dir);
+
+    var scoped_home = try ScopedHome.init(allocator, home_dir);
+    defer scoped_home.deinit();
+
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
+    defer allocator.free(policy_path);
+
+    const unsafe_ids = [_][]const u8{ ".", "..", "._tmp", "foo/bar", "foo bar" };
+    for (unsafe_ids) |object_id| {
+        var file = try createFileAbsolute(policy_path, .{ .truncate = true });
+        try file.writeAll(
+            \\version: 1
+            \\enrollments:
+            \\  - path: ~/secrets/token
+        );
+        try file.writeAll("\n    object_id: '");
+        try file.writeAll(object_id);
+        try file.writeAll("'\ndecisions: []\n");
+        file.close();
+
+        try std.testing.expectError(error.InvalidEnrollmentObjectId, config.loadFromFile(allocator, policy_path));
+    }
+}
+
+test "policy file rejects duplicate object ids" {
+    const allocator = std.testing.allocator;
+    var temp_dir = try TempDir.init(allocator, "duplicate-object-id-policy");
+    defer temp_dir.deinit();
+
+    const home_dir = try temp_dir.childPathAlloc("home");
+    defer allocator.free(home_dir);
+    try makeDirAbsolute(home_dir);
+
+    var scoped_home = try ScopedHome.init(allocator, home_dir);
+    defer scoped_home.deinit();
+
+    const policy_path = try temp_dir.childPathAlloc("policy.yml");
+    defer allocator.free(policy_path);
+
+    var file = try createFileAbsolute(policy_path, .{ .truncate = true });
+    try file.writeAll(
+        \\version: 1
+        \\enrollments:
+        \\  - path: ~/secrets/one
+        \\    object_id: duplicate
+        \\  - path: ~/secrets/two
+        \\    object_id: duplicate
+        \\decisions: []
+        \\
+    );
+    file.close();
+
+    try std.testing.expectError(error.InvalidEnrollmentObjectId, config.loadFromFile(allocator, policy_path));
 }
 
 test "policy file rejects paths outside the current home" {
@@ -824,7 +1016,7 @@ test "policy file rejects paths outside the current home" {
         var file = try createFileAbsolute(decision_policy_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("version: 1\nenrollments: []\ndecisions:\n");
-        try file.writeAll("  - executable_path: /usr/bin/cat\n    uid: 1000\n    path: ");
+        try file.writeAll("  - executable_path: /usr/bin/cat\n    path: ");
         try file.writeAll(outside_path);
         try file.writeAll("\n    approval_class: read_like\n    outcome: allow\n    expires_at: null\n");
     }
@@ -844,7 +1036,6 @@ test "policy file save removes enrollment and attached decisions" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -874,7 +1065,7 @@ test "policy file save removes enrollment and attached decisions" {
     try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
 }
 
-test "compiled durable decisions respect executable path and uid" {
+test "compiled durable decisions respect executable path" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "compiled-rules");
     defer temp_policy.deinit();
@@ -887,13 +1078,11 @@ test "compiled durable decisions respect executable path and uid" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: null
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -923,7 +1112,7 @@ test "compiled durable decisions respect executable path and uid" {
         .executable_path = "/usr/bin/kubectl",
     }));
 
-    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(.{
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
@@ -964,13 +1153,11 @@ test "compiled durable decisions ignore expired entries" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: deny
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -1023,7 +1210,6 @@ test "policy loader rejects invalid decision expiration" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -1048,13 +1234,11 @@ test "policy file prunes expired decisions in place" {
         \\enrollments: []
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -1095,7 +1279,6 @@ test "upsertDecision replaces matching durable decision" {
 
     try loaded.upsertDecision(
         "/usr/bin/kubectl",
-        1000,
         "/tmp/guarded/config",
         "read_like",
         "allow",
@@ -1103,7 +1286,6 @@ test "upsertDecision replaces matching durable decision" {
     );
     try loaded.upsertDecision(
         "/usr/bin/kubectl",
-        1000,
         "/tmp/guarded/config",
         "read_like",
         "deny",
@@ -1230,7 +1412,7 @@ test "live policy reload suppresses repeated prompt without remount" {
     var mock_state: store.MockState = .{};
     defer mock_state.deinit(allocator);
     var guarded_store = store.Backend.initMock(&mock_state);
-    try guarded_store.putObject(allocator, "kube-config", .{
+    try guarded_store.putObject(allocator, "config", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -1248,11 +1430,10 @@ test "live policy reload suppresses repeated prompt without remount" {
         },
     };
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
-            .relative_path = "config",
-            .object_id = "kube-config",
+            .object_id = "config",
             .lock_anchor_path = lock_anchor_path,
         }},
         .guarded_store = &guarded_store,
@@ -1282,7 +1463,6 @@ test "live policy reload suppresses repeated prompt without remount" {
         defer writable_policy.deinit();
         try writable_policy.upsertDecision(
             "/usr/bin/demo",
-            1000,
             source_guarded_path,
             "read_like",
             "allow",
@@ -1362,12 +1542,11 @@ test "generated policy save load preserves engine behavior" {
         const decision_count = 2 + (case_index % 6);
         for (0..decision_count) |_| {
             const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
-            const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
             const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
             const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
             const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
             const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
-            try loaded.upsertDecision(executable_path, uid, enrollment.path, approval_class, outcome, expires_at);
+            try loaded.upsertDecision(executable_path, enrollment.path, approval_class, outcome, expires_at);
         }
 
         var compiled_before = try loaded.compilePolicyRuleViews(allocator);
@@ -1402,7 +1581,7 @@ test "audit event snapshots remain immutable after later writes" {
     defer session.deinit();
 
     for (0..8) |index| {
-        const current_path_raw = try std.fmt.allocPrint(allocator, "/property-note-{d}.txt", .{index});
+        const current_path_raw = try std.fmt.allocPrint(allocator, "/._property-note-{d}.txt", .{index});
         defer allocator.free(current_path_raw);
         const current_path = try allocator.dupeZ(u8, current_path_raw);
         defer allocator.free(current_path);
@@ -1432,9 +1611,9 @@ test "audit event snapshots remain immutable after later writes" {
     }
 }
 
-test "enrolled parent shadows the guarded file and passes through siblings" {
+test "projection exposes the guarded file without backing siblings" {
     const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent");
+    var temp_dir = try TempDir.init(allocator, "projection");
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
@@ -1458,7 +1637,7 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     var mock_state: store.MockState = .{};
     defer mock_state.deinit(allocator);
     var guarded_store = store.Backend.initMock(&mock_state);
-    try guarded_store.putObject(allocator, "kube-config", .{
+    try guarded_store.putObject(allocator, "config", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -1469,11 +1648,10 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
         .content = "guarded kubeconfig\n",
     });
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{.{
-            .relative_path = "config",
-            .object_id = "kube-config",
+            .object_id = "config",
             .lock_anchor_path = lock_anchor_path,
         }},
         .guarded_store = &guarded_store,
@@ -1486,21 +1664,16 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
     const guarded_node = try session.inspectPath("/config");
     const sibling_node = try session.inspectPath("/sibling.txt");
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, guarded_node.kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, sibling_node.kind);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, sibling_node.kind);
 
     const guarded_contents = try session.readPath(allocator, "/config");
     defer allocator.free(guarded_contents);
     try std.testing.expectEqualStrings("guarded kubeconfig\n", guarded_contents);
 
-    const sibling_contents = try session.readPath(allocator, "/sibling.txt");
-    defer allocator.free(sibling_contents);
-    try std.testing.expectEqualStrings("plain sibling\n", sibling_contents);
-
     try session.debugWriteFile("/config", "updated guarded kubeconfig\n");
-    try session.debugWriteFile("/sibling.txt", "updated sibling\n");
 
     {
-        var object = try mock_state.loadObject(allocator, "kube-config");
+        var object = try mock_state.loadObject(allocator, "config");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded kubeconfig\n", object.content);
     }
@@ -1511,12 +1684,12 @@ test "enrolled parent shadows the guarded file and passes through siblings" {
 
     const sibling_host_contents = try readFileAbsoluteAlloc(allocator, sibling_path);
     defer allocator.free(sibling_host_contents);
-    try std.testing.expectEqualStrings("updated sibling\n", sibling_host_contents);
+    try std.testing.expectEqualStrings("plain sibling\n", sibling_host_contents);
 }
 
-test "enrolled parent can shadow multiple guarded siblings under one mount" {
+test "projection can expose multiple guarded siblings under one mount" {
     const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent-multi");
+    var temp_dir = try TempDir.init(allocator, "projection-multi");
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
@@ -1552,7 +1725,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     var mock_state: store.MockState = .{};
     defer mock_state.deinit(allocator);
     var guarded_store = store.Backend.initMock(&mock_state);
-    try guarded_store.putObject(allocator, "first-key", .{
+    try guarded_store.putObject(allocator, "a.key", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -1562,7 +1735,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         },
         .content = "guarded first\n",
     });
-    try guarded_store.putObject(allocator, "second-key", .{
+    try guarded_store.putObject(allocator, "b.key", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -1573,17 +1746,15 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
         .content = "guarded second\n",
     });
 
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
+    var session = try daemon.Session.initProjection(allocator, .{
         .mount_path = source_parent,
         .guarded_entries = &.{
             .{
-                .relative_path = "a.key",
-                .object_id = "first-key",
+                .object_id = "a.key",
                 .lock_anchor_path = first_lock_anchor_path,
             },
             .{
-                .relative_path = "b.key",
-                .object_id = "second-key",
+                .object_id = "b.key",
                 .lock_anchor_path = second_lock_anchor_path,
             },
         },
@@ -1602,21 +1773,18 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     defer allocator.free(second_contents);
     try std.testing.expectEqualStrings("guarded second\n", second_contents);
 
-    const sibling_contents = try session.readPath(allocator, "/pubring.kbx");
-    defer allocator.free(sibling_contents);
-    try std.testing.expectEqualStrings("host sibling\n", sibling_contents);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/pubring.kbx")).kind);
 
     try session.debugWriteFile("/a.key", "updated guarded first\n");
     try session.debugWriteFile("/b.key", "updated guarded second\n");
-    try session.debugWriteFile("/pubring.kbx", "updated sibling\n");
 
     {
-        var object = try mock_state.loadObject(allocator, "first-key");
+        var object = try mock_state.loadObject(allocator, "a.key");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded first\n", object.content);
     }
     {
-        var object = try mock_state.loadObject(allocator, "second-key");
+        var object = try mock_state.loadObject(allocator, "b.key");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded second\n", object.content);
     }
@@ -1633,85 +1801,7 @@ test "enrolled parent can shadow multiple guarded siblings under one mount" {
     {
         const contents = try readFileAbsoluteAlloc(allocator, sibling_path);
         defer allocator.free(contents);
-        try std.testing.expectEqualStrings("updated sibling\n", contents);
-    }
-}
-
-test "enrolled parent can project a guarded file below a synthetic subdirectory" {
-    const allocator = std.testing.allocator;
-    var temp_dir = try TempDir.init(allocator, "enrolled-parent-nested");
-    defer temp_dir.deinit();
-    const source_parent = try temp_dir.childPathAlloc("source");
-    defer allocator.free(source_parent);
-    const lock_anchor_path = try temp_dir.childPathAlloc("nested.lock");
-    defer allocator.free(lock_anchor_path);
-    const real_dir_path = try std.fmt.allocPrint(allocator, "{s}/extensions/foo", .{source_parent});
-    defer allocator.free(real_dir_path);
-    const real_sibling_path = try std.fmt.allocPrint(allocator, "{s}/hosts.yml", .{source_parent});
-    defer allocator.free(real_sibling_path);
-
-    try makeDirAbsolute(source_parent);
-    try makePath(real_dir_path);
-
-    {
-        var file = try createFileAbsolute(real_sibling_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll("plain hosts\n");
-    }
-
-    var mock_state: store.MockState = .{};
-    defer mock_state.deinit(allocator);
-    var guarded_store = store.Backend.initMock(&mock_state);
-    try guarded_store.putObject(allocator, "nested-token", .{
-        .metadata = .{
-            .mode = 0o600,
-            .uid = 1000,
-            .gid = 1000,
-            .atime_nsec = 0,
-            .mtime_nsec = 0,
-        },
-        .content = "guarded nested token\n",
-    });
-
-    var session = try daemon.Session.initEnrolledParent(allocator, .{
-        .mount_path = source_parent,
-        .guarded_entries = &.{.{
-            .relative_path = "extensions/foo/token.json",
-            .object_id = "nested-token",
-            .lock_anchor_path = lock_anchor_path,
-        }},
-        .guarded_store = &guarded_store,
-        .run_in_foreground = true,
-        .default_mutation_outcome = .allow,
-        .policy_path = null,
-    });
-    defer session.deinit();
-
-    try std.testing.expectEqual(filesystem.NodeKind.directory, (try session.inspectPath("/extensions")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.directory, (try session.inspectPath("/extensions/foo")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/extensions/foo/token.json")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/hosts.yml")).kind);
-
-    const nested_contents = try session.readPath(allocator, "/extensions/foo/token.json");
-    defer allocator.free(nested_contents);
-    try std.testing.expectEqualStrings("guarded nested token\n", nested_contents);
-
-    const sibling_contents = try session.readPath(allocator, "/hosts.yml");
-    defer allocator.free(sibling_contents);
-    try std.testing.expectEqualStrings("plain hosts\n", sibling_contents);
-
-    try session.debugWriteFile("/extensions/foo/token.json", "updated nested token\n");
-    try session.debugWriteFile("/hosts.yml", "updated hosts\n");
-
-    {
-        var object = try mock_state.loadObject(allocator, "nested-token");
-        defer object.deinit(allocator);
-        try std.testing.expectEqualStrings("updated nested token\n", object.content);
-    }
-    {
-        const contents = try readFileAbsoluteAlloc(allocator, real_sibling_path);
-        defer allocator.free(contents);
-        try std.testing.expectEqualStrings("updated hosts\n", contents);
+        try std.testing.expectEqualStrings("host sibling\n", contents);
     }
 }
 
@@ -1781,17 +1871,15 @@ fn writeGeneratedPolicyFile(
     try source.appendSlice(allocator, "decisions:\n");
     for (0..decision_count) |_| {
         const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
-        const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
         const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
         const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
         const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
         const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
         try source.print(
             allocator,
-            "  - executable_path: {s}\n    uid: {d}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
+            "  - executable_path: {s}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
             .{
                 executable_path,
-                uid,
                 enrollment.path,
                 approval_class,
                 outcome,
