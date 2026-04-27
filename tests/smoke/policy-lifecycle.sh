@@ -69,7 +69,6 @@ enrollments:
     object_id: $object_id
 decisions:
   - executable_path: /usr/bin/cat
-    uid: 501
     path: $home_dir/.kube/config
     approval_class: read_like
     outcome: allow

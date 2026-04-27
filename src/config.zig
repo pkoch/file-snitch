@@ -20,7 +20,6 @@ pub const Enrollment = struct {
 
 pub const Decision = struct {
     executable_path: []u8,
-    uid: u32,
     path: []u8,
     approval_class: []u8,
     outcome: []u8,
@@ -175,7 +174,6 @@ pub const PolicyFile = struct {
     pub fn upsertDecision(
         self: *PolicyFile,
         executable_path: []const u8,
-        uid: u32,
         enrolled_path: []const u8,
         approval_class: []const u8,
         outcome: []const u8,
@@ -183,7 +181,6 @@ pub const PolicyFile = struct {
     ) !void {
         try validateDecision(.{
             .executable_path = executable_path,
-            .uid = uid,
             .path = enrolled_path,
             .approval_class = approval_class,
             .outcome = outcome,
@@ -192,7 +189,6 @@ pub const PolicyFile = struct {
 
         for (self.decisions) |*decision| {
             if (!std.mem.eql(u8, decision.executable_path, executable_path)) continue;
-            if (decision.uid != uid) continue;
             if (!std.mem.eql(u8, decision.path, enrolled_path)) continue;
             if (!std.mem.eql(u8, decision.approval_class, approval_class)) continue;
 
@@ -232,7 +228,6 @@ pub const PolicyFile = struct {
 
         self.decisions[previous_len] = .{
             .executable_path = owned_executable_path,
-            .uid = uid,
             .path = owned_path,
             .approval_class = owned_approval_class,
             .outcome = owned_outcome,
@@ -330,7 +325,6 @@ pub const PolicyFile = struct {
                     .path_prefix = decision.path,
                     .access_class = access_class,
                     .outcome = outcome,
-                    .uid = decision.uid,
                     .executable_path = decision.executable_path,
                     .exact_path = true,
                     .expires_at_unix_seconds = expires_at_unix_seconds,
@@ -400,7 +394,6 @@ pub const PolicyFile = struct {
             try writer.writeAll("  - executable_path: ");
             try writeYamlString(writer, decision.executable_path);
             try writer.writeByte('\n');
-            try writer.print("    uid: {d}\n", .{decision.uid});
             try writer.writeAll("    path: ");
             try writeYamlString(writer, serialized_path);
             try writer.writeByte('\n');
@@ -459,7 +452,6 @@ const RawEnrollment = struct {
 
 const RawDecision = struct {
     executable_path: []const u8,
-    uid: u32,
     path: []const u8,
     approval_class: []const u8,
     outcome: []const u8,
@@ -626,7 +618,6 @@ fn parseRawDecisions(arena: std.mem.Allocator, value: yaml.Yaml.Value) ![]const 
         const map = try entry.asMap();
         decisions[index] = .{
             .executable_path = try requiredStringField(arena, map, "executable_path"),
-            .uid = @intCast(try requiredIntField(map, "uid")),
             .path = try requiredStringField(arena, map, "path"),
             .approval_class = try requiredStringField(arena, map, "approval_class"),
             .outcome = try requiredStringField(arena, map, "outcome"),
@@ -733,7 +724,6 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
         errdefer allocator.free(owned_path);
         try validateDecision(.{
             .executable_path = raw.executable_path,
-            .uid = raw.uid,
             .path = owned_path,
             .approval_class = raw.approval_class,
             .outcome = raw.outcome,
@@ -753,7 +743,6 @@ fn copyDecisions(allocator: std.mem.Allocator, raw_decisions: []const RawDecisio
         errdefer if (owned_expires_at) |value| allocator.free(value);
         decisions[index] = .{
             .executable_path = owned_executable_path,
-            .uid = raw.uid,
             .path = owned_path,
             .approval_class = owned_approval_class,
             .outcome = owned_outcome,
@@ -1070,7 +1059,6 @@ fn checkUpsertDecisionInsertAllocationFailures(allocator: std.mem.Allocator) !vo
 
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "allow",
@@ -1093,7 +1081,6 @@ fn checkUpsertDecisionUpdateAllocationFailures(allocator: std.mem.Allocator) !vo
 
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "allow",
@@ -1101,7 +1088,6 @@ fn checkUpsertDecisionUpdateAllocationFailures(allocator: std.mem.Allocator) !vo
     );
     try policy_file.upsertDecision(
         "/bin/cat",
-        501,
         "/tmp/demo-secret",
         "read_like",
         "deny",
@@ -1168,7 +1154,6 @@ test "copyEnrollments handles allocation failures" {
 fn checkCopyDecisionsAllocationFailures(allocator: std.mem.Allocator) !void {
     const decisions = try copyDecisions(allocator, &.{.{
         .executable_path = "/bin/cat",
-        .uid = 501,
         .path = "/tmp/demo-secret",
         .approval_class = "read_like",
         .outcome = "allow",

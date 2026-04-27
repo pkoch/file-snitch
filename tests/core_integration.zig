@@ -675,7 +675,6 @@ test "policy file loader parses enrollments and collapses mount plan" {
         \\    object_id: gh-extension-token
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -762,7 +761,6 @@ test "policy file expands and saves home-relative paths" {
         \\    object_id: gist-secret
         \\decisions:
         \\  - executable_path: /usr/bin/cat
-        \\    uid: 1000
         \\    path: ~/secrets/gist
         \\    approval_class: read_like
         \\    outcome: allow
@@ -824,7 +822,7 @@ test "policy file rejects paths outside the current home" {
         var file = try createFileAbsolute(decision_policy_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll("version: 1\nenrollments: []\ndecisions:\n");
-        try file.writeAll("  - executable_path: /usr/bin/cat\n    uid: 1000\n    path: ");
+        try file.writeAll("  - executable_path: /usr/bin/cat\n    path: ");
         try file.writeAll(outside_path);
         try file.writeAll("\n    approval_class: read_like\n    outcome: allow\n    expires_at: null\n");
     }
@@ -844,7 +842,6 @@ test "policy file save removes enrollment and attached decisions" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/.kube/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -874,7 +871,7 @@ test "policy file save removes enrollment and attached decisions" {
     try std.testing.expectEqual(@as(usize, 0), reloaded.decisions.len);
 }
 
-test "compiled durable decisions respect executable path and uid" {
+test "compiled durable decisions respect executable path" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "compiled-rules");
     defer temp_policy.deinit();
@@ -887,13 +884,11 @@ test "compiled durable decisions respect executable path and uid" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: null
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -923,7 +918,7 @@ test "compiled durable decisions respect executable path and uid" {
         .executable_path = "/usr/bin/kubectl",
     }));
 
-    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(.{
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(.{
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
@@ -964,13 +959,11 @@ test "compiled durable decisions ignore expired entries" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: deny
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -1023,7 +1016,6 @@ test "policy loader rejects invalid decision expiration" {
         \\    object_id: kube-config
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
@@ -1048,13 +1040,11 @@ test "policy file prunes expired decisions in place" {
         \\enrollments: []
         \\decisions:
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: read_like
         \\    outcome: allow
         \\    expires_at: '1970-01-01T00:00:01Z'
         \\  - executable_path: /usr/bin/kubectl
-        \\    uid: 1000
         \\    path: ~/guarded/config
         \\    approval_class: write_capable
         \\    outcome: deny
@@ -1095,7 +1085,6 @@ test "upsertDecision replaces matching durable decision" {
 
     try loaded.upsertDecision(
         "/usr/bin/kubectl",
-        1000,
         "/tmp/guarded/config",
         "read_like",
         "allow",
@@ -1103,7 +1092,6 @@ test "upsertDecision replaces matching durable decision" {
     );
     try loaded.upsertDecision(
         "/usr/bin/kubectl",
-        1000,
         "/tmp/guarded/config",
         "read_like",
         "deny",
@@ -1282,7 +1270,6 @@ test "live policy reload suppresses repeated prompt without remount" {
         defer writable_policy.deinit();
         try writable_policy.upsertDecision(
             "/usr/bin/demo",
-            1000,
             source_guarded_path,
             "read_like",
             "allow",
@@ -1362,12 +1349,11 @@ test "generated policy save load preserves engine behavior" {
         const decision_count = 2 + (case_index % 6);
         for (0..decision_count) |_| {
             const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
-            const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
             const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
             const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
             const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
             const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
-            try loaded.upsertDecision(executable_path, uid, enrollment.path, approval_class, outcome, expires_at);
+            try loaded.upsertDecision(executable_path, enrollment.path, approval_class, outcome, expires_at);
         }
 
         var compiled_before = try loaded.compilePolicyRuleViews(allocator);
@@ -1781,17 +1767,15 @@ fn writeGeneratedPolicyFile(
     try source.appendSlice(allocator, "decisions:\n");
     for (0..decision_count) |_| {
         const executable_path = generated_executable_paths[random.uintLessThan(usize, generated_executable_paths.len)];
-        const uid = generated_uids[random.uintLessThan(usize, generated_uids.len)];
         const enrollment = generated_enrollments[random.uintLessThan(usize, generated_enrollments.len)];
         const approval_class = generated_approval_classes[random.uintLessThan(usize, generated_approval_classes.len)];
         const outcome = generated_outcomes[random.uintLessThan(usize, generated_outcomes.len)];
         const expires_at = generated_expirations[random.uintLessThan(usize, generated_expirations.len)];
         try source.print(
             allocator,
-            "  - executable_path: {s}\n    uid: {d}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
+            "  - executable_path: {s}\n    path: {s}\n    approval_class: {s}\n    outcome: {s}\n    expires_at: {s}\n",
             .{
                 executable_path,
-                uid,
                 enrollment.path,
                 approval_class,
                 outcome,

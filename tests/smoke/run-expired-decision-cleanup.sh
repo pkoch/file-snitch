@@ -41,7 +41,6 @@ version: 1
 enrollments: []
 decisions:
   - executable_path: /usr/bin/cat
-    uid: 1000
     path: $home_dir/.kube/config
     approval_class: read_like
     outcome: allow

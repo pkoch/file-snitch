@@ -252,10 +252,9 @@ pub fn status(allocator: std.mem.Allocator, policy_path: []const u8) !void {
 
     for (loaded_policy.decisions) |decision| {
         std.debug.print(
-            "decision: executable_path={s} uid={d} path={s} approval_class={s} outcome={s} expires_at={s}\n",
+            "decision: executable_path={s} path={s} approval_class={s} outcome={s} expires_at={s}\n",
             .{
                 decision.executable_path,
-                decision.uid,
                 decision.path,
                 decision.approval_class,
                 decision.outcome,
@@ -426,8 +425,8 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         if (loaded_policy.findEnrollmentIndex(decision.path) == null) {
             has_errors = true;
             try report_writer.print(
-                "error: decision path is not enrolled: executable_path={s} uid={d} path={s}\n",
-                .{ decision.executable_path, decision.uid, decision.path },
+                "error: decision path is not enrolled: executable_path={s} path={s}\n",
+                .{ decision.executable_path, decision.path },
             );
         }
     }
@@ -589,10 +588,9 @@ fn writeDebugDossier(
             const redacted = try redactHomePathAlloc(allocator, home_dir, decision.path);
             defer allocator.free(redacted);
             try writer.print(
-                "- executable_path: `{s}` uid: `{d}` path: `{s}` approval_class: `{s}` outcome: `{s}` expires_at: `{s}`\n",
+                "- executable_path: `{s}` path: `{s}` approval_class: `{s}` outcome: `{s}` expires_at: `{s}`\n",
                 .{
                     decision.executable_path,
-                    decision.uid,
                     redacted,
                     decision.approval_class,
                     decision.outcome,

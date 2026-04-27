@@ -72,7 +72,6 @@ enrollments:
     object_id: '2c2188feb50066333c0723302c3ad32e'
 decisions:
   - executable_path: '/usr/local/bin/kubectl'
-    uid: 501
     path: '~/.kube/config'
     approval_class: 'read_like'
     outcome: 'allow'
@@ -82,7 +81,6 @@ decisions:
 Fields:
 
 - `executable_path`: executable path that requested access
-- `uid`: numeric user id that requested access
 - `path`: enrolled target path the decision applies to, either absolute or
   `~/...`
 - `approval_class`: approval class covered by the decision
@@ -92,7 +90,7 @@ Fields:
 The durable decision key is:
 
 ```text
-executable_path + uid + path + approval_class
+executable_path + path + approval_class
 ```
 
 Writing a new remembered decision for the same key replaces the previous
