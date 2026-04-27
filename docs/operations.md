@@ -36,7 +36,7 @@ file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 | `pass` or GPG fails | `pass ls` | Fix the GPG or `pass` environment first, then rerun `file-snitch doctor`. |
 | User service cannot find `pass` | `file-snitch doctor` | Reinstall services with explicit `--bin` and `--pass-bin` paths. |
 | Policy edit does not apply | `file-snitch status` | Confirm you edited the same policy path the daemon is using and that the YAML parses. |
-| Unenroll refuses because target exists | `file-snitch status` | Stop the active projection, confirm the host path is gone, then rerun `unenroll`. |
+| Unenroll waits because target exists | `file-snitch status` | Confirm `file-snitch run` is active; if the wait times out, stop the projection or remove the stale path and retry. |
 | Stale or inaccessible target device | `file-snitch doctor` | Restart `file-snitch run`; if it persists, unmount the affected parent directory and retry. |
 
 The policy file format is documented in [policy.md](./policy.md).
@@ -158,16 +158,15 @@ file-snitch unenroll <path>
 
 3. If something still looks wrong, export a dossier before making ad hoc edits.
 
-## If `unenroll` Refuses Because The Target Exists
+## If `unenroll` Waits Because The Target Exists
 
 That usually means the file is still projected or a stale file is sitting at
-the host path.
+the host path. `unenroll` removes the enrollment from the policy first so an
+active `file-snitch run` process can tear the projection down, then restores the
+guarded object after the path disappears.
 
-Do this in order:
-
-1. stop the active projection
-2. confirm the path is gone
-3. run `file-snitch unenroll <path>`
+If the wait times out, `unenroll` restores the policy enrollment. Stop the
+projection or remove the stale target path, then retry.
 
 Do not manually overwrite the store entry unless you are intentionally doing
 recovery work.

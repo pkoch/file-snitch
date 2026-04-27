@@ -133,7 +133,9 @@ path absent until `run` projects it back.
 
 `file-snitch unenroll <path>` restores the guarded object to the original path,
 removes the enrollment from `policy.yml`, and removes remembered decisions for
-that path.
+that path. If the file is currently projected by `file-snitch run`, `unenroll`
+updates the policy first, waits for the daemon to tear the projection down, and
+then restores the guarded object.
 
 Current enrollment limits:
 
