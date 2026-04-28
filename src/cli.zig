@@ -854,7 +854,6 @@ const PreparedProjectionPlan = struct {
 
     fn rollback(self: *PreparedProjectionPlan) void {
         for (self.projection_plan.entries, 0..) |entry, index| {
-            if (!self.created_symlinks[index]) continue;
             enrollment_ops.removeProjectionSymlinkIfCreated(
                 allocator,
                 entry.target_path,

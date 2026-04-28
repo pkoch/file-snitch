@@ -6,7 +6,6 @@ import os
 import pathlib
 import stat
 import subprocess
-import sys
 import tarfile
 
 
@@ -87,8 +86,7 @@ def main() -> None:
                     try:
                         file_info = source_path.lstat()
                     except FileNotFoundError:
-                        print(f"warning: skipping tracked file not found: {source_path}", file=sys.stderr)
-                        continue
+                        raise SystemExit(f"error: tracked file not found: {source_path}")
 
                     for parent in archive_path.parents:
                         parent_str = str(parent)

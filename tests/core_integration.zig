@@ -676,13 +676,18 @@ test "daemon sends home-relative display labels to prompt broker" {
     prompt_context.saw_expected_path = false;
     prompt_context.saw_expected_label = false;
 
-    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile("/config", .{
+    const open_request: filesystem.FileRequestInfo = .{
         .flags = c.O_RDONLY,
         .handle_id = 0xfeed,
-    }, context));
+    };
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile("/config", open_request, context));
     try std.testing.expectEqual(@as(usize, 2), prompt_context.count);
     try std.testing.expect(prompt_context.saw_expected_path);
     try std.testing.expect(prompt_context.saw_expected_label);
+
+    const handle_read_len = session.state.filesystem.readInto("/config", 0, &buffer, context, open_request);
+    try std.testing.expect(handle_read_len > 0);
+    try std.testing.expectEqual(@as(usize, 3), prompt_context.count);
 }
 
 test "open write handle grants mutation access until release" {
@@ -740,6 +745,12 @@ test "open write handle grants mutation access until release" {
     session.state.filesystem.recordRelease(guarded_note_path, context, request, 0, null);
     try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.truncateFile(guarded_note_path, 4, context));
     try std.testing.expectEqual(@as(usize, 2), prompt_context.count);
+
+    try std.testing.expectEqual(
+        @as(i32, 4),
+        session.state.filesystem.writeFileWithRequest(guarded_note_path, 0, "edit", context, request),
+    );
+    try std.testing.expectEqual(@as(usize, 3), prompt_context.count);
 }
 
 test "directory operations fail explicitly in the file-only spike" {

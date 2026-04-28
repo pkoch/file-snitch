@@ -186,6 +186,11 @@ const HandleGrantTable = struct {
         }
     }
 
+    fn hasActiveGrant(self: *const HandleGrantTable, handle_id: u64, path: []const u8, pid: u32) bool {
+        const grant = self.entries.get(handle_id) orelse return false;
+        return grant.pid == pid and std.mem.eql(u8, grant.path, path);
+    }
+
     fn hasActiveWriteGrant(self: *const HandleGrantTable, path: []const u8, pid: u32) bool {
         var iterator = self.entries.valueIterator();
         while (iterator.next()) |grant| {
@@ -594,10 +599,14 @@ pub const Model = struct {
         };
 
         if (file.backing_object_id != null or isTransientVirtualPath(path)) {
-            const auth_result = if (file_request) |request|
-                authorizeReadFromOpenFlags(request.flags)
-            else
-                self.authorizeAccess(path, .read, context);
+            const auth_result = if (file_request) |request| blk: {
+                if (request.handle_id) |handle_id| {
+                    if (self.handle_grants.hasActiveGrant(handle_id, path, context.pid)) {
+                        break :blk authorizeReadFromOpenFlags(request.flags);
+                    }
+                }
+                break :blk self.authorizeAccess(path, .read, context);
+            } else self.authorizeAccess(path, .read, context);
             if (auth_result != 0) {
                 self.recordAuditLiteral("read", path, auth_result, context);
                 return auth_result;
@@ -1068,10 +1077,14 @@ pub const Model = struct {
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
 
         if (file.backing_object_id != null or isTransientVirtualPath(path)) {
-            const auth_result = if (file_request) |request|
-                authorizeWriteFromOpenFlags(request.flags)
-            else
-                self.authorizeAccess(path, .write, context);
+            const auth_result = if (file_request) |request| blk: {
+                if (request.handle_id) |handle_id| {
+                    if (self.handle_grants.hasActiveGrant(handle_id, path, context.pid)) {
+                        break :blk authorizeWriteFromOpenFlags(request.flags);
+                    }
+                }
+                break :blk self.authorizeAccess(path, .write, context);
+            } else self.authorizeAccess(path, .write, context);
             if (auth_result != 0) {
                 return auth_result;
             }
@@ -1395,6 +1408,12 @@ pub const Model = struct {
         policy_path: ?[]const u8,
     ) !*StoredFile {
         if (!isRootChildPath(path)) {
+            return error.InvalidPath;
+        }
+        if (std.mem.eql(u8, path, "/.") or std.mem.eql(u8, path, "/..")) {
+            return error.InvalidPath;
+        }
+        if (self.rootChildAlreadySeen(path[1..], self.files.items.len)) {
             return error.InvalidPath;
         }
         if (backing_object_id == null and !isTransientVirtualPath(path)) {

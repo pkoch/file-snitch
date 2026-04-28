@@ -174,7 +174,8 @@ run_demo_controller() {
     sleep 1.2
     pane_send "$user_pane" "fs enroll ~/.kube/config"
     wait_for_file_contains "$policy_file" "$home_dir/.kube/config"
-    projection_mount_path="$home_dir/.local/state/file-snitch/projection"
+    projection_state_base="${XDG_STATE_HOME:-$home_dir/.local/state}"
+    projection_mount_path="$projection_state_base/file-snitch/projection"
     mount_paths=("$projection_mount_path")
     wait_for_mount_active_without_pid "$projection_mount_path"
     sleep 0.8

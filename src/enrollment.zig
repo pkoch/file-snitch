@@ -57,7 +57,9 @@ pub fn moveGuardedFileBack(
     object_id: []const u8,
     target_path: []const u8,
 ) !void {
-    try removeSymlinkIfPresent(allocator, target_path, null);
+    const projection_path = try defaultProjectionPathAlloc(allocator, object_id);
+    defer allocator.free(projection_path);
+    try removeExpectedSymlinkOrMissing(allocator, target_path, projection_path);
     try guarded_store.restoreObjectToFile(allocator, object_id, target_path);
     errdefer std.Io.Dir.deleteFileAbsolute(runtime.io(), target_path) catch |err| {
         std.debug.panic("failed to roll back restored target file {s}: {}", .{ target_path, err });
@@ -93,6 +95,13 @@ pub fn removeProjectionSymlinkIfCreated(
     projection_path: []const u8,
 ) !void {
     try removeSymlinkIfPresent(allocator, target_path, projection_path);
+}
+
+pub fn symlinkTargetAlloc(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    switch (try symlinkState(allocator, path)) {
+        .missing, .other => return null,
+        .symlink => return try readSymlinkAlloc(allocator, path),
+    }
 }
 
 pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u8) ![]u8 {
@@ -191,6 +200,12 @@ fn createSymlink(
     }
 }
 
+fn defaultProjectionPathAlloc(allocator: std.mem.Allocator, object_id: []const u8) ![]u8 {
+    const base = try defaults.xdgBasePathAlloc(allocator, defaults.xdg_state_path_env, ".local/state");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "projection", object_id });
+}
+
 fn readSymlinkAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
@@ -211,6 +226,26 @@ fn readSymlinkAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         };
     }
     return allocator.dupe(u8, buffer[0..@intCast(target_len)]);
+}
+
+fn removeExpectedSymlinkOrMissing(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    expected_target: []const u8,
+) !void {
+    switch (try symlinkState(allocator, target_path)) {
+        .missing => return,
+        .other => return error.PathAlreadyExists,
+        .symlink => {},
+    }
+
+    const current_target = try readSymlinkAlloc(allocator, target_path);
+    defer allocator.free(current_target);
+    if (!std.mem.eql(u8, current_target, expected_target)) {
+        return error.PathAlreadyExists;
+    }
+
+    try removeSymlinkIfPresent(allocator, target_path, expected_target);
 }
 
 fn removeSymlinkIfPresent(
