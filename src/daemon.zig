@@ -9,7 +9,7 @@ const builtin = @import("builtin");
 
 extern "c" fn proc_pidpath(pid: c_int, buffer: *anyopaque, buffersize: u32) c_int;
 
-pub const EnrolledParentConfig = struct {
+pub const ProjectionConfig = struct {
     mount_path: []const u8,
     guarded_entries: []const filesystem.GuardedEntryConfig,
     /// Borrowed; the caller retains ownership and is the sole `deinit` site.
@@ -167,14 +167,14 @@ pub const Session = struct {
     state: *State,
     handle: *fuse.RawSession,
 
-    pub fn initEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !Session {
+    pub fn initProjection(allocator: std.mem.Allocator, config: ProjectionConfig) !Session {
         const mount_path_z = try allocator.dupeZ(u8, config.mount_path);
         defer allocator.free(mount_path_z);
 
         const state = try allocator.create(State);
         errdefer allocator.destroy(state);
         state.* = .{
-            .filesystem = try filesystem.Model.initEnrolledParent(allocator, .{
+            .filesystem = try filesystem.Model.initProjection(allocator, .{
                 .mount_path = config.mount_path,
                 .guarded_entries = config.guarded_entries,
                 .guarded_store = config.guarded_store,
@@ -190,7 +190,6 @@ pub const Session = struct {
 
         const handle = try fuse.createSession(.{
             .mount_path = mount_path_z,
-            .source_dir_fd = state.filesystem.source_dir.?.handle,
             .daemon_state = state,
             .run_in_foreground = config.run_in_foreground,
         });
@@ -411,10 +410,10 @@ fn freeAuditEvent(allocator: std.mem.Allocator, event: *AuditEvent) void {
     event.* = undefined;
 }
 
-pub fn mountEnrolledParent(allocator: std.mem.Allocator, config: EnrolledParentConfig) !void {
+pub fn mountProjection(allocator: std.mem.Allocator, config: ProjectionConfig) !void {
     try ensureDirectory(config.mount_path);
 
-    var session = try Session.initEnrolledParent(allocator, config);
+    var session = try Session.initProjection(allocator, config);
     defer session.deinit();
 
     const description = try session.describe();
@@ -759,10 +758,14 @@ pub export fn fsn_daemon_write(
 pub export fn fsn_daemon_truncate(
     daemon_state: ?*anyopaque,
     raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     size: u64,
 ) c_int {
     var request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     defer request.deinit();
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        return @intCast(request.state.filesystem.truncateFileWithRequest(request.path, size, request.context, file_request));
+    }
     return @intCast(request.state.filesystem.truncateFile(request.path, size, request.context));
 }
 

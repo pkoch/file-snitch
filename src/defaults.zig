@@ -28,17 +28,22 @@ pub const zenity_bin_env = "FILE_SNITCH_ZENITY_BIN";
 /// Override the `pass` binary used by the pass guarded-store backend.
 pub const pass_bin_env = "FILE_SNITCH_PASS_BIN";
 
+/// Override the state directory used for the FUSE projection root. Falls back
+/// to `$HOME/.local/state`.
+pub const xdg_state_path_env = "XDG_STATE_HOME";
+
 /// Override the prompt timeout in milliseconds. Parsed as an unsigned integer.
 pub const prompt_timeout_ms_env = "FILE_SNITCH_PROMPT_TIMEOUT_MS";
 
 /// Override requester/agent socket liveness timeout in milliseconds.
 pub const protocol_timeout_ms_env = "FILE_SNITCH_PROTOCOL_TIMEOUT_MS";
 
-/// Internal: per-mount-child override of which mount path the spawned `run`
-/// process is responsible for. Set by the supervisor, never by users.
-pub const internal_mount_path_env = "FILE_SNITCH_INTERNAL_MOUNT_PATH";
+/// Internal: marker for a spawned `run` child that should execute one static
+/// projection instead of supervising policy changes. Set by the supervisor,
+/// never by users.
+pub const internal_projection_child_env = "FILE_SNITCH_INTERNAL_PROJECTION_CHILD";
 
-/// Internal: per-mount-child status FIFO path. Set by the supervisor.
+/// Internal: projection child status FIFO path. Set by the supervisor.
 pub const internal_status_fifo_env = "FILE_SNITCH_INTERNAL_STATUS_FIFO";
 
 /// Default prompt timeout when `FILE_SNITCH_PROMPT_TIMEOUT_MS` is unset.

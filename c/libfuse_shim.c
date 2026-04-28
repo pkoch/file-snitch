@@ -131,7 +131,12 @@ extern int fsn_daemon_write(
     size_t size,
     const char *buf
 );
-extern int fsn_daemon_truncate(void *daemon_state, const struct fsn_bridge_request *request, uint64_t size);
+extern int fsn_daemon_truncate(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
+    uint64_t size
+);
 extern int fsn_daemon_chmod(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
 extern int fsn_daemon_chown(void *daemon_state, const struct fsn_bridge_request *request, uint32_t uid, uint32_t gid);
 extern int fsn_daemon_flush(
@@ -207,7 +212,6 @@ struct fsn_file_handle {
 
 struct fsn_fuse_session {
     char *mount_path;
-    int source_dir_fd;
     void *daemon_state;
     uint8_t run_in_foreground;
     uint32_t configured_operation_count;
@@ -244,13 +248,7 @@ static int fsn_build_child_virtual_path(
     char *buf,
     size_t buf_size
 );
-static int fsn_build_relative_path(const char *path, char *buf, size_t buf_size);
 static int fsn_emit_readdir_entry(void *raw_context, const char *name);
-static int fsn_open_passthrough_fd(
-    const struct fsn_fuse_session *session,
-    const char *path,
-    int requested_flags
-);
 static struct fsn_file_handle *fsn_create_file_handle(void);
 static struct fsn_file_handle *fsn_get_file_handle(const struct fuse_file_info *fi);
 static void fsn_clear_file_handle(struct fuse_file_info *fi);
@@ -668,11 +666,11 @@ static int fsn_fuse_write(
 static int
 #ifdef __linux__
 fsn_fuse_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
-    (void)fi;
 #else
 fsn_fuse_truncate(const char *path, off_t size) {
 #endif
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
 
     if (path == NULL || size < 0) {
@@ -684,7 +682,12 @@ fsn_fuse_truncate(const char *path, off_t size) {
         return -EINVAL;
     }
 
-    return fsn_daemon_truncate(session->daemon_state, &request, (uint64_t)size);
+#ifdef __linux__
+    fsn_capture_file_info(fi, &file_info);
+    return fsn_daemon_truncate(session->daemon_state, &request, &file_info, (uint64_t)size);
+#else
+    return fsn_daemon_truncate(session->daemon_state, &request, NULL, (uint64_t)size);
+#endif
 }
 
 static int
@@ -1181,17 +1184,12 @@ int fsn_fuse_session_create(
         return FSN_FUSE_STATUS_INVALID_ARGUMENT;
     }
 
-    if (config->source_dir_fd < 0) {
-        return FSN_FUSE_STATUS_INVALID_ARGUMENT;
-    }
-
     session = calloc(1, sizeof(*session));
     if (session == NULL) {
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
     }
 
     session->mount_path = fsn_strdup(config->mount_path);
-    session->source_dir_fd = config->source_dir_fd;
     if (session->mount_path == NULL) {
         fsn_fuse_session_destroy(session);
         return FSN_FUSE_STATUS_OUT_OF_MEMORY;
@@ -1426,22 +1424,6 @@ static int fsn_build_child_virtual_path(
     return 0;
 }
 
-static int fsn_build_relative_path(const char *path, char *buf, size_t buf_size) {
-    size_t length;
-
-    if (path == NULL || buf == NULL || buf_size == 0 || !fsn_is_non_root_path(path)) {
-        return -EINVAL;
-    }
-
-    length = strlen(path + 1);
-    if (length + 1 > buf_size) {
-        return -ENAMETOOLONG;
-    }
-
-    memcpy(buf, path + 1, length + 1);
-    return 0;
-}
-
 static void fsn_capture_file_info(const struct fuse_file_info *fi, struct fsn_bridge_file_info *out) {
     memset(out, 0, sizeof(*out));
     if (fi == NULL) {
@@ -1537,29 +1519,6 @@ static int fsn_open_runtime_fd(
     if (guarded) {
         return fsn_daemon_open_guarded_lock_fd(session->daemon_state, path, requested_flags);
     }
-    return fsn_open_passthrough_fd(session, path, requested_flags);
-}
-
-static int fsn_open_passthrough_fd(
-    const struct fsn_fuse_session *session,
-    const char *path,
-    int requested_flags
-) {
-    char relative_path[PATH_MAX];
-    int descriptor;
-
-    if (session == NULL || session->source_dir_fd < 0 || path == NULL) {
-        return -EINVAL;
-    }
-
-    if (fsn_build_relative_path(path, relative_path, sizeof(relative_path)) != 0) {
-        return -ENAMETOOLONG;
-    }
-
-    descriptor = openat(session->source_dir_fd, relative_path, requested_flags);
-    if (descriptor < 0) {
-        return -errno;
-    }
-
-    return descriptor;
+    (void)requested_flags;
+    return -ENOENT;
 }

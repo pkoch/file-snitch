@@ -7,6 +7,10 @@ pub fn build(b: *std.Build) void {
     const app_version = readAppVersion(b);
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
+    build_options.addOption([]const u8, "launchd_agent_template", readSmallFile(b, "packaging/launchd/dev.file-snitch.agent.plist.in"));
+    build_options.addOption([]const u8, "launchd_run_template", readSmallFile(b, "packaging/launchd/dev.file-snitch.run.plist.in"));
+    build_options.addOption([]const u8, "systemd_agent_template", readSmallFile(b, "packaging/systemd/file-snitch-agent.service.in"));
+    build_options.addOption([]const u8, "systemd_run_template", readSmallFile(b, "packaging/systemd/file-snitch-run.service.in"));
     const yaml_dependency = b.dependency("yaml", .{
         .target = target,
         .optimize = optimize,
@@ -171,6 +175,19 @@ pub fn build(b: *std.Build) void {
     configureLinkerPolicy(filesystem_util_tests, target.result.os.tag);
     const run_filesystem_util_tests = b.addRunArtifact(filesystem_util_tests);
 
+    const user_services_test_module = b.createModule(.{
+        .root_source_file = b.path("src/user_services.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    user_services_test_module.addOptions("build_options", build_options);
+    const user_services_tests = b.addTest(.{
+        .root_module = user_services_test_module,
+    });
+    configureLinkerPolicy(user_services_tests, target.result.os.tag);
+    const run_user_services_tests = b.addRunArtifact(user_services_tests);
+
     const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
@@ -182,13 +199,18 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_policy_watch_tests.step);
     test_step.dependOn(&run_supervisor_tests.step);
     test_step.dependOn(&run_filesystem_util_tests.step);
+    test_step.dependOn(&run_user_services_tests.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
-    const raw = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "VERSION", b.allocator, .limited(64)) catch |err| {
-        std.debug.panic("failed to read VERSION: {}", .{err});
-    };
+    const raw = readSmallFile(b, "VERSION");
     return std.mem.trim(u8, raw, " \t\r\n");
+}
+
+fn readSmallFile(b: *std.Build, path: []const u8) []const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(b.graph.io, path, b.allocator, .limited(64 * 1024)) catch |err| {
+        std.debug.panic("failed to read {s}: {}", .{ path, err });
+    };
 }
 
 fn configureFuseInterop(

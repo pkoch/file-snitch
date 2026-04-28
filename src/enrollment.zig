@@ -57,11 +57,51 @@ pub fn moveGuardedFileBack(
     object_id: []const u8,
     target_path: []const u8,
 ) !void {
+    const projection_path = try defaultProjectionPathAlloc(allocator, object_id);
+    defer allocator.free(projection_path);
+    try removeExpectedSymlinkOrMissing(allocator, target_path, projection_path);
     try guarded_store.restoreObjectToFile(allocator, object_id, target_path);
     errdefer std.Io.Dir.deleteFileAbsolute(runtime.io(), target_path) catch |err| {
         std.debug.panic("failed to roll back restored target file {s}: {}", .{ target_path, err });
     };
     try guarded_store.removeObject(allocator, object_id);
+}
+
+pub fn ensureProjectionSymlink(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    projection_path: []const u8,
+) !bool {
+    switch (try symlinkState(allocator, target_path)) {
+        .missing => {
+            try createSymlink(allocator, projection_path, target_path);
+            return true;
+        },
+        .symlink => {
+            const current_target = try readSymlinkAlloc(allocator, target_path);
+            defer allocator.free(current_target);
+            if (std.mem.eql(u8, current_target, projection_path)) {
+                return false;
+            }
+            return error.PathAlreadyExists;
+        },
+        .other => return error.PathAlreadyExists,
+    }
+}
+
+pub fn removeProjectionSymlinkIfCreated(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    projection_path: []const u8,
+) !void {
+    try removeSymlinkIfPresent(allocator, target_path, projection_path);
+}
+
+pub fn symlinkTargetAlloc(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    switch (try symlinkState(allocator, path)) {
+        .missing, .other => return null,
+        .symlink => return try readSymlinkAlloc(allocator, path),
+    }
 }
 
 pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u8) ![]u8 {
@@ -105,6 +145,141 @@ fn pathKindError(err: std.posix.E) !PathKind {
         .NOMEM => return error.OutOfMemory,
         else => return error.Unexpected,
     };
+}
+
+const SymlinkState = enum {
+    missing,
+    symlink,
+    other,
+};
+
+fn symlinkState(allocator: std.mem.Allocator, path: []const u8) !SymlinkState {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    var stat: c.struct_stat = undefined;
+    if (c.lstat(path_z.ptr, &stat) != 0) {
+        return switch (std.posix.errno(-1)) {
+            .NOENT => .missing,
+            .ACCES, .PERM => error.AccessDenied,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOTDIR => error.NotDir,
+            .INTR => error.Interrupted,
+            .IO => error.InputOutput,
+            .NXIO => error.NoDevice,
+            .NOMEM => error.OutOfMemory,
+            else => error.Unexpected,
+        };
+    }
+
+    const mode: u32 = @intCast(stat.st_mode);
+    return if ((mode & c.S_IFMT) == c.S_IFLNK) .symlink else .other;
+}
+
+fn createSymlink(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    link_path: []const u8,
+) !void {
+    const target_z = try allocator.dupeZ(u8, target_path);
+    defer allocator.free(target_z);
+    const link_z = try allocator.dupeZ(u8, link_path);
+    defer allocator.free(link_z);
+
+    if (c.symlink(target_z.ptr, link_z.ptr) != 0) {
+        return switch (std.posix.errno(-1)) {
+            .EXIST => error.PathAlreadyExists,
+            .ACCES, .PERM => error.AccessDenied,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOTDIR => error.NotDir,
+            .INTR => error.Interrupted,
+            .IO => error.InputOutput,
+            .NOMEM => error.OutOfMemory,
+            else => error.Unexpected,
+        };
+    }
+}
+
+fn defaultProjectionPathAlloc(allocator: std.mem.Allocator, object_id: []const u8) ![]u8 {
+    const base = try defaults.xdgBasePathAlloc(allocator, defaults.xdg_state_path_env, ".local/state");
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "file-snitch", "projection", object_id });
+}
+
+fn readSymlinkAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    var buffer: [std.posix.PATH_MAX]u8 = undefined;
+    const target_len = c.readlink(path_z.ptr, &buffer, buffer.len);
+    if (target_len < 0) {
+        return switch (std.posix.errno(-1)) {
+            .NOENT => error.FileNotFound,
+            .INVAL => error.NotLink,
+            .ACCES, .PERM => error.AccessDenied,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOTDIR => error.NotDir,
+            .INTR => error.Interrupted,
+            .IO => error.InputOutput,
+            .NOMEM => error.OutOfMemory,
+            else => error.Unexpected,
+        };
+    }
+    return allocator.dupe(u8, buffer[0..@intCast(target_len)]);
+}
+
+fn removeExpectedSymlinkOrMissing(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    expected_target: []const u8,
+) !void {
+    switch (try symlinkState(allocator, target_path)) {
+        .missing => return,
+        .other => return error.PathAlreadyExists,
+        .symlink => {},
+    }
+
+    const current_target = try readSymlinkAlloc(allocator, target_path);
+    defer allocator.free(current_target);
+    if (!std.mem.eql(u8, current_target, expected_target)) {
+        return error.PathAlreadyExists;
+    }
+
+    try removeSymlinkIfPresent(allocator, target_path, expected_target);
+}
+
+fn removeSymlinkIfPresent(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    expected_target: ?[]const u8,
+) !void {
+    switch (try symlinkState(allocator, target_path)) {
+        .missing, .other => return,
+        .symlink => {},
+    }
+
+    if (expected_target) |expected| {
+        const current_target = try readSymlinkAlloc(allocator, target_path);
+        defer allocator.free(current_target);
+        if (!std.mem.eql(u8, current_target, expected)) {
+            return;
+        }
+    }
+
+    const target_z = try allocator.dupeZ(u8, target_path);
+    defer allocator.free(target_z);
+    if (c.unlink(target_z.ptr) != 0) {
+        return switch (std.posix.errno(-1)) {
+            .NOENT => {},
+            .ACCES, .PERM => error.AccessDenied,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOTDIR => error.NotDir,
+            .INTR => error.Interrupted,
+            .IO => error.InputOutput,
+            .NOMEM => error.OutOfMemory,
+            else => error.Unexpected,
+        };
+    }
 }
 
 pub fn currentUserHomeAlloc(alloc: std.mem.Allocator) ![]u8 {

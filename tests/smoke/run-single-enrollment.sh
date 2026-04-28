@@ -28,13 +28,18 @@ main() {
   printf 'plain sibling\n' >"$home_dir/.kube/cache"
 
   capture_file_snitch enroll "$home_dir/.kube/config" >/dev/null
+  object_id="$(guarded_object_id_for "$home_dir/.kube/config")"
   guarded_store_write_for "$home_dir/.kube/config" 'guarded kube
 '
 
-  mount_paths=("$home_dir/.kube")
+  mount_paths=("$home_dir/.local/state/file-snitch/projection")
   start_file_snitch_run allow
   platform_prime_guarded_path "$home_dir/.kube/config"
 
+  assert_eq \
+    "$(readlink "$home_dir/.kube/config")" \
+    "$home_dir/.local/state/file-snitch/projection/$object_id" \
+    "expected the enrolled path to symlink to its projection object"
   assert_eq \
     "$(cat "$home_dir/.kube/config")" \
     "guarded kube" \
@@ -42,7 +47,7 @@ main() {
   assert_eq \
     "$(cat "$home_dir/.kube/cache")" \
     "plain sibling" \
-    "expected sibling files to passthrough unchanged"
+    "expected sibling files to remain outside the projection"
 
   platform_prime_guarded_path "$home_dir/.kube/config"
   printf 'updated guarded kube\n' >"$home_dir/.kube/config"

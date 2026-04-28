@@ -85,10 +85,6 @@ pub fn timestampFromNanos(nanos: i128) Timestamp {
     };
 }
 
-pub fn timestampFromStatNanos(nanos: i128) Timestamp {
-    return timestampFromNanos(nanos);
-}
-
 pub fn timestampFromPosixStat(sec: i64, nsec: u64) Timestamp {
     return .{
         .sec = sec,
@@ -124,28 +120,6 @@ pub fn relativeMountedPath(path: []const u8) ?[]const u8 {
     return path[1..];
 }
 
-pub fn joinVirtualPath(allocator: std.mem.Allocator, directory_path: []const u8, child_name: []const u8) ![]u8 {
-    if (isRootPath(directory_path)) {
-        return std.fmt.allocPrint(allocator, "/{s}", .{child_name});
-    }
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ directory_path, child_name });
-}
-
-pub fn directChildName(directory_path: []const u8, descendant_path: []const u8) ?[]const u8 {
-    const relative = if (isRootPath(directory_path)) blk: {
-        if (descendant_path.len < 2 or descendant_path[0] != '/') return null;
-        break :blk descendant_path[1..];
-    } else blk: {
-        if (!std.mem.startsWith(u8, descendant_path, directory_path)) return null;
-        if (descendant_path.len <= directory_path.len or descendant_path[directory_path.len] != '/') return null;
-        break :blk descendant_path[directory_path.len + 1 ..];
-    };
-
-    if (relative.len == 0) return null;
-    const separator = std.mem.indexOfScalar(u8, relative, '/') orelse relative.len;
-    return relative[0..separator];
-}
-
 pub fn isDescendantPath(parent_path: []const u8, candidate_path: []const u8) bool {
     if (isRootPath(parent_path)) {
         return candidate_path.len > 1 and candidate_path[0] == '/';
@@ -153,12 +127,6 @@ pub fn isDescendantPath(parent_path: []const u8, candidate_path: []const u8) boo
     return std.mem.startsWith(u8, candidate_path, parent_path) and
         candidate_path.len > parent_path.len and
         candidate_path[parent_path.len] == '/';
-}
-
-pub fn syntheticDirectoryInode(path: []const u8) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(path);
-    return first_dynamic_inode +% hasher.final();
 }
 
 pub fn blockCountForSize(size: u64) u64 {
@@ -234,6 +202,29 @@ pub fn formatOpenPromptLabel(
     return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ operation, mode.items, path });
 }
 
+pub fn formatHomeRelativePathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const home = try runtime.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home);
+
+    var canonical_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const canonical_len = try std.Io.Dir.realPathFileAbsolute(runtime.io(), home, &canonical_buffer);
+    return formatHomeRelativePathWithHomeAlloc(allocator, canonical_buffer[0..canonical_len], path);
+}
+
+pub fn formatHomeRelativePathWithHomeAlloc(allocator: std.mem.Allocator, home: []const u8, path: []const u8) ![]u8 {
+    if (std.mem.eql(u8, path, home)) {
+        return allocator.dupe(u8, "~");
+    }
+    if (isDescendantPath(home, path)) {
+        const relative_path = if (isRootPath(home))
+            path[1..]
+        else
+            path[home.len + 1 ..];
+        return std.fmt.allocPrint(allocator, "~/{s}", .{relative_path});
+    }
+    return allocator.dupe(u8, path);
+}
+
 pub fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
     return switch (access_class) {
         .read => "read",
@@ -304,40 +295,6 @@ test "relativeMountedPath strips the leading slash and rejects root or bare name
     try testing.expect(relativeMountedPath("foo") == null);
 }
 
-test "joinVirtualPath handles root prefix and nested directories" {
-    const a = try joinVirtualPath(testing.allocator, "/", "foo");
-    defer testing.allocator.free(a);
-    try testing.expectEqualStrings("/foo", a);
-
-    const b = try joinVirtualPath(testing.allocator, "/foo", "bar");
-    defer testing.allocator.free(b);
-    try testing.expectEqualStrings("/foo/bar", b);
-}
-
-test "directChildName returns only the immediate child, even past deep descendants" {
-    try testing.expectEqualStrings("foo", directChildName("/", "/foo").?);
-    try testing.expectEqualStrings("foo", directChildName("/", "/foo/bar").?);
-    try testing.expectEqualStrings("bar", directChildName("/foo", "/foo/bar").?);
-    try testing.expectEqualStrings("bar", directChildName("/foo", "/foo/bar/baz").?);
-    try testing.expect(directChildName("/foo", "/foo") == null);
-    try testing.expect(directChildName("/foo", "/foobar/baz") == null);
-    try testing.expect(directChildName("/foo", "/bar") == null);
-
-    // Prefix-trap guard: /a must not see /ab as a child.
-    try testing.expect(directChildName("/a", "/ab") == null);
-}
-
-test "directChildName pins current behavior for malformed paths" {
-    // Trailing slash in descendant: current impl returns the empty pre-slash
-    // segment as a bare name. Lock it down so accidental changes surface.
-    try testing.expect(directChildName("/", "/") == null);
-    try testing.expect(directChildName("/foo", "/foo/") == null);
-
-    // Double slashes: the helper returns "" for the first empty segment.
-    const double = directChildName("/", "//") orelse return error.TestUnexpectedResult;
-    try testing.expectEqualStrings("", double);
-}
-
 test "isDescendantPath rejects prefix-match traps like /a vs /ab" {
     try testing.expect(isDescendantPath("/", "/foo"));
     try testing.expect(isDescendantPath("/foo", "/foo/bar"));
@@ -369,6 +326,22 @@ test "formatOpenPromptLabel emits mode token then flags in declaration order" {
     const bare = try formatOpenPromptLabel(testing.allocator, "create", "/bar", c.O_RDONLY);
     defer testing.allocator.free(bare);
     try testing.expectEqualStrings("create O_RDONLY /bar", bare);
+}
+
+test "formatHomeRelativePathWithHomeAlloc emits tilde-relative paths inside home" {
+    const home = "/Users/test";
+
+    const home_label = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/test");
+    defer testing.allocator.free(home_label);
+    try testing.expectEqualStrings("~", home_label);
+
+    const child_label = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/test/.kube/config");
+    defer testing.allocator.free(child_label);
+    try testing.expectEqualStrings("~/.kube/config", child_label);
+
+    const prefix_trap = try formatHomeRelativePathWithHomeAlloc(testing.allocator, home, "/Users/tester/.kube/config");
+    defer testing.allocator.free(prefix_trap);
+    try testing.expectEqualStrings("/Users/tester/.kube/config", prefix_trap);
 }
 
 test "mapFsError routes every enumerated branch and falls back to EIO" {
@@ -465,9 +438,6 @@ test "timestampFromNanos and nanosFromTimestamp round-trip non-negative ns" {
         try testing.expectEqual(ns, nanosFromTimestamp(ts));
     }
 
-    const stat_sample = timestampFromStatNanos(1_750_000_000_123_456_789);
-    try testing.expectEqual(@as(i64, 1_750_000_000), stat_sample.sec);
-    try testing.expectEqual(@as(u32, 123_456_789), stat_sample.nsec);
 }
 
 test "timestampFromPosixStat copies fields as-is" {
@@ -509,17 +479,6 @@ test "blockCountForSize rounds up to 512-byte blocks without overflowing" {
     // maxInt(u64) is not a multiple of 512, so we expect one trailing block.
     const max_size = std.math.maxInt(u64);
     try testing.expectEqual(max_size / 512 + 1, blockCountForSize(max_size));
-}
-
-test "syntheticDirectoryInode stays stable per path and differs across paths" {
-    // The inode is a wrapping sum so we can't assert an ordering against
-    // first_dynamic_inode; only the stability and collision-free-ness
-    // contract matters here.
-    const a1 = syntheticDirectoryInode("/foo");
-    const a2 = syntheticDirectoryInode("/foo");
-    const b = syntheticDirectoryInode("/bar");
-    try testing.expectEqual(a1, a2);
-    try testing.expect(a1 != b);
 }
 
 test "accessClassLabel covers every AccessClass" {
