@@ -1,6 +1,6 @@
 .{
     .name = .file_snitch,
-    .version = "0.7.0",
+    .version = "0.7.1",
     .fingerprint = 0xba0e9854b2f79c58,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
