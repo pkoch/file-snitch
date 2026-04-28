@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Linux release artifact builds with Zig 0.16 and glibc fortify enabled.
+
 ## [0.7.0] - 2026-04-28
 
 ### Added

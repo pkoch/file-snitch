@@ -207,25 +207,9 @@ fn defaultProjectionPathAlloc(allocator: std.mem.Allocator, object_id: []const u
 }
 
 fn readSymlinkAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const path_z = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_z);
-
     var buffer: [std.posix.PATH_MAX]u8 = undefined;
-    const target_len = c.readlink(path_z.ptr, &buffer, buffer.len);
-    if (target_len < 0) {
-        return switch (std.posix.errno(-1)) {
-            .NOENT => error.FileNotFound,
-            .INVAL => error.NotLink,
-            .ACCES, .PERM => error.AccessDenied,
-            .NAMETOOLONG => error.NameTooLong,
-            .NOTDIR => error.NotDir,
-            .INTR => error.Interrupted,
-            .IO => error.InputOutput,
-            .NOMEM => error.OutOfMemory,
-            else => error.Unexpected,
-        };
-    }
-    return allocator.dupe(u8, buffer[0..@intCast(target_len)]);
+    const target_len = try std.Io.Dir.readLinkAbsolute(runtime.io(), path, &buffer);
+    return allocator.dupe(u8, buffer[0..target_len]);
 }
 
 fn removeExpectedSymlinkOrMissing(

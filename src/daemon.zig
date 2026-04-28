@@ -503,11 +503,8 @@ fn resolveExecutablePathLinux(allocator: std.mem.Allocator, pid: u32) !?[]u8 {
     defer allocator.free(link_path);
 
     var buffer: [std.posix.PATH_MAX]u8 = undefined;
-    const link_path_z = try allocator.dupeZ(u8, link_path);
-    defer allocator.free(link_path_z);
-    const target_len = std.c.readlink(link_path_z.ptr, &buffer, buffer.len);
-    if (target_len < 0) return null;
-    return try allocator.dupe(u8, buffer[0..@intCast(target_len)]);
+    const target_len = std.Io.Dir.readLinkAbsolute(runtime.io(), link_path, &buffer) catch return null;
+    return try allocator.dupe(u8, buffer[0..target_len]);
 }
 
 fn fileRequestFromRaw(raw_file_info: ?*const RawFileInfo) ?filesystem.FileRequestInfo {
