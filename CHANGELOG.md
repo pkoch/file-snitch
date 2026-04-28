@@ -23,11 +23,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Changed enrollment projection to mount guarded files from the state
   projection directory by `object_id`, instead of mounting over the target's
   original parent directory.
+- Changed the projection state directory to honor `XDG_STATE_HOME`, falling
+  back to `$HOME/.local/state`.
 
 ### Fixed
 
 - Fixed invalid projection states caused by unsafe or duplicate enrollment
   object IDs and unsupported transient rename targets.
+- Fixed `doctor` service checks so absent or stale service files do not fail
+  because unrelated host-loaded user services are stale.
 
 ## [0.6.1] - 2026-04-27
 
