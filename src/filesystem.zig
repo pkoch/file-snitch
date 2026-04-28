@@ -484,7 +484,7 @@ pub const Model = struct {
         context: AccessContext,
     ) i32 {
         const file = self.findFile(path);
-        if (file == null and !isTransientVirtualPath(path)) {
+        if (file == null) {
             const lookup = self.lookupPath(path) catch |err| return mapFsError(err);
             return switch (lookup.open_kind) {
                 .directory => errnoCode(.ISDIR),

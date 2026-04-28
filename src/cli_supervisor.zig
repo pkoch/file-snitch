@@ -163,6 +163,9 @@ fn reconcileManagedProjectionChild(
 
 fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            return true;
+        },
         error.NoDevice => {
             std.log.warn("stale projection mount at {s}; attempting to unmount before restart", .{projection_path});
             bestEffortUnmount(projection_path);

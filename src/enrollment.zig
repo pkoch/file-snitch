@@ -69,19 +69,30 @@ pub fn ensureProjectionSymlink(
     allocator: std.mem.Allocator,
     target_path: []const u8,
     projection_path: []const u8,
-) !void {
+) !bool {
     switch (try symlinkState(allocator, target_path)) {
-        .missing => try createSymlink(allocator, projection_path, target_path),
+        .missing => {
+            try createSymlink(allocator, projection_path, target_path);
+            return true;
+        },
         .symlink => {
             const current_target = try readSymlinkAlloc(allocator, target_path);
             defer allocator.free(current_target);
             if (std.mem.eql(u8, current_target, projection_path)) {
-                return;
+                return false;
             }
             return error.PathAlreadyExists;
         },
         .other => return error.PathAlreadyExists,
     }
+}
+
+pub fn removeProjectionSymlinkIfCreated(
+    allocator: std.mem.Allocator,
+    target_path: []const u8,
+    projection_path: []const u8,
+) !void {
+    try removeSymlinkIfPresent(allocator, target_path, projection_path);
 }
 
 pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u8) ![]u8 {

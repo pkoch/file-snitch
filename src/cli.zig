@@ -650,7 +650,9 @@ fn runStaticPolicy(command: RunCommand) !void {
     var guarded_store = try store.Backend.initPass(allocator);
     errdefer guarded_store.deinit(allocator);
 
-    try prepareProjectionPlan(&projection_plan);
+    var prepared_projection_plan = try prepareProjectionPlan(&projection_plan);
+    defer prepared_projection_plan.deinit();
+    errdefer prepared_projection_plan.rollback();
 
     for (projection_plan.entries, 0..) |entry, entry_index| {
         guarded_entries[entry_index] = .{
@@ -841,13 +843,51 @@ fn openStatusFifo(path: []const u8) !std.Io.File {
     return std.Io.Dir.cwd().openFile(runtime.io(), path, .{ .mode = .write_only });
 }
 
-fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !void {
+const PreparedProjectionPlan = struct {
+    projection_plan: *const config.ProjectionPlan,
+    created_symlinks: []bool,
+
+    fn deinit(self: *PreparedProjectionPlan) void {
+        allocator.free(self.created_symlinks);
+        self.* = undefined;
+    }
+
+    fn rollback(self: *PreparedProjectionPlan) void {
+        for (self.projection_plan.entries, 0..) |entry, index| {
+            if (!self.created_symlinks[index]) continue;
+            enrollment_ops.removeProjectionSymlinkIfCreated(
+                allocator,
+                entry.target_path,
+                entry.projection_path,
+            ) catch |err| {
+                std.log.warn("failed to roll back projection symlink {s} -> {s}: {}", .{
+                    entry.target_path,
+                    entry.projection_path,
+                    err,
+                });
+            };
+            self.created_symlinks[index] = false;
+        }
+    }
+};
+
+fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !PreparedProjectionPlan {
     try std.Io.Dir.cwd().createDirPath(runtime.io(), projection_plan.root_path);
 
-    for (projection_plan.entries) |entry| {
+    var prepared: PreparedProjectionPlan = .{
+        .projection_plan = projection_plan,
+        .created_symlinks = try allocator.alloc(bool, projection_plan.entries.len),
+    };
+    @memset(prepared.created_symlinks, false);
+    errdefer {
+        prepared.rollback();
+        prepared.deinit();
+    }
+
+    for (projection_plan.entries, 0..) |entry, index| {
         const projection_parent = std.fs.path.dirname(entry.projection_path) orelse return error.InvalidPath;
         try std.Io.Dir.cwd().createDirPath(runtime.io(), projection_parent);
-        enrollment_ops.ensureProjectionSymlink(allocator, entry.target_path, entry.projection_path) catch |err| switch (err) {
+        prepared.created_symlinks[index] = enrollment_ops.ensureProjectionSymlink(allocator, entry.target_path, entry.projection_path) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 std.debug.print(
                     "error: target path exists and is not this projection symlink: {s}\n",
@@ -858,6 +898,8 @@ fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !void {
             else => return err,
         };
     }
+
+    return prepared;
 }
 
 fn parsePolicyFlag(args: []const []const u8, index: *usize, policy_path: *[]const u8) !void {

@@ -429,6 +429,12 @@ test "transient files cannot rename into regular projection entries" {
 
     var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
     defer session.deinit();
+    const context: filesystem.AccessContext = .{ .pid = 1234, .uid = 1000, .gid = 1000 };
+
+    try std.testing.expectEqual(
+        -@as(i32, @intFromEnum(std.posix.E.NOENT)),
+        session.state.filesystem.openFile("/._missing", .{ .flags = c.O_RDONLY, .handle_id = 0xfeed }, context),
+    );
 
     try session.debugCreateFile("/._tmp", 0o600);
     try std.testing.expectError(
@@ -615,6 +621,8 @@ test "daemon sends home-relative display labels to prompt broker" {
 
     const source_guarded_path = try std.fs.path.join(allocator, &.{ source_parent, "config" });
     defer allocator.free(source_guarded_path);
+    const projection_root = try std.fs.path.join(allocator, &.{ canonical_home, ".local/state/file-snitch/projection" });
+    defer allocator.free(projection_root);
 
     const lock_anchor_path = try home.childPathAlloc("config.lock");
     defer allocator.free(lock_anchor_path);
@@ -640,10 +648,11 @@ test "daemon sends home-relative display labels to prompt broker" {
     };
 
     var session = try daemon.Session.initProjection(allocator, .{
-        .mount_path = source_parent,
+        .mount_path = projection_root,
         .guarded_entries = &.{.{
             .object_id = "config",
             .lock_anchor_path = lock_anchor_path,
+            .policy_path = source_guarded_path,
         }},
         .guarded_store = &guarded_store,
         .run_in_foreground = true,
@@ -1391,6 +1400,8 @@ test "live policy reload suppresses repeated prompt without remount" {
     defer allocator.free(source_parent);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
     defer allocator.free(source_guarded_path);
+    const projection_root = try currentHomePathAlloc(allocator, ".local/state/file-snitch/projection");
+    defer allocator.free(projection_root);
     const policy_path = try temp_dir.childPathAlloc("policy.yml");
     defer allocator.free(policy_path);
     const lock_anchor_path = try temp_dir.childPathAlloc("live-policy.lock");
@@ -1412,7 +1423,7 @@ test "live policy reload suppresses repeated prompt without remount" {
     var mock_state: store.MockState = .{};
     defer mock_state.deinit(allocator);
     var guarded_store = store.Backend.initMock(&mock_state);
-    try guarded_store.putObject(allocator, "config", .{
+    try guarded_store.putObject(allocator, "kube-config", .{
         .metadata = .{
             .mode = 0o600,
             .uid = 1000,
@@ -1431,10 +1442,11 @@ test "live policy reload suppresses repeated prompt without remount" {
     };
 
     var session = try daemon.Session.initProjection(allocator, .{
-        .mount_path = source_parent,
+        .mount_path = projection_root,
         .guarded_entries = &.{.{
-            .object_id = "config",
+            .object_id = "kube-config",
             .lock_anchor_path = lock_anchor_path,
+            .policy_path = source_guarded_path,
         }},
         .guarded_store = &guarded_store,
         .run_in_foreground = true,
@@ -1453,7 +1465,7 @@ test "live policy reload suppresses repeated prompt without remount" {
         .executable_path = "/usr/bin/demo",
     };
 
-    const first_len = session.state.filesystem.readInto("/config", 0, &buffer, access_context, null);
+    const first_len = session.state.filesystem.readInto("/kube-config", 0, &buffer, access_context, null);
     try std.testing.expect(first_len > 0);
     try std.testing.expectEqualStrings("guarded kubeconfig\n", buffer[0..@intCast(first_len)]);
     try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
@@ -1471,7 +1483,7 @@ test "live policy reload suppresses repeated prompt without remount" {
         try writable_policy.saveToFile();
     }
 
-    const second_len = session.state.filesystem.readInto("/config", 0, &buffer, access_context, null);
+    const second_len = session.state.filesystem.readInto("/kube-config", 0, &buffer, access_context, null);
     try std.testing.expect(second_len > 0);
     try std.testing.expectEqualStrings("guarded kubeconfig\n", buffer[0..@intCast(second_len)]);
     try std.testing.expectEqual(@as(usize, 1), prompt_context.count);

@@ -591,8 +591,11 @@ fn writeDebugDossier(
         try writer.writeByte('\n');
     }
 
+    const redacted_report = try redactHomeOccurrencesAlloc(allocator, home_dir, report);
+    defer allocator.free(redacted_report);
+
     try writer.writeAll("## Doctor Output\n\n```text\n");
-    try writer.writeAll(report);
+    try writer.writeAll(redacted_report);
     if (report.len == 0 or report[report.len - 1] != '\n') {
         try writer.writeByte('\n');
     }
@@ -946,6 +949,19 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
     }
     const suffix = path[home_dir.len..];
     return std.fmt.allocPrint(allocator, "~{s}", .{suffix});
+}
+
+fn redactHomeOccurrencesAlloc(allocator: std.mem.Allocator, home_dir: []const u8, text: []const u8) ![]u8 {
+    const replacement = "~";
+    const count = std.mem.count(u8, text, home_dir);
+    if (count == 0) {
+        return allocator.dupe(u8, text);
+    }
+
+    const redacted_len = text.len - (count * home_dir.len) + (count * replacement.len);
+    const redacted = try allocator.alloc(u8, redacted_len);
+    _ = std.mem.replace(u8, text, home_dir, replacement, redacted);
+    return redacted;
 }
 
 fn appendUserServicesReport(

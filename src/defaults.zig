@@ -30,7 +30,7 @@ pub const pass_bin_env = "FILE_SNITCH_PASS_BIN";
 
 /// Override the state directory used for the FUSE projection root. Falls back
 /// to `$HOME/.local/state`.
-pub const xdg_state_path_env = "XDG_STATE_PATH";
+pub const xdg_state_path_env = "XDG_STATE_HOME";
 
 /// Override the prompt timeout in milliseconds. Parsed as an unsigned integer.
 pub const prompt_timeout_ms_env = "FILE_SNITCH_PROMPT_TIMEOUT_MS";

@@ -174,8 +174,9 @@ run_demo_controller() {
     sleep 1.2
     pane_send "$user_pane" "fs enroll ~/.kube/config"
     wait_for_file_contains "$policy_file" "$home_dir/.kube/config"
-    mount_paths=("$home_dir/.local/state/file-snitch/projection")
-    wait_for_mount_active_without_pid "$home_dir/.kube"
+    projection_mount_path="$home_dir/.local/state/file-snitch/projection"
+    mount_paths=("$projection_mount_path")
+    wait_for_mount_active_without_pid "$projection_mount_path"
     sleep 0.8
     pane_send "$user_pane" "ls ~/.kube"
     sleep 1.0
@@ -196,7 +197,7 @@ run_demo_controller() {
     tmux send-keys -t "$agent_pane" Enter
     sleep 1.2
     tmux send-keys -t "$daemon_pane" C-c
-    wait_for_mount_gone_without_pid "$home_dir/.kube"
+    wait_for_mount_gone_without_pid "$projection_mount_path"
     sleep 0.8
     pane_send "$user_pane" "test -e ~/.kube/config && echo present || echo missing"
     sleep 1.0
