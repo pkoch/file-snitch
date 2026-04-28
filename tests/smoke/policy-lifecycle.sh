@@ -61,6 +61,14 @@ main() {
   grep -F "ok: guarded object exists in store: pass:file-snitch/$object_id" <<<"$doctor_output" >/dev/null || fail "expected doctor to validate the guarded object"
   grep -F "ok: target path currently absent: $home_dir/.kube/config" <<<"$doctor_output" >/dev/null || fail "expected doctor to report the evacuated target path"
 
+  printf 'wrong target\n' >"$home_dir/.kube/wrong-target"
+  ln -s "$home_dir/.kube/wrong-target" "$home_dir/.kube/config"
+  if unexpected_symlink_output="$(capture_file_snitch doctor)"; then
+    fail "expected doctor to reject an enrolled path symlinked to the wrong target"
+  fi
+  grep -F "error: target path points at an unexpected symlink target: $home_dir/.kube/config -> $home_dir/.kube/wrong-target (expected $home_dir/.local/state/file-snitch/projection/$object_id)" <<<"$unexpected_symlink_output" >/dev/null || fail "expected doctor to report the unexpected target symlink"
+  rm "$home_dir/.kube/config" "$home_dir/.kube/wrong-target"
+
   cat >"$policy_file" <<EOF
 version: 1
 enrollments:

@@ -854,6 +854,9 @@ const PreparedProjectionPlan = struct {
 
     fn rollback(self: *PreparedProjectionPlan) void {
         for (self.projection_plan.entries, 0..) |entry, index| {
+            if (!self.created_symlinks[index]) {
+                continue;
+            }
             enrollment_ops.removeProjectionSymlinkIfCreated(
                 allocator,
                 entry.target_path,
@@ -1020,4 +1023,63 @@ test "parse command routes services render" {
 
 test "parse command rejects services render without output dir" {
     try std.testing.expectError(error.InvalidUsage, parseCommand(&.{ "services", "render" }));
+}
+
+test "projection prepare rollback only removes symlinks it created" {
+    const test_id = std.crypto.random.int(u64);
+    const test_root = try std.fmt.allocPrint(allocator, ".zig-cache/file-snitch-projection-rollback-{x}", .{test_id});
+    defer allocator.free(test_root);
+    defer std.Io.Dir.cwd().deleteTree(runtime.io(), test_root) catch {};
+
+    const target_parent = try std.fs.path.join(allocator, &.{ test_root, "targets" });
+    defer allocator.free(target_parent);
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), target_parent);
+
+    const projection_root = try std.fs.path.join(allocator, &.{ test_root, "projection" });
+    defer allocator.free(projection_root);
+    const existing_target = try std.fs.path.join(allocator, &.{ target_parent, "existing" });
+    defer allocator.free(existing_target);
+    const created_target = try std.fs.path.join(allocator, &.{ target_parent, "created" });
+    defer allocator.free(created_target);
+    const blocked_target = try std.fs.path.join(allocator, &.{ target_parent, "blocked" });
+    defer allocator.free(blocked_target);
+    const existing_projection = try std.fs.path.join(allocator, &.{ projection_root, "existing" });
+    defer allocator.free(existing_projection);
+    const created_projection = try std.fs.path.join(allocator, &.{ projection_root, "created" });
+    defer allocator.free(created_projection);
+    const blocked_projection = try std.fs.path.join(allocator, &.{ projection_root, "blocked" });
+    defer allocator.free(blocked_projection);
+
+    try std.Io.Dir.cwd().symLink(runtime.io(), existing_projection, existing_target, .{});
+    var blocker = try std.Io.Dir.cwd().createFile(runtime.io(), blocked_target, .{});
+    blocker.close(runtime.io());
+
+    var plan: config.ProjectionPlan = .{
+        .allocator = allocator,
+        .root_path = try allocator.dupe(u8, projection_root),
+        .entries = try allocator.alloc(config.ProjectionEntry, 3),
+    };
+    defer plan.deinit();
+    plan.entries[0] = .{
+        .target_path = try allocator.dupe(u8, existing_target),
+        .projection_path = try allocator.dupe(u8, existing_projection),
+        .object_id = try allocator.dupe(u8, "existing"),
+    };
+    plan.entries[1] = .{
+        .target_path = try allocator.dupe(u8, created_target),
+        .projection_path = try allocator.dupe(u8, created_projection),
+        .object_id = try allocator.dupe(u8, "created"),
+    };
+    plan.entries[2] = .{
+        .target_path = try allocator.dupe(u8, blocked_target),
+        .projection_path = try allocator.dupe(u8, blocked_projection),
+        .object_id = try allocator.dupe(u8, "blocked"),
+    };
+
+    try std.testing.expectError(error.InvalidUsage, prepareProjectionPlan(&plan));
+
+    const existing_symlink = (try enrollment_ops.symlinkTargetAlloc(allocator, existing_target)).?;
+    defer allocator.free(existing_symlink);
+    try std.testing.expectEqualStrings(existing_projection, existing_symlink);
+    try std.testing.expectEqual(@as(?[]u8, null), try enrollment_ops.symlinkTargetAlloc(allocator, created_target));
 }

@@ -353,7 +353,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         else => {},
     }
 
-    for (loaded_policy.enrollments) |entry| {
+    for (loaded_policy.enrollments, projection_plan.entries) |entry, projection_entry| {
         if (!enrollment.pathIsWithinDirectory(entry.path, home_dir)) {
             has_errors = true;
             try report_writer.print(
@@ -412,7 +412,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             try report_writer.print("error: guarded object missing from store: {s}\n", .{store_ref});
         }
 
-        try appendTargetPathReport(allocator, report_writer, &has_errors, entry.path);
+        try appendTargetPathReport(allocator, report_writer, &has_errors, entry.path, projection_entry.projection_path);
     }
 
     for (loaded_policy.decisions) |decision| {
@@ -450,6 +450,7 @@ fn appendTargetPathReport(
     writer: anytype,
     has_errors: *bool,
     target_path: []const u8,
+    projection_path: []const u8,
 ) !void {
     const maybe_symlink_target = enrollment.symlinkTargetAlloc(allocator, target_path) catch |err| {
         has_errors.* = true;
@@ -465,6 +466,15 @@ fn appendTargetPathReport(
     };
     if (maybe_symlink_target) |symlink_target| {
         defer allocator.free(symlink_target);
+        if (!std.mem.eql(u8, symlink_target, projection_path)) {
+            has_errors.* = true;
+            try writer.print(
+                "error: target path points at an unexpected symlink target: {s} -> {s} (expected {s})\n",
+                .{ target_path, symlink_target, projection_path },
+            );
+            return;
+        }
+
         const symlink_inspect_path_owned = !std.fs.path.isAbsolute(symlink_target);
         const symlink_inspect_path = if (symlink_inspect_path_owned)
             try std.fs.path.join(allocator, &.{ std.fs.path.dirname(target_path) orelse ".", symlink_target })
