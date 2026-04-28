@@ -131,7 +131,12 @@ extern int fsn_daemon_write(
     size_t size,
     const char *buf
 );
-extern int fsn_daemon_truncate(void *daemon_state, const struct fsn_bridge_request *request, uint64_t size);
+extern int fsn_daemon_truncate(
+    void *daemon_state,
+    const struct fsn_bridge_request *request,
+    const struct fsn_bridge_file_info *file_info,
+    uint64_t size
+);
 extern int fsn_daemon_chmod(void *daemon_state, const struct fsn_bridge_request *request, uint32_t mode);
 extern int fsn_daemon_chown(void *daemon_state, const struct fsn_bridge_request *request, uint32_t uid, uint32_t gid);
 extern int fsn_daemon_flush(
@@ -661,11 +666,11 @@ static int fsn_fuse_write(
 static int
 #ifdef __linux__
 fsn_fuse_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
-    (void)fi;
 #else
 fsn_fuse_truncate(const char *path, off_t size) {
 #endif
     struct fsn_bridge_request request;
+    struct fsn_bridge_file_info file_info;
     struct fsn_fuse_session *session;
 
     if (path == NULL || size < 0) {
@@ -677,7 +682,12 @@ fsn_fuse_truncate(const char *path, off_t size) {
         return -EINVAL;
     }
 
-    return fsn_daemon_truncate(session->daemon_state, &request, (uint64_t)size);
+#ifdef __linux__
+    fsn_capture_file_info(fi, &file_info);
+    return fsn_daemon_truncate(session->daemon_state, &request, &file_info, (uint64_t)size);
+#else
+    return fsn_daemon_truncate(session->daemon_state, &request, NULL, (uint64_t)size);
+#endif
 }
 
 static int

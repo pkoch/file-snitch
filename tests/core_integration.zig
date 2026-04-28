@@ -10,6 +10,7 @@ const prompt = app_src.prompt;
 const runtime = app_src.runtime;
 const store = app_src.store;
 const c = @cImport({
+    @cInclude("errno.h");
     @cInclude("fcntl.h");
     @cInclude("stdlib.h");
 });
@@ -751,6 +752,68 @@ test "open write handle grants mutation access until release" {
         session.state.filesystem.writeFileWithRequest(guarded_note_path, 0, "edit", context, request),
     );
     try std.testing.expectEqual(@as(usize, 3), prompt_context.count);
+}
+
+test "recorded handle permissions cannot be widened by request flags" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const guarded_note_path = "/handle-granted-note.txt";
+    const lock_anchor_path = try fixture.childPathAlloc("handle-granted-note.lock");
+    defer allocator.free(lock_anchor_path);
+
+    var preseed_store = fixture.guardedStore();
+    try preseed_store.putObject(allocator, "handle-granted-note.txt", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 1000,
+            .gid = 1000,
+            .atime_nsec = 0,
+            .mtime_nsec = 0,
+        },
+        .content = "guarded note\n",
+    });
+
+    const guarded_entries = &.{filesystem.GuardedEntryConfig{
+        .object_id = "handle-granted-note.txt",
+        .lock_anchor_path = lock_anchor_path,
+    }};
+
+    var prompt_context = CountingPromptContext{
+        .response = .{ .decision = .allow },
+    };
+    var session = try initSession(
+        allocator,
+        &fixture,
+        guarded_entries,
+        .prompt,
+        &.{},
+        countingPromptBroker(&prompt_context),
+    );
+    defer session.deinit();
+
+    const context: filesystem.AccessContext = .{ .pid = 1234, .uid = 1000, .gid = 1000 };
+    const readonly_open_request: filesystem.FileRequestInfo = .{
+        .flags = c.O_RDONLY,
+        .handle_id = 0xfeed,
+    };
+    const widened_write_request: filesystem.FileRequestInfo = .{
+        .flags = c.O_RDWR,
+        .handle_id = 0xfeed,
+    };
+
+    try std.testing.expectEqual(@as(i32, 0), session.state.filesystem.openFile(guarded_note_path, readonly_open_request, context));
+    session.state.filesystem.recordOpen(guarded_note_path, context, readonly_open_request, 0, null);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+
+    const widened_write = session.state.filesystem.writeFileWithRequest(guarded_note_path, 0, "edit", context, widened_write_request);
+    try std.testing.expectEqual(-@as(i32, c.EBADF), widened_write);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
+
+    const widened_truncate = session.state.filesystem.truncateFileWithRequest(guarded_note_path, 4, context, widened_write_request);
+    try std.testing.expectEqual(-@as(i32, c.EBADF), widened_truncate);
+    try std.testing.expectEqual(@as(usize, 1), prompt_context.count);
 }
 
 test "directory operations fail explicitly in the file-only spike" {
@@ -1640,6 +1703,8 @@ test "projection exposes the guarded file without backing siblings" {
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
+    const projection_root = try temp_dir.childPathAlloc("projection");
+    defer allocator.free(projection_root);
     const lock_anchor_path = try temp_dir.childPathAlloc("guarded.lock");
     defer allocator.free(lock_anchor_path);
     const source_guarded_path = try std.fmt.allocPrint(allocator, "{s}/config", .{source_parent});
@@ -1648,6 +1713,7 @@ test "projection exposes the guarded file without backing siblings" {
     defer allocator.free(sibling_path);
 
     try makeDirAbsolute(source_parent);
+    try makeDirAbsolute(projection_root);
 
     var source_guarded_file = try createFileAbsolute(source_guarded_path, .{ .truncate = true });
     defer source_guarded_file.close();
@@ -1672,10 +1738,11 @@ test "projection exposes the guarded file without backing siblings" {
     });
 
     var session = try daemon.Session.initProjection(allocator, .{
-        .mount_path = source_parent,
+        .mount_path = projection_root,
         .guarded_entries = &.{.{
             .object_id = "config",
             .lock_anchor_path = lock_anchor_path,
+            .policy_path = source_guarded_path,
         }},
         .guarded_store = &guarded_store,
         .run_in_foreground = true,
@@ -1716,6 +1783,8 @@ test "projection can expose multiple guarded siblings under one mount" {
     defer temp_dir.deinit();
     const source_parent = try temp_dir.childPathAlloc("source");
     defer allocator.free(source_parent);
+    const projection_root = try temp_dir.childPathAlloc("projection");
+    defer allocator.free(projection_root);
     const first_lock_anchor_path = try temp_dir.childPathAlloc("first.lock");
     defer allocator.free(first_lock_anchor_path);
     const second_lock_anchor_path = try temp_dir.childPathAlloc("second.lock");
@@ -1728,6 +1797,7 @@ test "projection can expose multiple guarded siblings under one mount" {
     defer allocator.free(sibling_path);
 
     try makeDirAbsolute(source_parent);
+    try makeDirAbsolute(projection_root);
 
     {
         var file = try createFileAbsolute(first_source_path, .{ .truncate = true });
@@ -1770,15 +1840,17 @@ test "projection can expose multiple guarded siblings under one mount" {
     });
 
     var session = try daemon.Session.initProjection(allocator, .{
-        .mount_path = source_parent,
+        .mount_path = projection_root,
         .guarded_entries = &.{
             .{
                 .object_id = "a.key",
                 .lock_anchor_path = first_lock_anchor_path,
+                .policy_path = first_source_path,
             },
             .{
                 .object_id = "b.key",
                 .lock_anchor_path = second_lock_anchor_path,
+                .policy_path = second_source_path,
             },
         },
         .guarded_store = &guarded_store,

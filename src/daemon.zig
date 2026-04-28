@@ -758,10 +758,14 @@ pub export fn fsn_daemon_write(
 pub export fn fsn_daemon_truncate(
     daemon_state: ?*anyopaque,
     raw_request: *const RawRequest,
+    raw_file_info: ?*const RawFileInfo,
     size: u64,
 ) c_int {
     var request = requireDecodedContext(daemon_state, raw_request) orelse return errnoCode(.INVAL);
     defer request.deinit();
+    if (fileRequestFromRaw(raw_file_info)) |file_request| {
+        return @intCast(request.state.filesystem.truncateFileWithRequest(request.path, size, request.context, file_request));
+    }
     return @intCast(request.state.filesystem.truncateFile(request.path, size, request.context));
 }
 

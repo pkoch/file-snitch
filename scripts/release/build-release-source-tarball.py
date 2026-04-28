@@ -85,8 +85,8 @@ def main() -> None:
                     archive_path = prefix / rel_path.as_posix()
                     try:
                         file_info = source_path.lstat()
-                    except FileNotFoundError:
-                        raise SystemExit(f"error: tracked file not found: {source_path}")
+                    except FileNotFoundError as exc:
+                        raise SystemExit(f"error: tracked file not found: {source_path}") from exc
 
                     for parent in archive_path.parents:
                         parent_str = str(parent)

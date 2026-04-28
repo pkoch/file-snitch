@@ -186,9 +186,12 @@ const HandleGrantTable = struct {
         }
     }
 
-    fn hasActiveGrant(self: *const HandleGrantTable, handle_id: u64, path: []const u8, pid: u32) bool {
-        const grant = self.entries.get(handle_id) orelse return false;
-        return grant.pid == pid and std.mem.eql(u8, grant.path, path);
+    fn activeGrant(self: *const HandleGrantTable, handle_id: u64, path: []const u8, pid: u32) ?HandleGrant {
+        const grant = self.entries.get(handle_id) orelse return null;
+        if (grant.pid != pid or !std.mem.eql(u8, grant.path, path)) {
+            return null;
+        }
+        return grant;
     }
 
     fn hasActiveWriteGrant(self: *const HandleGrantTable, path: []const u8, pid: u32) bool {
@@ -601,8 +604,8 @@ pub const Model = struct {
         if (file.backing_object_id != null or isTransientVirtualPath(path)) {
             const auth_result = if (file_request) |request| blk: {
                 if (request.handle_id) |handle_id| {
-                    if (self.handle_grants.hasActiveGrant(handle_id, path, context.pid)) {
-                        break :blk authorizeReadFromOpenFlags(request.flags);
+                    if (self.handle_grants.activeGrant(handle_id, path, context.pid)) |grant| {
+                        break :blk if (grant.can_read) 0 else errnoCode(.BADF);
                     }
                 }
                 break :blk self.authorizeAccess(path, .read, context);
@@ -690,7 +693,19 @@ pub const Model = struct {
         size: u64,
         context: AccessContext,
     ) i32 {
-        const result = self.truncateFileInternal(path, size, context);
+        const result = self.truncateFileInternal(path, size, context, null);
+        self.recordAuditLiteral("truncate", path, result, context);
+        return result;
+    }
+
+    pub fn truncateFileWithRequest(
+        self: *Model,
+        path: []const u8,
+        size: u64,
+        context: AccessContext,
+        file_request: FileRequestInfo,
+    ) i32 {
+        const result = self.truncateFileInternal(path, size, context, file_request);
         self.recordAuditLiteral("truncate", path, result, context);
         return result;
     }
@@ -1079,8 +1094,8 @@ pub const Model = struct {
         if (file.backing_object_id != null or isTransientVirtualPath(path)) {
             const auth_result = if (file_request) |request| blk: {
                 if (request.handle_id) |handle_id| {
-                    if (self.handle_grants.hasActiveGrant(handle_id, path, context.pid)) {
-                        break :blk authorizeWriteFromOpenFlags(request.flags);
+                    if (self.handle_grants.activeGrant(handle_id, path, context.pid)) |grant| {
+                        break :blk if (grant.can_write) 0 else errnoCode(.BADF);
                     }
                 }
                 break :blk self.authorizeAccess(path, .write, context);
@@ -1110,11 +1125,21 @@ pub const Model = struct {
         path: []const u8,
         size: u64,
         context: AccessContext,
+        file_request: ?FileRequestInfo,
     ) i32 {
         const file = self.findFile(path) orelse return errnoCode(.NOENT);
 
         if (file.backing_object_id != null or isTransientVirtualPath(path)) {
-            const auth_result = if (self.handle_grants.hasActiveWriteGrant(path, context.pid))
+            const auth_result = if (file_request) |request| blk: {
+                if (request.handle_id) |handle_id| {
+                    if (self.handle_grants.activeGrant(handle_id, path, context.pid)) |grant| {
+                        break :blk if (grant.can_write) 0 else errnoCode(.BADF);
+                    }
+                } else if (self.handle_grants.hasActiveWriteGrant(path, context.pid)) {
+                    break :blk 0;
+                }
+                break :blk self.authorizeAccess(path, .write, context);
+            } else if (self.handle_grants.hasActiveWriteGrant(path, context.pid))
                 0
             else
                 self.authorizeAccess(path, .write, context);
@@ -1894,8 +1919,6 @@ const blockCountForSize = util.blockCountForSize;
 const currentUid = util.currentUid;
 const currentGid = util.currentGid;
 const accessClassForOpenFlags = util.accessClassForOpenFlags;
-const authorizeReadFromOpenFlags = util.authorizeReadFromOpenFlags;
-const authorizeWriteFromOpenFlags = util.authorizeWriteFromOpenFlags;
 const formatOpenPromptLabel = util.formatOpenPromptLabel;
 const formatHomeRelativePathAlloc = util.formatHomeRelativePathAlloc;
 const accessClassLabel = util.accessClassLabel;
