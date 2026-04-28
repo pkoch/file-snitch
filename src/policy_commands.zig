@@ -1191,9 +1191,11 @@ fn macosLoadedServiceMatchesRender(
     defer allocator.free(loaded_pass_bin);
     const loaded_path = (try launchctlStringValueAlloc(allocator, loaded, "PATH")) orelse return false;
     defer allocator.free(loaded_path);
+    const rendered_path = (try plistStringValueAlloc(allocator, service.contents, "PATH")) orelse return false;
+    defer allocator.free(rendered_path);
 
     return std.mem.eql(u8, loaded_pass_bin, rendered.pass_bin_path) and
-        std.mem.eql(u8, loaded_path, rendered.service_path);
+        std.mem.eql(u8, loaded_path, rendered_path);
 }
 
 fn appendFuseReport(writer: anytype, has_errors: *bool) !void {
