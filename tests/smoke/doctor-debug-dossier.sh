@@ -65,7 +65,10 @@ main() {
 
   grep -F "policy: ok ($policy_file)" <<<"$inaccessible_output" >/dev/null || fail "expected doctor to keep reporting policy status"
   grep -F "error: target path could not be inspected: $home_dir/.kube/config:" <<<"$inaccessible_output" >/dev/null || fail "expected doctor to report the inaccessible target path"
-  grep -F "error: target path could not be inspected: $home_dir/.kube/config:" "$inaccessible_dossier_path" >/dev/null || fail "expected dossier to include the inaccessible target path report"
+  grep -F "error: target path could not be inspected: ~/.kube/config:" "$inaccessible_dossier_path" >/dev/null || fail "expected dossier to include the redacted inaccessible target path report"
+  if grep -F "$home_dir/.kube/config" "$inaccessible_dossier_path" >/dev/null 2>&1; then
+    fail "expected inaccessible target dossier to redact the home path"
+  fi
 }
 
 main "$@"
