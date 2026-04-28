@@ -1028,6 +1028,8 @@ fn redactHomePathAlloc(allocator: std.mem.Allocator, home_dir: []const u8, path:
 
 fn redactHomeOccurrencesAlloc(allocator: std.mem.Allocator, home_dir: []const u8, text: []const u8) ![]u8 {
     const replacement = "~";
+    // Diagnostic bundles may contain embedded paths in command output; redacting
+    // raw byte occurrences favors privacy even if it over-redacts path-like text.
     const count = std.mem.count(u8, text, home_dir);
     if (count == 0) {
         return allocator.dupe(u8, text);
@@ -1085,6 +1087,9 @@ fn appendRenderedServiceReport(
         service,
         label,
     );
+    if (!installed_matches) {
+        return;
+    }
     try appendLoadedServiceReport(
         allocator,
         writer,
@@ -1092,7 +1097,6 @@ fn appendRenderedServiceReport(
         rendered,
         service,
         label,
-        installed_matches,
     );
 }
 
@@ -1135,20 +1139,15 @@ fn appendLoadedServiceReport(
     rendered: user_services.RenderedServices,
     service: user_services.RenderedService,
     label: []const u8,
-    installed_matches: bool,
 ) !void {
     const loaded = user_services.loadedConfigAlloc(allocator, rendered.platform, service) catch |err| {
         has_errors.* = true;
         try writer.print("error: {s} loaded config could not be inspected: {}\n", .{ label, err });
         return;
     } orelse {
-        if (installed_matches) {
-            has_errors.* = true;
-            try writer.print("error: {s} service file matches current render, but the service manager has no loaded config\n", .{label});
-            try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
-        } else {
-            try writer.print("warn: {s} loaded config is absent\n", .{label});
-        }
+        has_errors.* = true;
+        try writer.print("error: {s} service file matches current render, but the service manager has no loaded config\n", .{label});
+        try writer.writeAll("hint: rerun `file-snitch services install --bin \"$(command -v file-snitch)\" --pass-bin \"$(command -v pass)\"`\n");
         return;
     };
     defer allocator.free(loaded);

@@ -307,6 +307,8 @@ pub const PolicyFile = struct {
         const root_path = try defaultProjectionRootPathAlloc(allocator);
         errdefer allocator.free(root_path);
 
+        // Keep entries in enrollment order; policy doctor pairs them with
+        // enrollments when reporting target/projection state.
         var entries = try allocator.alloc(ProjectionEntry, self.enrollments.len);
         errdefer allocator.free(entries);
 

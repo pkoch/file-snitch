@@ -164,6 +164,7 @@ fn reconcileManagedProjectionChild(
 fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
+            // The projection root is normally created by the child on first use.
             return true;
         },
         error.NoDevice => {
