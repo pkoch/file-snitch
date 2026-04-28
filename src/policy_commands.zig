@@ -452,7 +452,19 @@ fn appendTargetPathReport(
     target_path: []const u8,
     projection_path: []const u8,
 ) !void {
-    if (try enrollment.symlinkTargetAlloc(allocator, target_path)) |symlink_target| {
+    const maybe_symlink_target = enrollment.symlinkTargetAlloc(allocator, target_path) catch |err| {
+        has_errors.* = true;
+        if (err == error.NoDevice) {
+            try writer.print(
+                "error: target path is on a stale or inaccessible device: {s}\nhint: restart `file-snitch run`; if this persists, unmount the affected parent directory and retry\n",
+                .{target_path},
+            );
+            return;
+        }
+        try writer.print("error: target path could not be inspected: {s}: {}\n", .{ target_path, err });
+        return;
+    };
+    if (maybe_symlink_target) |symlink_target| {
         defer allocator.free(symlink_target);
         if (std.mem.eql(u8, symlink_target, projection_path)) {
             const projection_kind = enrollment.pathKind(projection_path) catch |err| {
