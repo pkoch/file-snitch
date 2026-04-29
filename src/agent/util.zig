@@ -132,8 +132,16 @@ pub fn removeSocketFileIfStale(path: []const u8) !void {
     };
     if (stat.kind != .unix_domain_socket) return error.InvalidSocketPath;
 
-    if (try socketPathHasLiveListener(path)) return error.SocketPathInUse;
-    try removeStaleSocketFile(path);
+    const has_live_listener = socketPathHasLiveListener(path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    if (has_live_listener) return error.SocketPathInUse;
+
+    removeStaleSocketFile(path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
 }
 
 pub fn removeStaleSocketFile(path: []const u8) !void {

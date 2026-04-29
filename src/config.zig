@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const core = @import("config/core.zig");
 
 pub const Enrollment = core.Enrollment;
@@ -14,3 +16,7 @@ pub const acquirePolicyLock = core.acquirePolicyLock;
 pub const loadFromFile = core.loadFromFile;
 pub const defaultPolicyPathAlloc = core.defaultPolicyPathAlloc;
 pub const defaultProjectionRootPathAlloc = core.defaultProjectionRootPathAlloc;
+
+test {
+    std.testing.refAllDecls(core);
+}

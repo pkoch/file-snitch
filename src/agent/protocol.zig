@@ -168,7 +168,7 @@ fn resolveViaAgent(context: *@import("core.zig").RequesterContext, request: prom
             continue;
         }
         if (std.mem.eql(u8, message_type, "decision")) {
-            const response = try responseFromFrame(context.allocator, frame);
+            const response = try responseFromFrame(context.allocator, frame, request_id);
             try persistRememberedDecision(context, request, response);
             return response;
         }
@@ -486,7 +486,7 @@ pub fn sendJsonFrame(allocator: std.mem.Allocator, stream: net.Stream, value: an
 }
 
 pub fn isPeerClosedError(err: anyerror) bool {
-    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting or err == error.InputOutput;
+    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting;
 }
 
 pub fn writeFrame(stream: net.Stream, payload: []const u8) !void {
@@ -498,11 +498,12 @@ pub fn writeFrame(stream: net.Stream, payload: []const u8) !void {
 }
 
 pub fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: ?u32) ![]u8 {
+    const deadline_ms = deadlineFromTimeout(timeout_ms);
     var length_buffer: [max_length_digits]u8 = undefined;
     var length_len: usize = 0;
 
     while (true) {
-        const next = try readByte(stream, timeout_ms);
+        const next = try readByte(stream, remainingTimeoutMs(deadline_ms));
         if (next == ':') break;
         if (next < '0' or next > '9') return error.InvalidFrame;
         if (length_len >= max_length_digits) return error.InvalidFrame;
@@ -513,11 +514,23 @@ pub fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_
     const payload_len = try parseFramePayloadLen(length_buffer[0..length_len]);
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
-    try readExact(stream, payload, timeout_ms);
+    try readExact(stream, payload, remainingTimeoutMs(deadline_ms));
 
-    const trailing = try readByte(stream, timeout_ms);
+    const trailing = try readByte(stream, remainingTimeoutMs(deadline_ms));
     if (trailing != '\n') return error.InvalidFrame;
     return payload;
+}
+
+fn deadlineFromTimeout(timeout_ms: ?u32) ?i64 {
+    const timeout = timeout_ms orelse return null;
+    return std.math.add(i64, runtime.milliTimestamp(), timeout) catch std.math.maxInt(i64);
+}
+
+fn remainingTimeoutMs(deadline_ms: ?i64) ?u32 {
+    const deadline = deadline_ms orelse return null;
+    const remaining = deadline - runtime.milliTimestamp();
+    if (remaining <= 0) return 0;
+    return @intCast(@min(remaining, std.math.maxInt(u32)));
 }
 
 pub fn parseFramePayloadLen(length_prefix: []const u8) !usize {
@@ -544,7 +557,11 @@ fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
     var offset: usize = 0;
     while (offset < bytes.len) {
         const count = c.write(fd, bytes[offset..].ptr, bytes.len - offset);
-        if (count < 0) return error.InputOutput;
+        if (count < 0) return switch (std.posix.errno(-1)) {
+            .PIPE => error.BrokenPipe,
+            .CONNRESET => error.ConnectionResetByPeer,
+            else => error.InputOutput,
+        };
         if (count == 0) return error.EndOfStream;
         offset += @intCast(count);
     }
@@ -573,10 +590,13 @@ fn waitReadable(fd: std.posix.fd_t, timeout_ms: ?u32) !void {
     }
 }
 
-pub fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Response {
+pub fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8, expected_request_id: []const u8) !prompt.Response {
     const parsed = try std.json.parseFromSlice(DecisionMessage, allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    _ = parsed.value.request_id;
+    if (!std.mem.eql(u8, parsed.value.protocol, protocol_name)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.version, protocol_version)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.type, "decision")) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, parsed.value.request_id, expected_request_id)) return error.InvalidProtocolMessage;
     return .{
         .decision = util.outcomeFromLabel(parsed.value.outcome) catch .unavailable,
         .remember_kind = if (parsed.value.remember) |remember|

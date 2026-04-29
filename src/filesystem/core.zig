@@ -772,6 +772,9 @@ pub const Model = struct {
         position: u32,
         context: AccessContext,
     ) i32 {
+        const auth_result = self.authorizeAccess(path, .xattr, context);
+        if (auth_result != 0) return auth_result;
+
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
             .ok => |host_path_z| host_path_z,
             .err => |code| return code,
@@ -816,7 +819,9 @@ pub const Model = struct {
         position: u32,
         context: AccessContext,
     ) i32 {
-        _ = context;
+        const auth_result = self.authorizeAccess(path, .xattr, context);
+        if (auth_result != 0) return auth_result;
+
         const missing_xattr = if (builtin.os.tag == .macos) std.posix.E.NOATTR else std.posix.E.NODATA;
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(missing_xattr))) {
             .ok => |host_path_z| host_path_z,
@@ -847,6 +852,9 @@ pub const Model = struct {
         list: []u8,
         context: AccessContext,
     ) i32 {
+        const auth_result = self.authorizeAccess(path, .xattr, context);
+        if (auth_result != 0) return auth_result;
+
         const host_path = switch (self.hostXattrPathAllocZ(path, 0)) {
             .ok => |host_path_z| host_path_z,
             .err => |code| return code,
@@ -877,6 +885,9 @@ pub const Model = struct {
         name: []const u8,
         context: AccessContext,
     ) i32 {
+        const auth_result = self.authorizeAccess(path, .xattr, context);
+        if (auth_result != 0) return auth_result;
+
         const host_path = switch (self.hostXattrPathAllocZ(path, errnoCode(.OPNOTSUPP))) {
             .ok => |host_path_z| host_path_z,
             .err => |code| return code,
@@ -1561,7 +1572,9 @@ pub const Model = struct {
         if (lookup.open_kind != .user_file or !lookup.guarded) {
             return .{ .err = missing_result };
         }
-        return .{ .err = missing_result };
+        const file = self.findFile(path) orelse return .{ .err = missing_result };
+        const lock_anchor_path = file.lock_anchor_path orelse return .{ .err = errnoCode(.OPNOTSUPP) };
+        return .{ .ok = self.allocator.dupeZ(u8, lock_anchor_path) catch return .{ .err = errnoCode(.NOMEM) } };
     }
 
     pub fn openGuardedLockFd(self: *const Model, path: []const u8, requested_flags: i32) i32 {

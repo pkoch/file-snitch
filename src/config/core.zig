@@ -156,6 +156,9 @@ pub const PolicyFile = struct {
         if (self.findEnrollmentObjectIdIndex(object_id) != null) {
             return error.InvalidEnrollmentObjectId;
         }
+        if (self.findEnrollmentIndex(enrolled_path) != null) {
+            return error.InvalidEnrollmentPath;
+        }
 
         const owned_path = try self.allocator.dupe(u8, enrolled_path);
         errdefer self.allocator.free(owned_path);
@@ -739,6 +742,9 @@ fn copyEnrollments(allocator: std.mem.Allocator, raw_enrollments: []const RawEnr
         });
         try requirePolicyPathWithinHome(allocator, owned_path, error.InvalidEnrollmentPath);
         for (enrollments[0..initialized]) |existing| {
+            if (std.mem.eql(u8, existing.path, owned_path)) {
+                return error.InvalidEnrollmentPath;
+            }
             if (std.mem.eql(u8, existing.object_id, raw.object_id)) {
                 return error.InvalidEnrollmentObjectId;
             }
@@ -1029,6 +1035,19 @@ test "appendEnrollment handles allocation failures" {
     );
 }
 
+test "appendEnrollment rejects duplicate paths" {
+    const allocator = std.testing.allocator;
+    const source_path = try allocator.dupe(u8, "/tmp/file-snitch-duplicate-path.yml");
+    var policy_file = try emptyPolicy(allocator, source_path);
+    defer policy_file.deinit();
+
+    try policy_file.appendEnrollment("/tmp/demo-secret", "object-1");
+    try std.testing.expectError(
+        error.InvalidEnrollmentPath,
+        policy_file.appendEnrollment("/tmp/demo-secret", "object-2"),
+    );
+}
+
 fn checkUpsertDecisionInsertAllocationFailures(allocator: std.mem.Allocator) !void {
     const source_path = try allocator.dupe(u8, "/tmp/file-snitch-alloc-failure.yml");
     var policy_file = try emptyPolicy(allocator, source_path);
@@ -1126,6 +1145,22 @@ test "copyEnrollments handles allocation failures" {
         checkCopyEnrollmentsAllocationFailures,
         .{},
     );
+}
+
+test "copyEnrollments rejects duplicate paths" {
+    const old_home_z = try setHomeForTest("/");
+    defer restoreHomeForTest(old_home_z);
+
+    try std.testing.expectError(error.InvalidEnrollmentPath, copyEnrollments(std.testing.allocator, &.{
+        .{
+            .path = "/tmp/demo-secret",
+            .object_id = "object-1",
+        },
+        .{
+            .path = "/tmp/demo-secret",
+            .object_id = "object-2",
+        },
+    }));
 }
 
 fn checkCopyDecisionsAllocationFailures(allocator: std.mem.Allocator) !void {

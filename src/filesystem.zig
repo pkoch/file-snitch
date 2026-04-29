@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const core = @import("filesystem/core.zig");
 pub const types = @import("filesystem/types.zig");
 pub const util = @import("filesystem/util.zig");
@@ -21,3 +23,9 @@ pub const AuditEvent = core.AuditEvent;
 pub const GuardedEntryConfig = core.GuardedEntryConfig;
 pub const ProjectionConfig = core.ProjectionConfig;
 pub const Model = core.Model;
+
+test {
+    std.testing.refAllDecls(core);
+    std.testing.refAllDecls(types);
+    std.testing.refAllDecls(util);
+}
