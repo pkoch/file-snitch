@@ -3,6 +3,7 @@ const yaml = @import("yaml");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const runtime = @import("runtime.zig");
+const rfc3339 = @import("rfc3339.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
 });
@@ -935,64 +936,9 @@ fn parseOptionalDecisionExpiration(value: ?[]const u8) !?i64 {
 }
 
 fn parseExpirationTimestamp(value: []const u8) !i64 {
-    return parseRfc3339UtcSeconds(value);
-}
-
-fn parseRfc3339UtcSeconds(value: []const u8) !i64 {
-    if (value.len != 20 or
-        value[4] != '-' or
-        value[7] != '-' or
-        value[10] != 'T' or
-        value[13] != ':' or
-        value[16] != ':' or
-        value[19] != 'Z')
-    {
-        return error.InvalidDecisionExpiration;
-    }
-
-    const year = try std.fmt.parseInt(i64, value[0..4], 10);
-    const month = try std.fmt.parseInt(u8, value[5..7], 10);
-    const day = try std.fmt.parseInt(u8, value[8..10], 10);
-    const hour = try std.fmt.parseInt(u8, value[11..13], 10);
-    const minute = try std.fmt.parseInt(u8, value[14..16], 10);
-    const second = try std.fmt.parseInt(u8, value[17..19], 10);
-
-    if (month < 1 or month > 12) return error.InvalidDecisionExpiration;
-    if (day < 1 or day > daysInMonth(year, month)) return error.InvalidDecisionExpiration;
-    if (hour > 23 or minute > 59 or second > 59) return error.InvalidDecisionExpiration;
-
-    const days_since_epoch = try daysSinceUnixEpoch(year, month, day);
-    const seconds_per_day = std.time.s_per_day;
-    const day_seconds = try std.math.mul(i64, days_since_epoch, seconds_per_day);
-    const time_seconds = @as(i64, hour) * std.time.s_per_hour +
-        @as(i64, minute) * std.time.s_per_min +
-        second;
-    return try std.math.add(i64, day_seconds, time_seconds);
-}
-
-fn daysInMonth(year: i64, month: u8) u8 {
-    return switch (month) {
-        1, 3, 5, 7, 8, 10, 12 => 31,
-        4, 6, 9, 11 => 30,
-        2 => if (isLeapYear(year)) 29 else 28,
-        else => 0,
+    return rfc3339.parseUtcSeconds(value) catch |err| switch (err) {
+        error.InvalidRfc3339Utc => return error.InvalidDecisionExpiration,
     };
-}
-
-fn isLeapYear(year: i64) bool {
-    return (@mod(year, 4) == 0 and @mod(year, 100) != 0) or @mod(year, 400) == 0;
-}
-
-fn daysSinceUnixEpoch(year: i64, month: u8, day: u8) !i64 {
-    var adjusted_year = year;
-    if (month <= 2) adjusted_year -= 1;
-
-    const era = @divFloor(if (adjusted_year >= 0) adjusted_year else adjusted_year - 399, 400);
-    const year_of_era = adjusted_year - era * 400;
-    const adjusted_month: i64 = if (month > 2) month - 3 else month + 9;
-    const day_of_year = @divFloor(153 * adjusted_month + 2, 5) + day - 1;
-    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100) + day_of_year;
-    return try std.math.sub(i64, era * 146097 + day_of_era, 719468);
 }
 
 fn writeYamlString(writer: anytype, value: []const u8) !void {

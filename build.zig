@@ -188,6 +188,17 @@ pub fn build(b: *std.Build) void {
     configureLinkerPolicy(user_services_tests, target.result.os.tag);
     const run_user_services_tests = b.addRunArtifact(user_services_tests);
 
+    const rfc3339_test_module = b.createModule(.{
+        .root_source_file = b.path("src/rfc3339.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const rfc3339_tests = b.addTest(.{
+        .root_module = rfc3339_test_module,
+    });
+    configureLinkerPolicy(rfc3339_tests, target.result.os.tag);
+    const run_rfc3339_tests = b.addRunArtifact(rfc3339_tests);
+
     const test_step = b.step("test", "Run core integration and unit tests");
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_prompt_tests.step);
@@ -200,6 +211,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_supervisor_tests.step);
     test_step.dependOn(&run_filesystem_util_tests.step);
     test_step.dependOn(&run_user_services_tests.step);
+    test_step.dependOn(&run_rfc3339_tests.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {

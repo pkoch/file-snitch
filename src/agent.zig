@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
+const rfc3339 = @import("rfc3339.zig");
 const runtime = @import("runtime.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
@@ -314,13 +315,13 @@ fn userInteractionDeadlineMsFromEventFrame(
     if (!std.mem.eql(u8, parsed.value.event, "user-interaction-started")) return null;
 
     const user_interaction = parsed.value.user_interaction orelse return error.InvalidProtocolMessage;
-    const deadline_seconds = try parseRfc3339Utc(user_interaction.deadline);
+    const deadline_seconds = rfc3339.parseUtcSeconds(user_interaction.deadline) catch return error.InvalidProtocolMessage;
     return try std.math.mul(i64, deadline_seconds, 1_000);
 }
 
 fn userInteractionDeadlineFromNowAlloc(allocator: std.mem.Allocator, timeout_ms: u32) ![]u8 {
     const timeout_seconds = @divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000);
-    return try formatRfc3339UtcAlloc(allocator, runtime.timestamp() + timeout_seconds);
+    return try rfc3339.formatUtcAlloc(allocator, runtime.timestamp() + timeout_seconds);
 }
 
 fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
@@ -534,7 +535,7 @@ fn sendDecision(
     response: prompt.Response,
 ) !void {
     const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
-        try formatRfc3339UtcAlloc(allocator, unix_seconds)
+        try rfc3339.formatUtcAlloc(allocator, unix_seconds)
     else
         null;
     defer if (expires_at) |value| allocator.free(value);
@@ -941,7 +942,7 @@ fn persistRememberedDecision(
 
     const executable_path = request.executable_path orelse return;
     const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
-        try formatRfc3339UtcAlloc(context.allocator, unix_seconds)
+        try rfc3339.formatUtcAlloc(context.allocator, unix_seconds)
     else
         null;
     defer if (expires_at) |value| context.allocator.free(value);
@@ -1316,76 +1317,9 @@ fn decisionReason(decision: prompt.Decision) []const u8 {
 
 fn parseRememberExpiration(value: ?[]const u8) !?i64 {
     const raw = value orelse return null;
-    return try parseRfc3339Utc(raw);
-}
-
-fn formatRfc3339UtcAlloc(allocator: std.mem.Allocator, unix_seconds: i64) ![]u8 {
-    if (unix_seconds < 0) return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(unix_seconds) };
-    const epoch_day = epoch_seconds.getEpochDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-
-    return std.fmt.allocPrint(
-        allocator,
-        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
-}
-
-fn parseRfc3339Utc(raw: []const u8) !i64 {
-    if (raw.len != "2006-01-02T15:04:05Z".len) return error.InvalidProtocolMessage;
-    if (raw[4] != '-' or raw[7] != '-' or raw[10] != 'T' or raw[13] != ':' or raw[16] != ':' or raw[19] != 'Z') {
-        return error.InvalidProtocolMessage;
-    }
-
-    const year = try std.fmt.parseInt(i64, raw[0..4], 10);
-    const month = try std.fmt.parseInt(u8, raw[5..7], 10);
-    const day = try std.fmt.parseInt(u8, raw[8..10], 10);
-    const hour = try std.fmt.parseInt(i64, raw[11..13], 10);
-    const minute = try std.fmt.parseInt(i64, raw[14..16], 10);
-    const second = try std.fmt.parseInt(i64, raw[17..19], 10);
-
-    if (month < 1 or month > 12) return error.InvalidProtocolMessage;
-    if (day < 1 or day > daysInMonth(year, month)) return error.InvalidProtocolMessage;
-    if (hour > 23 or minute > 59 or second > 59) return error.InvalidProtocolMessage;
-
-    const days = try daysSinceUnixEpoch(year, month, day);
-    const day_seconds = hour * 3600 + minute * 60 + second;
-    return try std.math.add(i64, days * 86400, day_seconds);
-}
-
-fn daysSinceUnixEpoch(year: i64, month: u8, day: u8) !i64 {
-    var adjusted_year = year;
-    if (month <= 2) adjusted_year -= 1;
-
-    const era = @divFloor(if (adjusted_year >= 0) adjusted_year else adjusted_year - 399, 400);
-    const year_of_era = adjusted_year - era * 400;
-    const adjusted_month: i64 = if (month > 2) month - 3 else month + 9;
-    const day_of_year = @divFloor(153 * adjusted_month + 2, 5) + day - 1;
-    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100) + day_of_year;
-    return try std.math.sub(i64, era * 146097 + day_of_era, 719468);
-}
-
-fn daysInMonth(year: i64, month: u8) u8 {
-    return switch (month) {
-        1, 3, 5, 7, 8, 10, 12 => 31,
-        4, 6, 9, 11 => 30,
-        2 => if (isLeapYear(year)) 29 else 28,
-        else => 0,
+    return rfc3339.parseUtcSeconds(raw) catch |err| switch (err) {
+        error.InvalidRfc3339Utc => return error.InvalidProtocolMessage,
     };
-}
-
-fn isLeapYear(year: i64) bool {
-    return (@mod(year, 4) == 0 and @mod(year, 100) != 0) or @mod(year, 400) == 0;
 }
 
 fn generateUlidAlloc(allocator: std.mem.Allocator) ![]u8 {
