@@ -9,8 +9,6 @@ pub const Request = struct {
     label: ?[]const u8 = null,
     can_remember: bool = false,
     pid: u32,
-    uid: u32,
-    gid: u32,
     executable_path: ?[]const u8 = null,
 };
 
@@ -185,8 +183,6 @@ fn writePromptJson(
         .access_class = accessClassLabel(request.access_class),
         .can_remember = request.can_remember,
         .pid = request.pid,
-        .uid = request.uid,
-        .gid = request.gid,
         .executable_path = request.executable_path,
         .result = if (response) |value| @intFromEnum(value.decision) else null,
         .remember_kind = if (response) |value| @tagName(value.remember_kind) else null,
@@ -364,8 +360,6 @@ test "scripted broker returns configured decisions in order" {
         .path = "/prompted.txt",
         .access_class = .create,
         .pid = 1,
-        .uid = 2,
-        .gid = 3,
     };
 
     try std.testing.expectEqual(Decision.allow, broker.resolve(request).decision);
@@ -397,8 +391,6 @@ test "cli broker allows yes" {
         .path = "/prompted.txt",
         .access_class = .create,
         .pid = 10,
-        .uid = 20,
-        .gid = 30,
     });
 
     try std.testing.expectEqual(Decision.allow, decision.decision);
@@ -429,8 +421,6 @@ test "cli broker allows empty response by default" {
         .path = "/prompted.txt",
         .access_class = .create,
         .pid = 10,
-        .uid = 20,
-        .gid = 30,
     });
 
     try std.testing.expectEqual(Decision.allow, decision.decision);
@@ -458,8 +448,6 @@ test "cli broker times out to deny path" {
         .path = "/prompted.txt",
         .access_class = .create,
         .pid = 10,
-        .uid = 20,
-        .gid = 30,
     });
 
     try std.testing.expectEqual(Decision.timeout, decision.decision);
@@ -490,8 +478,6 @@ test "cli broker can request remembered allow" {
         .access_class = .read,
         .can_remember = true,
         .pid = 10,
-        .uid = 20,
-        .gid = 30,
         .executable_path = "/usr/bin/cat",
     });
 

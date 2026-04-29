@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Refactored `build.zig` to use data-driven test configuration, reducing code
+  by 42% (99 lines removed). Unit tests are now defined in a compile-time
+  array with a single loop handling all test setup.
+- Split large agent, filesystem, config, and policy command implementations
+  into focused submodules while preserving the existing import surface.
+
 ### Fixed
 
 - Fixed RFC3339 timestamp validation for policy expirations and agent protocol
@@ -29,8 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Changed `doctor` to report stale per-user service files and stale loaded
   service-manager config by comparing them with the current binary's render
   output.
-- Changed remembered decisions to omit requester uid and apply by executable
-  path, enrolled path, and approval class.
+- Changed remembered decisions to apply by executable path, enrolled path, and
+  approval class.
 - Changed daemon-to-agent prompt display paths to use `~/...` for enrolled
   paths under the current user's home directory.
 - Changed enrollment projection to mount guarded files from the state

@@ -4,6 +4,7 @@ const fuse_support = @import("build/fuse_support.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const os_tag = target.result.os.tag;
     const app_version = readAppVersion(b);
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
@@ -16,6 +17,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const yaml_module = yaml_dependency.module("yaml");
+
+    // Build executable
     const executable_module = b.createModule(.{
         .root_source_file = b.path("src/cli.zig"),
         .target = target,
@@ -24,194 +27,81 @@ pub fn build(b: *std.Build) void {
     });
     executable_module.addImport("yaml", yaml_module);
     executable_module.addOptions("build_options", build_options);
-    configureFuseInterop(b, executable_module, target.result.os.tag);
+    configureFuseInterop(b, executable_module, os_tag);
 
     const exe = b.addExecutable(.{
         .name = "file-snitch",
         .root_module = executable_module,
     });
-    configureLinkerPolicy(exe, target.result.os.tag);
-    fuse_support.addCompileCommandsStep(b, target.result.os.tag);
+    configureLinkerPolicy(exe, os_tag);
+    fuse_support.addCompileCommandsStep(b, os_tag);
     b.installArtifact(exe);
 
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("tests/core_integration.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const app_src_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    app_src_module.addImport("yaml", yaml_module);
-    app_src_module.addOptions("build_options", build_options);
-    app_src_module.addIncludePath(b.path("c"));
-    fuse_support.configureModule(b, app_src_module, target.result.os.tag);
-    test_module.addImport("app_src", app_src_module);
-    configureFuseInterop(b, test_module, target.result.os.tag);
-
-    const tests = b.addTest(.{
-        .root_module = test_module,
-    });
-    configureLinkerPolicy(tests, target.result.os.tag);
-    const run_integration_tests = b.addRunArtifact(tests);
-
-    const prompt_test_module = b.createModule(.{
-        .root_source_file = b.path("src/prompt.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    prompt_test_module.addOptions("build_options", build_options);
-    const prompt_tests = b.addTest(.{
-        .root_module = prompt_test_module,
-    });
-    configureLinkerPolicy(prompt_tests, target.result.os.tag);
-    const run_prompt_tests = b.addRunArtifact(prompt_tests);
-
-    const store_test_module = b.createModule(.{
-        .root_source_file = b.path("src/store.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    store_test_module.addOptions("build_options", build_options);
-    const store_tests = b.addTest(.{
-        .root_module = store_test_module,
-    });
-    configureLinkerPolicy(store_tests, target.result.os.tag);
-    const run_store_tests = b.addRunArtifact(store_tests);
-
-    const config_test_module = b.createModule(.{
-        .root_source_file = b.path("src/config.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    config_test_module.addImport("yaml", yaml_module);
-    config_test_module.addOptions("build_options", build_options);
-    const config_tests = b.addTest(.{
-        .root_module = config_test_module,
-    });
-    configureLinkerPolicy(config_tests, target.result.os.tag);
-    const run_config_tests = b.addRunArtifact(config_tests);
-
-    const enrollment_test_module = b.createModule(.{
-        .root_source_file = b.path("src/enrollment.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    enrollment_test_module.addOptions("build_options", build_options);
-    const enrollment_tests = b.addTest(.{
-        .root_module = enrollment_test_module,
-    });
-    configureLinkerPolicy(enrollment_tests, target.result.os.tag);
-    const run_enrollment_tests = b.addRunArtifact(enrollment_tests);
-
-    const agent_test_module = b.createModule(.{
-        .root_source_file = b.path("src/agent.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    agent_test_module.addImport("yaml", yaml_module);
-    agent_test_module.addOptions("build_options", build_options);
-    const agent_tests = b.addTest(.{
-        .root_module = agent_test_module,
-    });
-    configureLinkerPolicy(agent_tests, target.result.os.tag);
-    const run_agent_tests = b.addRunArtifact(agent_tests);
-
-    const completion_test_module = b.createModule(.{
-        .root_source_file = b.path("src/cli_completion.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const completion_tests = b.addTest(.{
-        .root_module = completion_test_module,
-    });
-    configureLinkerPolicy(completion_tests, target.result.os.tag);
-    const run_completion_tests = b.addRunArtifact(completion_tests);
-
-    const policy_watch_test_module = b.createModule(.{
-        .root_source_file = b.path("src/cli_policy_watch.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const policy_watch_tests = b.addTest(.{
-        .root_module = policy_watch_test_module,
-    });
-    configureLinkerPolicy(policy_watch_tests, target.result.os.tag);
-    const run_policy_watch_tests = b.addRunArtifact(policy_watch_tests);
-
-    const supervisor_test_module = b.createModule(.{
-        .root_source_file = b.path("src/cli_supervisor.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    supervisor_test_module.addImport("yaml", yaml_module);
-    supervisor_test_module.addOptions("build_options", build_options);
-    const supervisor_tests = b.addTest(.{
-        .root_module = supervisor_test_module,
-    });
-    configureLinkerPolicy(supervisor_tests, target.result.os.tag);
-    const run_supervisor_tests = b.addRunArtifact(supervisor_tests);
-
-    const filesystem_util_test_module = b.createModule(.{
-        .root_source_file = b.path("src/filesystem_util.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const filesystem_util_tests = b.addTest(.{
-        .root_module = filesystem_util_test_module,
-    });
-    configureLinkerPolicy(filesystem_util_tests, target.result.os.tag);
-    const run_filesystem_util_tests = b.addRunArtifact(filesystem_util_tests);
-
-    const user_services_test_module = b.createModule(.{
-        .root_source_file = b.path("src/user_services.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    user_services_test_module.addOptions("build_options", build_options);
-    const user_services_tests = b.addTest(.{
-        .root_module = user_services_test_module,
-    });
-    configureLinkerPolicy(user_services_tests, target.result.os.tag);
-    const run_user_services_tests = b.addRunArtifact(user_services_tests);
-
-    const rfc3339_test_module = b.createModule(.{
-        .root_source_file = b.path("src/rfc3339.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const rfc3339_tests = b.addTest(.{
-        .root_module = rfc3339_test_module,
-    });
-    configureLinkerPolicy(rfc3339_tests, target.result.os.tag);
-    const run_rfc3339_tests = b.addRunArtifact(rfc3339_tests);
-
+    // Test step
     const test_step = b.step("test", "Run core integration and unit tests");
-    test_step.dependOn(&run_integration_tests.step);
-    test_step.dependOn(&run_prompt_tests.step);
-    test_step.dependOn(&run_store_tests.step);
-    test_step.dependOn(&run_config_tests.step);
-    test_step.dependOn(&run_enrollment_tests.step);
-    test_step.dependOn(&run_agent_tests.step);
-    test_step.dependOn(&run_completion_tests.step);
-    test_step.dependOn(&run_policy_watch_tests.step);
-    test_step.dependOn(&run_supervisor_tests.step);
-    test_step.dependOn(&run_filesystem_util_tests.step);
-    test_step.dependOn(&run_user_services_tests.step);
-    test_step.dependOn(&run_rfc3339_tests.step);
+
+    // Integration test (special: needs app_src module with fuse support)
+    {
+        const app_src_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        app_src_module.addImport("yaml", yaml_module);
+        app_src_module.addOptions("build_options", build_options);
+        app_src_module.addIncludePath(b.path("c"));
+        fuse_support.configureModule(b, app_src_module, os_tag);
+
+        const test_module = b.createModule(.{
+            .root_source_file = b.path("tests/core_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_module.addImport("app_src", app_src_module);
+        configureFuseInterop(b, test_module, os_tag);
+
+        const tests = b.addTest(.{ .root_module = test_module });
+        configureLinkerPolicy(tests, os_tag);
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+    }
+
+    // Unit tests
+    const unit_tests = [_]struct {
+        source: []const u8,
+        needs_yaml: bool,
+        link_libc: bool,
+    }{
+        .{ .source = "src/prompt.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/store.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/config.zig", .needs_yaml = true, .link_libc = true },
+        .{ .source = "src/enrollment.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/agent.zig", .needs_yaml = true, .link_libc = true },
+        .{ .source = "src/cli_completion.zig", .needs_yaml = false, .link_libc = false },
+        .{ .source = "src/cli_policy_watch.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/cli_supervisor.zig", .needs_yaml = true, .link_libc = true },
+        .{ .source = "src/filesystem.zig", .needs_yaml = true, .link_libc = true },
+        .{ .source = "src/user_services.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/rfc3339.zig", .needs_yaml = false, .link_libc = false },
+    };
+
+    for (unit_tests) |test_info| {
+        const test_module = b.createModule(.{
+            .root_source_file = b.path(test_info.source),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = test_info.link_libc,
+        });
+        if (test_info.needs_yaml) {
+            test_module.addImport("yaml", yaml_module);
+        }
+        test_module.addOptions("build_options", build_options);
+
+        const tests = b.addTest(.{ .root_module = test_module });
+        configureLinkerPolicy(tests, os_tag);
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+    }
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
