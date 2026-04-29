@@ -6,7 +6,6 @@ const config = @import("config.zig");
 const defaults = @import("defaults.zig");
 const policy = @import("policy.zig");
 const prompt = @import("prompt.zig");
-const rfc3339 = @import("rfc3339.zig");
 const runtime = @import("runtime.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
@@ -21,1572 +20,50 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
+// Re-export from submodules
+pub const core = @import("agent/core.zig");
+pub const frontend = @import("agent/frontend.zig");
+pub const protocol = @import("agent/protocol.zig");
+pub const util = @import("agent/util.zig");
+
+// Re-export commonly used types from core
+pub const RequesterContext = core.RequesterContext;
+pub const FrontendKind = core.FrontendKind;
+pub const Frontend = core.Frontend;
+pub const AgentServiceContext = core.AgentServiceContext;
+pub const SocketPathError = core.SocketPathError;
+
+// Re-export commonly used functions from core
+pub const defaultSocketPathAlloc = core.defaultSocketPathAlloc;
+pub const socketBroker = core.socketBroker;
+pub const runAgentService = core.runAgentService;
+
+// Re-export commonly used types from frontend
+pub const TerminalPinentryContext = frontend.TerminalPinentryContext;
+pub const MacosUiContext = frontend.MacosUiContext;
+pub const LinuxUiContext = frontend.LinuxUiContext;
+
+// Re-export commonly used functions from frontend
+pub const terminalPinentryFrontend = frontend.terminalPinentryFrontend;
+pub const macosUiFrontend = frontend.macosUiFrontend;
+pub const linuxUiFrontend = frontend.linuxUiFrontend;
+pub const defaultTerminalPathAlloc = frontend.defaultTerminalPathAlloc;
+pub const defaultOsascriptPathAlloc = frontend.defaultOsascriptPathAlloc;
+pub const defaultZenityPathAlloc = frontend.defaultZenityPathAlloc;
+
+// Re-export commonly used functions from protocol
+pub const readFrameAlloc = protocol.readFrameAlloc;
+pub const readFrameFromReaderAlloc = protocol.readFrameFromReaderAlloc;
+pub const isPeerClosedError = protocol.isPeerClosedError;
+
+// Re-export commonly used functions from util
+pub const generateUlidAlloc = util.generateUlidAlloc;
+
+// Constants
 const protocol_name = "file-snitch-agent";
 const protocol_version = "1.0";
-const max_frame_len: usize = 999_999;
-const max_length_digits: usize = 6;
 
-pub const RequesterContext = struct {
-    allocator: std.mem.Allocator,
-    socket_path: []const u8,
-    policy_path: []const u8,
-    protocol_timeout_ms: u32 = defaults.protocol_timeout_ms_default,
-};
-
-pub const FrontendKind = enum {
-    terminal_pinentry,
-    macos_ui,
-    linux_ui,
-};
-
-pub const Frontend = struct {
-    context: ?*anyopaque,
-    resolve_fn: *const fn (?*anyopaque, prompt.Request) prompt.Response,
-    user_interaction_timeout_ms: u32 = defaults.prompt_timeout_ms_default,
-    supports_concurrent_requests: bool = true,
-
-    pub fn resolve(self: Frontend, request: prompt.Request) prompt.Response {
-        return self.resolve_fn(self.context, request);
-    }
-};
-
-pub const TerminalPinentryContext = struct {
-    allocator: std.mem.Allocator,
-    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
-    tty_path: ?[]const u8 = null,
-    inherited_cli_context: ?*prompt.CliContext = null,
-    mutex: std.Io.Mutex = .init,
-};
-
-pub const MacosUiContext = struct {
-    allocator: std.mem.Allocator,
-    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
-    osascript_path: []const u8,
-};
-
-pub const LinuxUiContext = struct {
-    allocator: std.mem.Allocator,
-    timeout_ms: u32 = defaults.prompt_timeout_ms_default,
-    zenity_path: []const u8,
-};
-
-pub const AgentServiceContext = struct {
-    allocator: std.mem.Allocator,
-    socket_path: []const u8,
-    frontend: Frontend,
-};
-
-pub const SocketPathError = error{
-    SocketPathInUse,
-    InvalidSocketPath,
-    UnauthorizedPeer,
-};
-
-const ConnectionWorkerContext = struct {
-    allocator: std.mem.Allocator,
-    service_context: *AgentServiceContext,
-    stream: net.Stream,
-};
-
-pub fn defaultSocketPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (runtime.getEnvVarOwned(allocator, defaults.agent_socket_env)) |value| {
-        return value;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    const base = try defaults.xdgBasePathAlloc(allocator, "XDG_RUNTIME_DIR", ".local/state");
-    defer allocator.free(base);
-    return std.fs.path.join(allocator, &.{ base, "file-snitch", "agent.sock" });
-}
-
-pub fn socketBroker(context: *RequesterContext) prompt.Broker {
-    return .{
-        .context = context,
-        .resolve_fn = resolveSocket,
-    };
-}
-
-pub fn terminalPinentryFrontend(context: *TerminalPinentryContext) Frontend {
-    return .{
-        .context = context,
-        .resolve_fn = resolveTerminalPinentry,
-        .user_interaction_timeout_ms = context.timeout_ms,
-        .supports_concurrent_requests = true,
-    };
-}
-
-pub fn macosUiFrontend(context: *MacosUiContext) Frontend {
-    return .{
-        .context = context,
-        .resolve_fn = resolveMacosUi,
-        .user_interaction_timeout_ms = context.timeout_ms,
-        .supports_concurrent_requests = false,
-    };
-}
-
-pub fn linuxUiFrontend(context: *LinuxUiContext) Frontend {
-    return .{
-        .context = context,
-        .resolve_fn = resolveLinuxUi,
-        .user_interaction_timeout_ms = context.timeout_ms,
-        .supports_concurrent_requests = false,
-    };
-}
-
-pub fn defaultTerminalPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (runtime.getEnvVarOwned(allocator, defaults.agent_tty_env)) |value| {
-        return value;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    return terminalPathFromStandardFilesAlloc(allocator) catch
-        error.NotATerminal;
-}
-
-pub fn defaultOsascriptPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (runtime.getEnvVarOwned(allocator, defaults.osascript_bin_env)) |value| {
-        return value;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    return allocator.dupe(u8, "osascript");
-}
-
-pub fn defaultZenityPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (runtime.getEnvVarOwned(allocator, defaults.zenity_bin_env)) |value| {
-        return value;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    return allocator.dupe(u8, "zenity");
-}
-
-pub fn runAgentService(context: *AgentServiceContext) !void {
-    try ensureParentDirectory(context.socket_path);
-    try removeSocketFileIfStale(context.socket_path);
-
-    const address = try net.UnixAddress.init(context.socket_path);
-    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
-    defer server.deinit(runtime.io());
-    defer removeStaleSocketFileForCleanup(context.socket_path);
-
-    while (true) {
-        const stream = server.accept(runtime.io()) catch |err| switch (err) {
-            error.ConnectionAborted, error.WouldBlock => continue,
-            else => return err,
-        };
-        assertSameUidPeer(stream) catch |err| {
-            stream.close(runtime.io());
-            std.log.warn("agent rejected socket peer: {}", .{err});
-            continue;
-        };
-        if (!context.frontend.supports_concurrent_requests) {
-            // GUI frontends shell out to helper processes. On Linux, doing that
-            // from a worker thread would fork a multithreaded process.
-            defer stream.close(runtime.io());
-            handleConnection(context, stream) catch |err| {
-                std.log.warn("agent connection failed: {}", .{err});
-            };
-            continue;
-        }
-
-        const worker_context = try context.allocator.create(ConnectionWorkerContext);
-        errdefer context.allocator.destroy(worker_context);
-        worker_context.* = .{
-            .allocator = context.allocator,
-            .service_context = context,
-            .stream = stream,
-        };
-
-        const thread = try std.Thread.spawn(.{}, runConnectionWorker, .{worker_context});
-        thread.detach();
-    }
-}
-
-fn runConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    defer cleanupConnectionWorker(worker_context);
-
-    handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
-        std.log.warn("agent connection failed: {}", .{err});
-    };
-}
-
-fn cleanupConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    worker_context.stream.close(runtime.io());
-    worker_context.allocator.destroy(worker_context);
-}
-
-fn resolveSocket(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
-    const context = raw_context orelse return .{ .decision = .unavailable };
-    const requester_context: *RequesterContext = @ptrCast(@alignCast(context));
-    return resolveViaAgent(requester_context, request) catch |err| switch (err) {
-        error.TimedOut => .{ .decision = .unavailable },
-        else => .{ .decision = .unavailable },
-    };
-}
-
-fn resolveViaAgent(context: *RequesterContext, request: prompt.Request) !prompt.Response {
-    const address = try net.UnixAddress.init(context.socket_path);
-    var stream = try address.connect(runtime.io());
-    defer stream.close(runtime.io());
-    try assertSameUidPeer(stream);
-
-    const hello_frame = try readFrameAlloc(context.allocator, stream, context.protocol_timeout_ms);
-    defer context.allocator.free(hello_frame);
-
-    try validateHelloFrame(context.allocator, hello_frame);
-
-    const hello_request_id = try requestIdFromFrame(context.allocator, hello_frame);
-    defer context.allocator.free(hello_request_id);
-    try sendWelcome(context.allocator, stream, hello_request_id);
-
-    const request_id = try generateUlidAlloc(context.allocator);
-    defer context.allocator.free(request_id);
-
-    const display_path = request.label orelse blk: {
-        const generated = try std.fmt.allocPrint(
-            context.allocator,
-            "{s} {s}",
-            .{ accessClassLabel(request.access_class), request.path },
-        );
-        break :blk generated;
-    };
-    defer if (request.label == null) context.allocator.free(display_path);
-
-    try sendDecide(context.allocator, stream, request_id, request, display_path);
-
-    var user_interaction_deadline_ms: ?i64 = null;
-    while (true) {
-        const frame_timeout_ms = if (user_interaction_deadline_ms) |deadline_ms|
-            timeoutUntilDeadlinePlusProtocolMs(deadline_ms, context.protocol_timeout_ms)
-        else
-            context.protocol_timeout_ms;
-        const frame = try readFrameAlloc(context.allocator, stream, frame_timeout_ms);
-        defer context.allocator.free(frame);
-
-        const message_type = try frameTypeFromJson(context.allocator, frame);
-        defer context.allocator.free(message_type);
-
-        if (std.mem.eql(u8, message_type, "event")) {
-            if (try userInteractionDeadlineMsFromEventFrame(context.allocator, frame, request_id)) |deadline_ms| {
-                user_interaction_deadline_ms = deadline_ms;
-            }
-            continue;
-        }
-        if (std.mem.eql(u8, message_type, "decision")) {
-            const response = try responseFromFrame(context.allocator, frame);
-            try persistRememberedDecision(context, request, response);
-            return response;
-        }
-        if (std.mem.eql(u8, message_type, "error")) {
-            return .{ .decision = .unavailable };
-        }
-        return .{ .decision = .unavailable };
-    }
-}
-
-fn timeoutUntilDeadlinePlusProtocolMs(deadline_ms: i64, protocol_timeout_ms: u32) u32 {
-    const latest_response_ms = std.math.add(i64, deadline_ms, @intCast(protocol_timeout_ms)) catch std.math.maxInt(i64);
-    const remaining_ms = latest_response_ms - runtime.milliTimestamp();
-    if (remaining_ms <= 0) return 0;
-    return @intCast(@min(remaining_ms, std.math.maxInt(u32)));
-}
-
-fn userInteractionDeadlineMsFromEventFrame(
-    allocator: std.mem.Allocator,
-    frame: []const u8,
-    expected_request_id: []const u8,
-) !?i64 {
-    const parsed = try std.json.parseFromSlice(EventMessage, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    if (!std.mem.eql(u8, parsed.value.protocol, protocol_name)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.version, protocol_version)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.type, "event")) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.request_id, expected_request_id)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.event, "user-interaction-started")) return null;
-
-    const user_interaction = parsed.value.user_interaction orelse return error.InvalidProtocolMessage;
-    const deadline_seconds = rfc3339.parseUtcSeconds(user_interaction.deadline) catch return error.InvalidProtocolMessage;
-    return try std.math.mul(i64, deadline_seconds, 1_000);
-}
-
-fn userInteractionDeadlineFromNowAlloc(allocator: std.mem.Allocator, timeout_ms: u32) ![]u8 {
-    const timeout_seconds = @divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000);
-    return try rfc3339.formatUtcAlloc(allocator, runtime.timestamp() + timeout_seconds);
-}
-
-fn handleConnection(context: *AgentServiceContext, stream: net.Stream) !void {
-    const hello_request_id = try generateUlidAlloc(context.allocator);
-    defer context.allocator.free(hello_request_id);
-    try sendHello(context.allocator, stream, hello_request_id);
-
-    const welcome_frame = try readFrameAlloc(context.allocator, stream, null);
-    defer context.allocator.free(welcome_frame);
-    try validateWelcomeFrame(context.allocator, welcome_frame, hello_request_id);
-
-    while (true) {
-        const frame = readFrameAlloc(context.allocator, stream, null) catch |err| switch (err) {
-            error.EndOfStream => return,
-            else => return err,
-        };
-        defer context.allocator.free(frame);
-
-        const message_type = try frameTypeFromJson(context.allocator, frame);
-        defer context.allocator.free(message_type);
-
-        if (std.mem.eql(u8, message_type, "query")) {
-            const request_id = try requestIdFromFrame(context.allocator, frame);
-            defer context.allocator.free(request_id);
-            try sendQueryResult(context.allocator, stream, request_id);
-            continue;
-        }
-
-        if (std.mem.eql(u8, message_type, "decide")) {
-            try handleDecideFrame(context, stream, frame);
-            continue;
-        }
-
-        const request_id = try requestIdFromFrame(context.allocator, frame);
-        defer context.allocator.free(request_id);
-        try sendError(context.allocator, stream, request_id, "unsupported-message-type", "message type not supported");
-    }
-}
-
-const Header = struct {
-    protocol: []const u8,
-    version: []const u8,
-    type: []const u8,
-    request_id: ?[]const u8 = null,
-};
-
-const Welcome = struct {
-    protocol: []const u8,
-    version: []const u8,
-    type: []const u8,
-    request_id: []const u8,
-    role: []const u8,
-    requester_name: []const u8,
-    requester_version: []const u8,
-    capabilities: []const []const u8,
-};
-
-const DecideMessage = struct {
-    protocol: []const u8,
-    version: []const u8,
-    type: []const u8,
-    request_id: []const u8,
-    subject: struct {
-        uid: u32,
-        pid: u32,
-        executable_path: ?[]const u8 = null,
-    },
-    request: struct {
-        enrolled_path: []const u8,
-        approval_class: []const u8,
-        operation: []const u8,
-        mode: []const u8,
-    },
-    policy_context: struct {
-        can_remember: bool,
-    },
-    forwarding: ?struct {
-        origin_host: []const u8,
-        origin_transport: []const u8,
-        forwarded: bool,
-    } = null,
-    details: ?struct {
-        display_path: ?[]const u8 = null,
-    } = null,
-};
-
-const DecisionMessage = struct {
-    protocol: []const u8,
-    version: []const u8,
-    type: []const u8,
-    request_id: []const u8,
-    outcome: []const u8,
-    reason: []const u8,
-    remember: ?struct {
-        kind: []const u8,
-        expires_at: ?[]const u8 = null,
-    } = null,
-};
-
-const EventMessage = struct {
-    protocol: []const u8,
-    version: []const u8,
-    type: []const u8,
-    request_id: []const u8,
-    event: []const u8,
-    user_interaction: ?struct {
-        deadline: []const u8,
-    } = null,
-};
-
-const ResolvedDecision = struct {
-    request_id: []const u8,
-    response: prompt.Response,
-};
-
-fn sendHello(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "hello",
-        .request_id = request_id,
-        .role = "agent",
-        .agent_name = "file-snitch-agent",
-        .agent_version = app_meta.version,
-        .capabilities = &.{ "decide", "query" },
-    });
-}
-
-fn sendWelcome(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "welcome",
-        .request_id = request_id,
-        .role = "requester",
-        .requester_name = "file-snitch-run",
-        .requester_version = app_meta.version,
-        .capabilities = &.{ "decide", "query" },
-    });
-}
-
-fn sendQueryResult(allocator: std.mem.Allocator, stream: net.Stream, request_id: []const u8) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "query_result",
-        .request_id = request_id,
-        .capabilities = &.{ "decide", "query" },
-    });
-}
-
-fn sendUserInteractionStarted(
-    allocator: std.mem.Allocator,
-    stream: net.Stream,
-    request_id: []const u8,
-    deadline_rfc3339: []const u8,
-) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "event",
-        .request_id = request_id,
-        .event = "user-interaction-started",
-        .user_interaction = .{
-            .deadline = deadline_rfc3339,
-        },
-    });
-}
-
-fn sendDecide(
-    allocator: std.mem.Allocator,
-    stream: net.Stream,
-    request_id: []const u8,
-    request: prompt.Request,
-    display_path: []const u8,
-) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "decide",
-        .request_id = request_id,
-        .subject = .{
-            .uid = request.uid,
-            .pid = request.pid,
-            .executable_path = request.executable_path,
-        },
-        .request = .{
-            .enrolled_path = request.path,
-            .approval_class = accessClassLabel(request.access_class),
-            .operation = operationLabel(request.access_class),
-            .mode = modeLabel(request.access_class),
-        },
-        .policy_context = .{
-            .can_remember = request.executable_path != null,
-        },
-        .forwarding = .{
-            .origin_host = "local",
-            .origin_transport = "local",
-            .forwarded = false,
-        },
-        .details = .{
-            .display_path = display_path,
-        },
-    });
-}
-
-fn sendDecision(
-    allocator: std.mem.Allocator,
-    stream: net.Stream,
-    request_id: []const u8,
-    response: prompt.Response,
-) !void {
-    const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
-        try rfc3339.formatUtcAlloc(allocator, unix_seconds)
-    else
-        null;
-    defer if (expires_at) |value| allocator.free(value);
-
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "decision",
-        .request_id = request_id,
-        .outcome = outcomeLabel(response.decision),
-        .reason = decisionReason(response.decision),
-        .remember = .{
-            .kind = rememberKindLabel(response.remember_kind),
-            .expires_at = expires_at,
-        },
-    });
-}
-
-fn sendError(
-    allocator: std.mem.Allocator,
-    stream: net.Stream,
-    request_id: []const u8,
-    code: []const u8,
-    message: []const u8,
-) !void {
-    try sendJsonFrame(allocator, stream, .{
-        .protocol = protocol_name,
-        .version = protocol_version,
-        .type = "error",
-        .request_id = request_id,
-        .code = code,
-        .message = message,
-    });
-}
-
-fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend: Frontend) !ResolvedDecision {
-    const parsed = try std.json.parseFromSlice(DecideMessage, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const request: prompt.Request = .{
-        .path = parsed.value.request.enrolled_path,
-        .access_class = try accessClassFromLabel(parsed.value.request.approval_class),
-        .label = if (parsed.value.details) |details| details.display_path else null,
-        .can_remember = parsed.value.policy_context.can_remember,
-        .pid = parsed.value.subject.pid,
-        .uid = parsed.value.subject.uid,
-        .gid = 0,
-        .executable_path = parsed.value.subject.executable_path,
-    };
-
-    const request_id = try allocator.dupe(u8, parsed.value.request_id);
-    errdefer allocator.free(request_id);
-
-    return .{
-        .request_id = request_id,
-        .response = frontend.resolve(request),
-    };
-}
-
-fn handleDecideFrame(context: *AgentServiceContext, stream: net.Stream, frame: []const u8) !void {
-    const parsed = try std.json.parseFromSlice(DecideMessage, context.allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const request: prompt.Request = .{
-        .path = parsed.value.request.enrolled_path,
-        .access_class = try accessClassFromLabel(parsed.value.request.approval_class),
-        .label = if (parsed.value.details) |details| details.display_path else null,
-        .can_remember = parsed.value.policy_context.can_remember,
-        .pid = parsed.value.subject.pid,
-        .uid = parsed.value.subject.uid,
-        .gid = 0,
-        .executable_path = parsed.value.subject.executable_path,
-    };
-
-    const interaction_deadline = try userInteractionDeadlineFromNowAlloc(
-        context.allocator,
-        context.frontend.user_interaction_timeout_ms,
-    );
-    defer context.allocator.free(interaction_deadline);
-
-    try sendUserInteractionStarted(context.allocator, stream, parsed.value.request_id, interaction_deadline);
-
-    const response = context.frontend.resolve(request);
-    sendDecision(context.allocator, stream, parsed.value.request_id, response) catch |err| {
-        if (isPeerClosedError(err)) return;
-        return err;
-    };
-}
-
-fn resolveTerminalPinentry(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
-    const context = raw_context orelse return .{ .decision = .unavailable };
-    const pinentry_context: *TerminalPinentryContext = @ptrCast(@alignCast(context));
-    pinentry_context.mutex.lockUncancelable(runtime.io());
-    defer pinentry_context.mutex.unlock(runtime.io());
-
-    if (pinentry_context.inherited_cli_context) |cli_context| {
-        return prompt.resolveCliWithContext(cli_context, request);
-    }
-
-    const tty_path = pinentry_context.tty_path orelse return .{ .decision = .unavailable };
-    const tty_file = std.Io.Dir.openFileAbsolute(runtime.io(), tty_path, .{ .mode = .read_write }) catch return .{ .decision = .unavailable };
-    defer tty_file.close(runtime.io());
-
-    var cli_context = prompt.CliContext{
-        .allocator = pinentry_context.allocator,
-        .timeout_ms = pinentry_context.timeout_ms,
-        .stdin_file = tty_file,
-        .stderr_file = tty_file,
-    };
-    return prompt.resolveCliWithContext(&cli_context, request);
-}
-
-fn resolveMacosUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
-    const context = raw_context orelse return .{ .decision = .unavailable };
-    const ui_context: *MacosUiContext = @ptrCast(@alignCast(context));
-
-    const script = buildMacosDialogScriptAlloc(ui_context.allocator, request, ui_context.timeout_ms) catch
-        return .{ .decision = .unavailable };
-    defer ui_context.allocator.free(script);
-
-    const argv = [_][]const u8{
-        ui_context.osascript_path,
-        "-e",
-        script,
-    };
-    const result = std.process.run(ui_context.allocator, runtime.io(), .{
-        .argv = &argv,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-        .timeout = .{ .duration = .{
-            .raw = std.Io.Duration.fromMilliseconds(ui_context.timeout_ms),
-            .clock = .awake,
-        } },
-    }) catch |err| {
-        if (err == error.Timeout) {
-            std.log.warn("macos-ui prompt helper timed out after {d} ms", .{ui_context.timeout_ms});
-            return .{ .decision = .timeout };
-        }
-        std.log.warn("macos-ui prompt helper failed to start: {}", .{err});
-        return .{ .decision = .unavailable };
-    };
-    defer ui_context.allocator.free(result.stdout);
-    defer ui_context.allocator.free(result.stderr);
-
-    switch (result.term) {
-        .exited => |code| if (code != 0) {
-            std.log.warn("macos-ui prompt helper exited with code {d}: {s}", .{ code, result.stderr });
-            return .{ .decision = .unavailable };
-        },
-        else => {
-            std.log.warn("macos-ui prompt helper ended unexpectedly: {}", .{result.term});
-            return .{ .decision = .unavailable };
-        },
-    }
-    return parseMacosUiResponse(result.stdout) catch |err| {
-        std.log.warn("macos-ui prompt helper returned an invalid response: {}", .{err});
-        return .{ .decision = .unavailable };
-    };
-}
-
-fn resolveLinuxUi(raw_context: ?*anyopaque, request: prompt.Request) prompt.Response {
-    const context = raw_context orelse return .{ .decision = .unavailable };
-    const ui_context: *LinuxUiContext = @ptrCast(@alignCast(context));
-
-    const prompt_text = buildDialogPromptAlloc(ui_context.allocator, request) catch return .{ .decision = .unavailable };
-    defer ui_context.allocator.free(prompt_text);
-
-    const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(ui_context.timeout_ms)) + 999, 1000), 1);
-    const timeout_text = std.fmt.allocPrint(ui_context.allocator, "{d}", .{timeout_seconds}) catch return .{ .decision = .unavailable };
-    defer ui_context.allocator.free(timeout_text);
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(ui_context.allocator);
-    argv.appendSlice(ui_context.allocator, &.{
-        ui_context.zenity_path,
-        "--list",
-        "--radiolist",
-        "--title=File Snitch",
-        "--text",
-        prompt_text,
-        "--column=Pick",
-        "--column=Decision",
-        "TRUE",
-        "Allow once",
-        "FALSE",
-        "Deny once",
-    }) catch return .{ .decision = .unavailable };
-    if (request.can_remember) {
-        argv.appendSlice(ui_context.allocator, &.{
-            "FALSE",
-            "Allow 5 min",
-            "FALSE",
-            "Always allow",
-            "FALSE",
-            "Always deny",
-        }) catch return .{ .decision = .unavailable };
-    }
-    argv.appendSlice(ui_context.allocator, &.{
-        "--timeout",
-        timeout_text,
-        "--width=520",
-    }) catch return .{ .decision = .unavailable };
-
-    const result = std.process.run(ui_context.allocator, runtime.io(), .{
-        .argv = argv.items,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    }) catch return .{ .decision = .unavailable };
-    defer ui_context.allocator.free(result.stdout);
-    defer ui_context.allocator.free(result.stderr);
-
-    return parseLinuxUiResponse(result.term, result.stdout) catch .{ .decision = .unavailable };
-}
-
-fn buildMacosDialogScriptAlloc(allocator: std.mem.Allocator, request: prompt.Request, timeout_ms: u32) ![]u8 {
-    const title = "File Snitch";
-    const prompt_text = try buildDialogPromptAlloc(allocator, request);
-    defer allocator.free(prompt_text);
-
-    const escaped_title = try appleScriptStringLiteralContentsAlloc(allocator, title);
-    defer allocator.free(escaped_title);
-    const escaped_prompt = try appleScriptStringLiteralContentsAlloc(allocator, prompt_text);
-    defer allocator.free(escaped_prompt);
-
-    const timeout_seconds = @max(@divTrunc(@as(i64, @intCast(timeout_ms)) + 999, 1000), 1);
-    if (!request.can_remember) {
-        return std.fmt.allocPrint(
-            allocator,
-            \\try
-            \\  set prompt_text to "{s}"
-            \\  set decision to display dialog prompt_text with title "{s}" buttons {{"Deny", "Allow"}} default button "Allow" giving up after {d} with icon caution
-            \\  if gave up of decision then
-            \\    return "timeout"
-            \\  end if
-            \\  if button returned of decision is "Allow" then
-            \\    return "allow"
-            \\  end if
-            \\  return "deny"
-            \\on error number -128
-            \\  return "deny"
-            \\end try
-        ,
-            .{ escaped_prompt, escaped_title, timeout_seconds },
-        );
-    }
-
-    return std.fmt.allocPrint(
-        allocator,
-        \\try
-        \\  set prompt_text to "{s}"
-        \\  set choices to {{"Allow once", "Deny once", "Allow 5 min", "Always allow", "Always deny"}}
-        \\  with timeout of {d} seconds
-        \\    set selected to choose from list choices with title "{s}" with prompt prompt_text default items {{"Allow once"}} OK button name "Select" cancel button name "Deny once"
-        \\  end timeout
-        \\  if selected is false then
-        \\    return "deny"
-        \\  end if
-        \\  set answer to item 1 of selected
-        \\  if answer is "Allow once" then return "allow"
-        \\  if answer is "Deny once" then return "deny"
-        \\  if answer is "Allow 5 min" then return "allow-5m"
-        \\  if answer is "Always allow" then return "always-allow"
-        \\  if answer is "Always deny" then return "always-deny"
-        \\  return "deny"
-        \\on error number error_number
-        \\  if error_number is -1712 then return "timeout"
-        \\  if error_number is -128 then return "deny"
-        \\  return "deny"
-        \\end try
-    ,
-        .{ escaped_prompt, timeout_seconds, escaped_title },
-    );
-}
-
-fn buildDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request) ![]u8 {
-    const label = request.label orelse blk: {
-        const generated = try std.fmt.allocPrint(
-            allocator,
-            "{s} {s}",
-            .{ accessClassLabel(request.access_class), request.path },
-        );
-        break :blk generated;
-    };
-    defer if (request.label == null) allocator.free(label);
-
-    const executable_path = request.executable_path orelse "unknown executable";
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}\n\nProcess: {s}\nPID: {d}\nUID: {d}",
-        .{ label, executable_path, request.pid, request.uid },
-    );
-}
-
-fn appleScriptStringLiteralContentsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
-
-    for (raw) |byte| switch (byte) {
-        '"' => try output.appendSlice(allocator, "\\\""),
-        '\\' => try output.appendSlice(allocator, "\\\\"),
-        '\n' => try output.appendSlice(allocator, "\\n"),
-        '\r' => {},
-        else => try output.append(allocator, byte),
-    };
-
-    return output.toOwnedSlice(allocator);
-}
-
-fn parseMacosUiResponse(raw_output: []const u8) !prompt.Response {
-    const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
-    if (std.mem.eql(u8, trimmed, "allow")) return .{ .decision = .allow, .remember_kind = .once };
-    if (std.mem.eql(u8, trimmed, "deny")) return .{ .decision = .deny, .remember_kind = .once };
-    if (std.mem.eql(u8, trimmed, "timeout")) return .{ .decision = .timeout };
-    if (std.mem.eql(u8, trimmed, "allow-5m")) return .{
-        .decision = .allow,
-        .remember_kind = .temporary,
-        .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
-    };
-    if (std.mem.eql(u8, trimmed, "always-allow")) return .{ .decision = .allow, .remember_kind = .durable };
-    if (std.mem.eql(u8, trimmed, "always-deny")) return .{ .decision = .deny, .remember_kind = .durable };
-    return error.InvalidProtocolMessage;
-}
-
-fn parseLinuxUiResponse(term: std.process.Child.Term, raw_output: []const u8) !prompt.Response {
-    return switch (term) {
-        .exited => |code| switch (code) {
-            0 => parseLinuxUiSelection(raw_output),
-            1 => .{ .decision = .deny, .remember_kind = .once },
-            5 => .{ .decision = .timeout },
-            else => error.InvalidProtocolMessage,
-        },
-        else => error.InvalidProtocolMessage,
-    };
-}
-
-fn parseLinuxUiSelection(raw_output: []const u8) !prompt.Response {
-    const trimmed = std.mem.trim(u8, raw_output, " \t\r\n");
-    if (std.mem.eql(u8, trimmed, "Allow once")) {
-        return .{ .decision = .allow, .remember_kind = .once };
-    }
-    if (std.mem.eql(u8, trimmed, "Deny once")) {
-        return .{ .decision = .deny, .remember_kind = .once };
-    }
-    if (std.mem.eql(u8, trimmed, "Allow 5 min")) return .{
-        .decision = .allow,
-        .remember_kind = .temporary,
-        .expires_at_unix_seconds = runtime.timestamp() + defaults.remember_temporary_seconds,
-    };
-    if (std.mem.eql(u8, trimmed, "Always allow")) {
-        return .{ .decision = .allow, .remember_kind = .durable };
-    }
-    if (std.mem.eql(u8, trimmed, "Always deny")) {
-        return .{ .decision = .deny, .remember_kind = .durable };
-    }
-    return error.InvalidProtocolMessage;
-}
-
-fn terminalPathFromStandardFilesAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (try std.Io.File.stderr().isTty(runtime.io())) {
-        return terminalPathForFileAlloc(allocator, std.Io.File.stderr());
-    }
-    if (try std.Io.File.stdin().isTty(runtime.io())) {
-        return terminalPathForFileAlloc(allocator, std.Io.File.stdin());
-    }
-    return error.NotATerminal;
-}
-
-fn terminalPathForFileAlloc(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
-    if (!try file.isTty(runtime.io())) return error.NotATerminal;
-
-    var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const result = c.ttyname_r(file.handle, &buffer, buffer.len);
-    if (result != 0) return error.NotATerminal;
-
-    return allocator.dupe(u8, std.mem.sliceTo(&buffer, 0));
-}
-
-fn responseFromFrame(allocator: std.mem.Allocator, frame: []const u8) !prompt.Response {
-    const parsed = try std.json.parseFromSlice(DecisionMessage, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    _ = parsed.value.request_id;
-    return .{
-        .decision = outcomeFromLabel(parsed.value.outcome) catch .unavailable,
-        .remember_kind = if (parsed.value.remember) |remember|
-            rememberKindFromLabel(remember.kind) catch .none
-        else
-            .none,
-        .expires_at_unix_seconds = if (parsed.value.remember) |remember|
-            try parseRememberExpiration(remember.expires_at)
-        else
-            null,
-    };
-}
-
-fn persistRememberedDecision(
-    context: *RequesterContext,
-    request: prompt.Request,
-    response: prompt.Response,
-) !void {
-    switch (response.remember_kind) {
-        .none, .once => return,
-        .temporary, .durable => {},
-    }
-
-    const executable_path = request.executable_path orelse return;
-    const expires_at = if (response.expires_at_unix_seconds) |unix_seconds|
-        try rfc3339.formatUtcAlloc(context.allocator, unix_seconds)
-    else
-        null;
-    defer if (expires_at) |value| context.allocator.free(value);
-
-    var policy_lock = try config.acquirePolicyLock(context.allocator, context.policy_path);
-    defer policy_lock.deinit();
-
-    var loaded_policy = try config.loadFromFile(context.allocator, context.policy_path);
-    defer loaded_policy.deinit();
-
-    try loaded_policy.upsertDecision(
-        executable_path,
-        request.path,
-        accessClassLabel(request.access_class),
-        switch (response.decision) {
-            .allow => "allow",
-            .deny => "deny",
-            else => return,
-        },
-        expires_at,
-    );
-    try loaded_policy.saveToFile();
-}
-
-fn validateHelloFrame(allocator: std.mem.Allocator, frame: []const u8) !void {
-    const parsed = try std.json.parseFromSlice(Header, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    if (!std.mem.eql(u8, parsed.value.protocol, protocol_name)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.version, protocol_version)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.type, "hello")) return error.InvalidProtocolMessage;
-}
-
-fn validateWelcomeFrame(allocator: std.mem.Allocator, frame: []const u8, expected_request_id: []const u8) !void {
-    const parsed = try std.json.parseFromSlice(Welcome, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    if (!std.mem.eql(u8, parsed.value.protocol, protocol_name)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.version, protocol_version)) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.type, "welcome")) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.role, "requester")) return error.InvalidProtocolMessage;
-    if (!std.mem.eql(u8, parsed.value.request_id, expected_request_id)) return error.InvalidProtocolMessage;
-}
-
-fn requestIdFromFrame(allocator: std.mem.Allocator, frame: []const u8) ![]u8 {
-    const parsed = try std.json.parseFromSlice(Header, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    return allocator.dupe(u8, parsed.value.request_id orelse return error.InvalidProtocolMessage);
-}
-
-fn frameTypeFromJson(allocator: std.mem.Allocator, frame: []const u8) ![]u8 {
-    const parsed = try std.json.parseFromSlice(Header, allocator, frame, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    return allocator.dupe(u8, parsed.value.type);
-}
-
-fn sendJsonFrame(allocator: std.mem.Allocator, stream: net.Stream, value: anytype) !void {
-    var output: std.Io.Writer.Allocating = .init(allocator);
-    defer output.deinit();
-    try std.json.Stringify.value(value, .{}, &output.writer);
-    try writeFrame(stream, output.written());
-}
-
-fn isPeerClosedError(err: anyerror) bool {
-    return err == error.BrokenPipe or err == error.ConnectionResetByPeer or err == error.NotOpenForWriting or err == error.InputOutput;
-}
-
-fn writeFrame(stream: net.Stream, payload: []const u8) !void {
-    var prefix_buffer: [32]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&prefix_buffer, "{d}:", .{payload.len});
-    try writeAllFd(stream.socket.handle, prefix);
-    try writeAllFd(stream.socket.handle, payload);
-    try writeAllFd(stream.socket.handle, "\n");
-}
-
-fn readFrameAlloc(allocator: std.mem.Allocator, stream: net.Stream, timeout_ms: ?u32) ![]u8 {
-    var length_buffer: [max_length_digits]u8 = undefined;
-    var length_len: usize = 0;
-
-    while (true) {
-        const next = try readByte(stream, timeout_ms);
-        if (next == ':') break;
-        if (next < '0' or next > '9') return error.InvalidFrame;
-        if (length_len >= max_length_digits) return error.InvalidFrame;
-        length_buffer[length_len] = next;
-        length_len += 1;
-    }
-
-    const payload_len = try parseFramePayloadLen(length_buffer[0..length_len]);
-    const payload = try allocator.alloc(u8, payload_len);
-    errdefer allocator.free(payload);
-    try readExact(stream, payload, timeout_ms);
-
-    const trailing = try readByte(stream, timeout_ms);
-    if (trailing != '\n') return error.InvalidFrame;
-    return payload;
-}
-
-fn parseFramePayloadLen(length_prefix: []const u8) !usize {
-    if (length_prefix.len == 0) return error.InvalidFrame;
-    if (length_prefix.len > 1 and length_prefix[0] == '0') return error.InvalidFrame;
-
-    const payload_len = try std.fmt.parseInt(usize, length_prefix, 10);
-    if (payload_len > max_frame_len) return error.InvalidFrame;
-    return payload_len;
-}
-
-fn readExact(stream: net.Stream, buffer: []u8, timeout_ms: ?u32) !void {
-    var offset: usize = 0;
-    while (offset < buffer.len) {
-        try waitReadable(stream.socket.handle, timeout_ms);
-        const count = c.read(stream.socket.handle, buffer[offset..].ptr, buffer.len - offset);
-        if (count < 0) return error.InputOutput;
-        if (count == 0) return error.EndOfStream;
-        offset += @intCast(count);
-    }
-}
-
-fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const count = c.write(fd, bytes[offset..].ptr, bytes.len - offset);
-        if (count < 0) return error.InputOutput;
-        if (count == 0) return error.EndOfStream;
-        offset += @intCast(count);
-    }
-}
-
-fn readByte(stream: net.Stream, timeout_ms: ?u32) !u8 {
-    var byte: [1]u8 = undefined;
-    try readExact(stream, &byte, timeout_ms);
-    return byte[0];
-}
-
-fn waitReadable(fd: std.posix.fd_t, timeout_ms: ?u32) !void {
-    if (timeout_ms == null) return;
-    var poll_fds = [_]std.posix.pollfd{.{
-        .fd = fd,
-        .events = std.posix.POLL.IN,
-        .revents = 0,
-    }};
-    const ready = try std.posix.poll(&poll_fds, @intCast(timeout_ms.?));
-    if (ready == 0) return error.TimedOut;
-    if ((poll_fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.NVAL)) != 0) {
-        return error.InputOutput;
-    }
-    if ((poll_fds[0].revents & std.posix.POLL.HUP) != 0 and (poll_fds[0].revents & std.posix.POLL.IN) == 0) {
-        return error.EndOfStream;
-    }
-}
-
-fn ensureParentDirectory(path: []const u8) !void {
-    const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    if (std.Io.Dir.cwd().statFile(runtime.io(), parent_dir, .{})) |_| {
-        if (std.mem.eql(u8, std.fs.path.basename(parent_dir), "file-snitch")) {
-            try chmodPath(parent_dir, 0o700);
-        }
-        try validatePrivateDirectory(parent_dir);
-        return;
-    } else |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    }
-
-    const grandparent_dir = std.fs.path.dirname(parent_dir) orelse return error.InvalidPath;
-    std.Io.Dir.cwd().createDirPath(runtime.io(), grandparent_dir) catch |err| switch (err) {
-        error.PathAlreadyExists, error.NotDir => {},
-        else => return err,
-    };
-    mkdirPath(parent_dir, 0o700) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-    try chmodPath(parent_dir, 0o700);
-    try validatePrivateDirectory(parent_dir);
-}
-
-fn validatePrivateDirectory(path: []const u8) !void {
-    const file_stat = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
-    if (file_stat.kind != .directory) return error.InvalidSocketPath;
-
-    const posix_stat = try statPath(path);
-    if (posix_stat.st_uid != c.getuid()) return error.InvalidSocketPath;
-    if ((posix_stat.st_mode & 0o777) != 0o700) return error.InvalidSocketPath;
-}
-
-fn assertSameUidPeer(stream: net.Stream) !void {
-    const peer_uid = try peerUid(stream.socket.handle);
-    if (peer_uid != c.getuid()) return error.UnauthorizedPeer;
-}
-
-fn chmodPath(path: []const u8, mode: c.mode_t) !void {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
-    if (c.chmod(path_z.ptr, mode) != 0) return error.AccessDenied;
-}
-
-fn mkdirPath(path: []const u8, mode: c.mode_t) !void {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
-    if (c.mkdir(path_z.ptr, mode) != 0) return error.PathAlreadyExists;
-}
-
-fn statPath(path: []const u8) !c.struct_stat {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
-    var stat: c.struct_stat = undefined;
-    if (c.stat(path_z.ptr, &stat) != 0) return error.InvalidSocketPath;
-    return stat;
-}
-
-fn peerUid(fd: std.posix.fd_t) !std.posix.uid_t {
-    return switch (builtin.os.tag) {
-        .linux => peerUidLinux(fd),
-        .macos => peerUidMacos(fd),
-        else => error.InvalidSocketPath,
-    };
-}
-
-fn peerUidLinux(fd: std.posix.fd_t) !std.posix.uid_t {
-    var credential: c.struct_ucred = undefined;
-    var credential_len: c.socklen_t = @sizeOf(c.struct_ucred);
-    if (c.getsockopt(
-        fd,
-        c.SOL_SOCKET,
-        c.SO_PEERCRED,
-        &credential,
-        &credential_len,
-    ) != 0) return error.InvalidSocketPath;
-    if (credential_len < @sizeOf(c.struct_ucred)) return error.InvalidSocketPath;
-    return @intCast(credential.uid);
-}
-
-fn peerUidMacos(fd: std.posix.fd_t) !std.posix.uid_t {
-    var credential: c.struct_xucred = undefined;
-    var credential_len: c.socklen_t = @sizeOf(c.struct_xucred);
-    if (c.getsockopt(
-        fd,
-        c.SOL_LOCAL,
-        c.LOCAL_PEERCRED,
-        &credential,
-        &credential_len,
-    ) != 0) return error.InvalidSocketPath;
-    if (credential_len < @sizeOf(c.struct_xucred)) return error.InvalidSocketPath;
-    return @intCast(credential.cr_uid);
-}
-
-fn removeSocketFileIfStale(path: []const u8) !void {
-    const stat = std.Io.Dir.cwd().statFile(runtime.io(), path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
-    if (stat.kind != .unix_domain_socket) return error.InvalidSocketPath;
-
-    if (try socketPathHasLiveListener(path)) return error.SocketPathInUse;
-    try removeStaleSocketFile(path);
-}
-
-fn removeStaleSocketFile(path: []const u8) !void {
-    try std.Io.Dir.cwd().deleteFile(runtime.io(), path);
-}
-
-fn removeStaleSocketFileForCleanup(path: []const u8) void {
-    removeStaleSocketFile(path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => std.log.warn("failed to remove stale agent socket {s}: {}", .{ path, err }),
-    };
-}
-
-fn socketPathHasLiveListener(path: []const u8) !bool {
-    var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
-    if (path.len >= addr.sun_path.len) return error.InvalidSocketPath;
-
-    addr.sun_family = c.AF_UNIX;
-    if (@hasField(c.struct_sockaddr_un, "sun_len")) {
-        addr.sun_len = @intCast(@offsetOf(c.struct_sockaddr_un, "sun_path") + path.len + 1);
-    }
-    @memcpy(addr.sun_path[0..path.len], path);
-
-    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
-    if (fd < 0) return error.SocketPathInUse;
-    defer _ = c.close(fd);
-
-    const addr_len: c.socklen_t = @intCast(@offsetOf(c.struct_sockaddr_un, "sun_path") + path.len + 1);
-    const connect_result = if (builtin.os.tag == .linux)
-        c.connect(fd, .{ .__sockaddr_un__ = &addr }, addr_len)
-    else
-        c.connect(fd, @ptrCast(&addr), addr_len);
-    if (connect_result == 0) {
-        return true;
-    }
-
-    return switch (std.c.errno(-1)) {
-        .NOENT => error.FileNotFound,
-        .CONNREFUSED, .CONNRESET => false,
-        else => error.SocketPathInUse,
-    };
-}
-
-fn operationLabel(access_class: policy.AccessClass) []const u8 {
-    return switch (access_class) {
-        .read, .write => "open",
-        .create => "create",
-        .rename => "rename",
-        .delete => "unlink",
-        .metadata => "metadata",
-        .xattr => "metadata",
-    };
-}
-
-fn modeLabel(access_class: policy.AccessClass) []const u8 {
-    return switch (access_class) {
-        .read => "read",
-        .write, .create, .rename, .delete => "write",
-        .metadata, .xattr => "metadata",
-    };
-}
-
-fn accessClassLabel(access_class: policy.AccessClass) []const u8 {
-    return switch (access_class) {
-        .read => "read_like",
-        .create, .write, .rename, .delete, .metadata, .xattr => "write_capable",
-    };
-}
-
-fn accessClassFromLabel(label: []const u8) !policy.AccessClass {
-    if (std.mem.eql(u8, label, "read_like")) return .read;
-    if (std.mem.eql(u8, label, "write_capable")) return .write;
-    return error.InvalidProtocolMessage;
-}
-
-fn outcomeLabel(decision: prompt.Decision) []const u8 {
-    return switch (decision) {
-        .allow => "allow",
-        .deny => "deny",
-        .timeout => "timeout",
-        .unavailable => "unavailable",
-    };
-}
-
-fn outcomeFromLabel(label: []const u8) !prompt.Decision {
-    if (std.mem.eql(u8, label, "allow")) return .allow;
-    if (std.mem.eql(u8, label, "deny")) return .deny;
-    if (std.mem.eql(u8, label, "timeout")) return .timeout;
-    if (std.mem.eql(u8, label, "unavailable")) return .unavailable;
-    return error.InvalidProtocolMessage;
-}
-
-fn rememberKindLabel(kind: prompt.RememberKind) []const u8 {
-    return switch (kind) {
-        .none => "none",
-        .once => "once",
-        .temporary => "temporary",
-        .durable => "durable",
-    };
-}
-
-fn rememberKindFromLabel(label: []const u8) !prompt.RememberKind {
-    if (std.mem.eql(u8, label, "none")) return .none;
-    if (std.mem.eql(u8, label, "once")) return .once;
-    if (std.mem.eql(u8, label, "temporary")) return .temporary;
-    if (std.mem.eql(u8, label, "durable")) return .durable;
-    return error.InvalidProtocolMessage;
-}
-
-fn decisionReason(decision: prompt.Decision) []const u8 {
-    return switch (decision) {
-        .allow => "user-approved",
-        .deny => "user-denied",
-        .timeout => "agent-timeout",
-        .unavailable => "agent-unavailable",
-    };
-}
-
-fn parseRememberExpiration(value: ?[]const u8) !?i64 {
-    const raw = value orelse return null;
-    return rfc3339.parseUtcSeconds(raw) catch |err| switch (err) {
-        error.InvalidRfc3339Utc => return error.InvalidProtocolMessage,
-    };
-}
-
-fn generateUlidAlloc(allocator: std.mem.Allocator) ![]u8 {
-    var bytes: [16]u8 = undefined;
-    const timestamp_ms: u64 = @intCast(runtime.milliTimestamp());
-    bytes[0] = @truncate(timestamp_ms >> 40);
-    bytes[1] = @truncate(timestamp_ms >> 32);
-    bytes[2] = @truncate(timestamp_ms >> 24);
-    bytes[3] = @truncate(timestamp_ms >> 16);
-    bytes[4] = @truncate(timestamp_ms >> 8);
-    bytes[5] = @truncate(timestamp_ms);
-    runtime.io().random(bytes[6..]);
-
-    var encoded: [26]u8 = undefined;
-    const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    encoded[0] = alphabet[@intCast((bytes[0] & 0xE0) >> 5)];
-    encoded[1] = alphabet[@intCast(bytes[0] & 0x1F)];
-    encoded[2] = alphabet[@intCast((bytes[1] & 0xF8) >> 3)];
-    encoded[3] = alphabet[@intCast(((bytes[1] & 0x07) << 2) | ((bytes[2] & 0xC0) >> 6))];
-    encoded[4] = alphabet[@intCast((bytes[2] & 0x3E) >> 1)];
-    encoded[5] = alphabet[@intCast(((bytes[2] & 0x01) << 4) | ((bytes[3] & 0xF0) >> 4))];
-    encoded[6] = alphabet[@intCast(((bytes[3] & 0x0F) << 1) | ((bytes[4] & 0x80) >> 7))];
-    encoded[7] = alphabet[@intCast((bytes[4] & 0x7C) >> 2)];
-    encoded[8] = alphabet[@intCast(((bytes[4] & 0x03) << 3) | ((bytes[5] & 0xE0) >> 5))];
-    encoded[9] = alphabet[@intCast(bytes[5] & 0x1F)];
-    encoded[10] = alphabet[@intCast((bytes[6] & 0xF8) >> 3)];
-    encoded[11] = alphabet[@intCast(((bytes[6] & 0x07) << 2) | ((bytes[7] & 0xC0) >> 6))];
-    encoded[12] = alphabet[@intCast((bytes[7] & 0x3E) >> 1)];
-    encoded[13] = alphabet[@intCast(((bytes[7] & 0x01) << 4) | ((bytes[8] & 0xF0) >> 4))];
-    encoded[14] = alphabet[@intCast(((bytes[8] & 0x0F) << 1) | ((bytes[9] & 0x80) >> 7))];
-    encoded[15] = alphabet[@intCast((bytes[9] & 0x7C) >> 2)];
-    encoded[16] = alphabet[@intCast(((bytes[9] & 0x03) << 3) | ((bytes[10] & 0xE0) >> 5))];
-    encoded[17] = alphabet[@intCast(bytes[10] & 0x1F)];
-    encoded[18] = alphabet[@intCast((bytes[11] & 0xF8) >> 3)];
-    encoded[19] = alphabet[@intCast(((bytes[11] & 0x07) << 2) | ((bytes[12] & 0xC0) >> 6))];
-    encoded[20] = alphabet[@intCast((bytes[12] & 0x3E) >> 1)];
-    encoded[21] = alphabet[@intCast(((bytes[12] & 0x01) << 4) | ((bytes[13] & 0xF0) >> 4))];
-    encoded[22] = alphabet[@intCast(((bytes[13] & 0x0F) << 1) | ((bytes[14] & 0x80) >> 7))];
-    encoded[23] = alphabet[@intCast((bytes[14] & 0x7C) >> 2)];
-    encoded[24] = alphabet[@intCast(((bytes[14] & 0x03) << 3) | ((bytes[15] & 0xE0) >> 5))];
-    encoded[25] = alphabet[@intCast(bytes[15] & 0x1F)];
-    return allocator.dupe(u8, &encoded);
-}
-
-test "frame roundtrip preserves payload" {
-    const allocator = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(allocator);
-    const payload = "{\"protocol\":\"file-snitch-agent\"}";
-    try list.print(allocator, "{d}:{s}\n", .{ payload.len, payload });
-
-    var reader: std.Io.Reader = .fixed(list.items);
-    const decoded = try readFrameFromReaderAlloc(allocator, &reader);
-    defer allocator.free(decoded);
-    try std.testing.expectEqualStrings(payload, decoded);
-}
-
-test "frame length parser rejects invalid prefixes" {
-    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen(""));
-    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen("01"));
-    try std.testing.expectError(error.InvalidFrame, parseFramePayloadLen("1000000"));
-    try std.testing.expectEqual(@as(usize, max_frame_len), try parseFramePayloadLen("999999"));
-}
-
-fn readFrameFromReaderAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
-    var length_buffer: [max_length_digits]u8 = undefined;
-    var length_len: usize = 0;
-    while (true) {
-        const next = try reader.takeByte();
-        if (next == ':') break;
-        if (next < '0' or next > '9') return error.InvalidFrame;
-        if (length_len >= max_length_digits) return error.InvalidFrame;
-        length_buffer[length_len] = next;
-        length_len += 1;
-    }
-    const payload_len = try parseFramePayloadLen(length_buffer[0..length_len]);
-    const payload = try allocator.alloc(u8, payload_len);
-    errdefer allocator.free(payload);
-    try reader.readSliceAll(payload);
-    if (try reader.takeByte() != '\n') return error.InvalidFrame;
-    return payload;
-}
-
-test "generated ulid is well-formed" {
-    const allocator = std.testing.allocator;
-    const value = try generateUlidAlloc(allocator);
-    defer allocator.free(value);
-    try std.testing.expectEqual(@as(usize, 26), value.len);
-    for (value) |byte| {
-        try std.testing.expect(std.mem.indexOfScalar(u8, "0123456789ABCDEFGHJKMNPQRSTVWXYZ", byte) != null);
-    }
-}
-
-test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
-    const allocator = std.testing.allocator;
-    const key = defaults.agent_tty_env;
-    const value = "/tmp/file-snitch-agent-test-tty";
-
-    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
-    defer _ = c.unsetenv(key);
-
-    const resolved = try defaultTerminalPathAlloc(allocator);
-    defer allocator.free(resolved);
-    try std.testing.expectEqualStrings(value, resolved);
-}
-
-test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
-    const allocator = std.testing.allocator;
-    const key = defaults.osascript_bin_env;
-    const value = "/tmp/file-snitch-test-osascript";
-
-    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
-    defer _ = c.unsetenv(key);
-
-    const resolved = try defaultOsascriptPathAlloc(allocator);
-    defer allocator.free(resolved);
-    try std.testing.expectEqualStrings(value, resolved);
-}
-
-test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
-    const allocator = std.testing.allocator;
-    const key = defaults.zenity_bin_env;
-    const value = "/tmp/file-snitch-test-zenity";
-
-    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
-    defer _ = c.unsetenv(key);
-
-    const resolved = try defaultZenityPathAlloc(allocator);
-    defer allocator.free(resolved);
-    try std.testing.expectEqualStrings(value, resolved);
-}
-
-test "gui frontends serialize requests" {
-    const allocator = std.testing.allocator;
-
-    var terminal_context = TerminalPinentryContext{
-        .allocator = allocator,
-    };
-    try std.testing.expect(terminalPinentryFrontend(&terminal_context).supports_concurrent_requests);
-
-    var macos_context = MacosUiContext{
-        .allocator = allocator,
-        .osascript_path = "osascript",
-    };
-    try std.testing.expect(!macosUiFrontend(&macos_context).supports_concurrent_requests);
-
-    var linux_context = LinuxUiContext{
-        .allocator = allocator,
-        .zenity_path = "zenity",
-    };
-    try std.testing.expect(!linuxUiFrontend(&linux_context).supports_concurrent_requests);
-}
-
-test "parse macos ui response accepts known values" {
-    try std.testing.expectEqual(prompt.Decision.allow, (try parseMacosUiResponse("allow\n")).decision);
-    try std.testing.expectEqual(prompt.RememberKind.once, (try parseMacosUiResponse("allow\n")).remember_kind);
-    try std.testing.expectEqual(prompt.Decision.deny, (try parseMacosUiResponse("deny\r\n")).decision);
-    try std.testing.expectEqual(prompt.Decision.timeout, (try parseMacosUiResponse("timeout")).decision);
-    const remembered = try parseMacosUiResponse("always-allow");
-    try std.testing.expectEqual(prompt.Decision.allow, remembered.decision);
-    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
-}
-
-test "macos ui remembered dialog uses compilable timeout block" {
-    const allocator = std.testing.allocator;
-    const script = try buildMacosDialogScriptAlloc(allocator, .{
-        .path = "/Users/test/secrets/gist",
-        .access_class = .read,
-        .label = "open O_RDONLY /gist",
-        .can_remember = true,
-        .pid = 42,
-        .uid = 501,
-        .gid = 20,
-        .executable_path = "/bin/cat",
-    }, 5_000);
-    defer allocator.free(script);
-
-    try std.testing.expect(std.mem.indexOf(u8, script, "with timeout of 5 seconds") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "giving up after") == null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "on error number error_number") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "if error_number is -1712 then return \"timeout\"") != null);
-}
-
-test "parse linux ui response accepts known exit codes" {
-    try std.testing.expectEqual(prompt.Decision.allow, (try parseLinuxUiResponse(.{ .exited = 0 }, "Allow once")).decision);
-    try std.testing.expectEqual(prompt.Decision.deny, (try parseLinuxUiResponse(.{ .exited = 1 }, "")).decision);
-    try std.testing.expectEqual(prompt.Decision.timeout, (try parseLinuxUiResponse(.{ .exited = 5 }, "")).decision);
-    const remembered = try parseLinuxUiResponse(.{ .exited = 0 }, "Always deny");
-    try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
-    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
-}
-
-test "parse linux ui response rejects hidden machine labels" {
-    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "allow"));
-    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "deny"));
-    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "allow-5m"));
-    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "always-allow"));
-    try std.testing.expectError(error.InvalidProtocolMessage, parseLinuxUiResponse(.{ .exited = 0 }, "always-deny"));
-}
-
-test "stale socket cleanup rejects regular files" {
-    const allocator = std.testing.allocator;
-    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{runtime.nanoTimestamp()});
-    defer allocator.free(path);
-    defer deleteFileIfPresent(path);
-
-    const file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, .{ .truncate = true });
-    file.close(runtime.io());
-
-    try std.testing.expectError(error.InvalidSocketPath, removeSocketFileIfStale(path));
-}
-
-test "stale socket cleanup preserves live sockets" {
-    const allocator = std.testing.allocator;
-    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{runtime.nanoTimestamp()});
-    defer allocator.free(path);
-    defer deleteFileIfPresent(path);
-
-    const address = try net.UnixAddress.init(path);
-    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
-    defer server.deinit(runtime.io());
-
-    try std.testing.expectError(error.SocketPathInUse, removeSocketFileIfStale(path));
-    _ = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
-}
-
-test "stale socket cleanup removes dead sockets" {
-    const allocator = std.testing.allocator;
-    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-dead-socket-{d}.sock", .{runtime.nanoTimestamp()});
-    defer allocator.free(path);
-    defer deleteFileIfPresent(path);
-
-    const address = try net.UnixAddress.init(path);
-    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
-    server.deinit(runtime.io());
-
-    try removeSocketFileIfStale(path);
-    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(runtime.io(), path, .{}));
-}
-
-test "agent socket parent directory is created private" {
-    const allocator = std.testing.allocator;
-    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-private-parent");
-    defer allocator.free(socket_path);
-    defer deleteParentDirectory(socket_path);
-
-    try ensureParentDirectory(socket_path);
-
-    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
-    const stat = try statPath(parent_dir);
-    try std.testing.expectEqual(c.getuid(), stat.st_uid);
-    try std.testing.expectEqual(@as(c.mode_t, 0o700), stat.st_mode & 0o777);
-}
-
-test "agent socket parent directory rejects shared permissions" {
-    const allocator = std.testing.allocator;
-    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-shared-parent");
-    defer allocator.free(socket_path);
-    defer deleteParentDirectory(socket_path);
-
-    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
-    try std.Io.Dir.cwd().createDirPath(runtime.io(), parent_dir);
-    try chmodPath(parent_dir, 0o755);
-
-    try std.testing.expectError(error.InvalidSocketPath, ensureParentDirectory(socket_path));
-}
-
+// Test helper functions and types
 const BlockingFrontendContext = struct {
     first_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     release_first: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1613,13 +90,13 @@ fn resolveBlockingFrontend(raw_context: ?*anyopaque, request: prompt.Request) pr
 fn runRequesterThread(
     done: *std.atomic.Value(bool),
     failed: *std.atomic.Value(bool),
-    context: *RequesterContext,
+    context: *core.RequesterContext,
     request: prompt.Request,
 ) void {
-    _ = resolveViaAgent(context, request) catch |err| {
-        std.log.warn("test requester failed: {}", .{err});
+    const response = protocol.resolveSocket(context, request);
+    if (response.decision == .unavailable) {
         failed.store(true, .release);
-    };
+    }
     done.store(true, .release);
 }
 
@@ -1629,16 +106,15 @@ fn resolveAllowFrontend(raw_context: ?*anyopaque, request: prompt.Request) promp
     return .{ .decision = .allow, .remember_kind = .once };
 }
 
-fn runTestConnectionWorker(worker_context: *ConnectionWorkerContext) void {
-    defer cleanupConnectionWorker(worker_context);
-
-    handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
+fn runTestConnectionWorker(worker_context: *protocol.ConnectionWorkerContext) void {
+    defer protocol.cleanupConnectionWorker(worker_context);
+    protocol.handleConnection(worker_context.service_context, worker_context.stream) catch |err| {
         std.log.warn("test agent connection failed: {}", .{err});
     };
 }
 
 const TestAgentServiceContext = struct {
-    service_context: *AgentServiceContext,
+    service_context: *core.AgentServiceContext,
     failed: *std.atomic.Value(bool),
 };
 
@@ -1652,31 +128,31 @@ fn runTestAgentServiceThread(context: *TestAgentServiceContext) void {
 fn runTestAgentService(context: *TestAgentServiceContext) !void {
     const service_context = context.service_context;
 
-    try ensureParentDirectory(service_context.socket_path);
-    try removeSocketFileIfStale(service_context.socket_path);
+    try util.ensureParentDirectory(service_context.socket_path);
+    try util.removeSocketFileIfStale(service_context.socket_path);
 
     const address = try net.UnixAddress.init(service_context.socket_path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 16 });
     defer server.deinit(runtime.io());
-    defer removeStaleSocketFileForCleanup(service_context.socket_path);
+    defer util.removeStaleSocketFileForCleanup(service_context.socket_path);
 
     const first_stream = try server.accept(runtime.io());
     errdefer first_stream.close(runtime.io());
-    try assertSameUidPeer(first_stream);
-    const first_worker_context = try service_context.allocator.create(ConnectionWorkerContext);
+    try util.assertSameUidPeer(first_stream);
+    const first_worker_context = try service_context.allocator.create(protocol.ConnectionWorkerContext);
     errdefer service_context.allocator.destroy(first_worker_context);
     first_worker_context.* = .{
         .allocator = service_context.allocator,
         .service_context = service_context,
         .stream = first_stream,
     };
-    const first_worker = try std.Thread.spawn(.{}, runTestConnectionWorker, .{first_worker_context});
+    const first_worker = try std.Thread.spawn(.{}, protocol.runConnectionWorker, .{first_worker_context});
     defer first_worker.join();
 
     const second_stream = try server.accept(runtime.io());
     defer second_stream.close(runtime.io());
-    try assertSameUidPeer(second_stream);
-    try handleConnection(service_context, second_stream);
+    try util.assertSameUidPeer(second_stream);
+    try protocol.handleConnection(service_context, second_stream);
 }
 
 fn waitForPathToExist(path: []const u8) !void {
@@ -1708,6 +184,210 @@ fn deleteFileIfPresent(path: []const u8) void {
     };
 }
 
+test "frame roundtrip preserves payload" {
+    const allocator = std.testing.allocator;
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(allocator);
+    const payload = "{\"protocol\":\"file-snitch-agent\"}";
+    try list.print(allocator, "{d}:{s}\n", .{ payload.len, payload });
+
+    var reader: std.Io.Reader = .fixed(list.items);
+    const decoded = try protocol.readFrameFromReaderAlloc(allocator, &reader);
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings(payload, decoded);
+}
+
+test "frame length parser rejects invalid prefixes" {
+    try std.testing.expectError(error.InvalidFrame, protocol.parseFramePayloadLen(""));
+    try std.testing.expectError(error.InvalidFrame, protocol.parseFramePayloadLen("01"));
+    try std.testing.expectError(error.InvalidFrame, protocol.parseFramePayloadLen("1000000"));
+    try std.testing.expectEqual(@as(usize, protocol.max_frame_len), try protocol.parseFramePayloadLen("999999"));
+}
+
+test "generated ulid is well-formed" {
+    const allocator = std.testing.allocator;
+    const value = try util.generateUlidAlloc(allocator);
+    defer allocator.free(value);
+    try std.testing.expectEqual(@as(usize, 26), value.len);
+    for (value) |byte| {
+        try std.testing.expect(std.mem.indexOfScalar(u8, "0123456789ABCDEFGHJKMNPQRSTVWXYZ", byte) != null);
+    }
+}
+
+test "default terminal path uses FILE_SNITCH_AGENT_TTY override" {
+    const allocator = std.testing.allocator;
+    const key = defaults.agent_tty_env;
+    const value = "/tmp/file-snitch-agent-test-tty";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try frontend.defaultTerminalPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "default osascript path uses FILE_SNITCH_OSASCRIPT_BIN override" {
+    const allocator = std.testing.allocator;
+    const key = defaults.osascript_bin_env;
+    const value = "/tmp/file-snitch-test-osascript";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try frontend.defaultOsascriptPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "default zenity path uses FILE_SNITCH_ZENITY_BIN override" {
+    const allocator = std.testing.allocator;
+    const key = defaults.zenity_bin_env;
+    const value = "/tmp/file-snitch-test-zenity";
+
+    try std.testing.expectEqual(@as(c_int, 0), c.setenv(key, value, 1));
+    defer _ = c.unsetenv(key);
+
+    const resolved = try frontend.defaultZenityPathAlloc(allocator);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(value, resolved);
+}
+
+test "gui frontends serialize requests" {
+    const allocator = std.testing.allocator;
+
+    var terminal_context = frontend.TerminalPinentryContext{
+        .allocator = allocator,
+    };
+    try std.testing.expect(frontend.terminalPinentryFrontend(&terminal_context).supports_concurrent_requests);
+
+    var macos_context = frontend.MacosUiContext{
+        .allocator = allocator,
+        .osascript_path = "osascript",
+    };
+    try std.testing.expect(!frontend.macosUiFrontend(&macos_context).supports_concurrent_requests);
+
+    var linux_context = frontend.LinuxUiContext{
+        .allocator = allocator,
+        .zenity_path = "zenity",
+    };
+    try std.testing.expect(!frontend.linuxUiFrontend(&linux_context).supports_concurrent_requests);
+}
+
+test "parse macos ui response accepts known values" {
+    try std.testing.expectEqual(prompt.Decision.allow, (try frontend.parseMacosUiResponse("allow\n")).decision);
+    try std.testing.expectEqual(prompt.RememberKind.once, (try frontend.parseMacosUiResponse("allow\n")).remember_kind);
+    try std.testing.expectEqual(prompt.Decision.deny, (try frontend.parseMacosUiResponse("deny\r\n")).decision);
+    try std.testing.expectEqual(prompt.Decision.timeout, (try frontend.parseMacosUiResponse("timeout")).decision);
+    const remembered = try frontend.parseMacosUiResponse("always-allow");
+    try std.testing.expectEqual(prompt.Decision.allow, remembered.decision);
+    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
+}
+
+test "macos ui remembered dialog uses compilable timeout block" {
+    const allocator = std.testing.allocator;
+    const script = try frontend.buildMacosDialogScriptAlloc(allocator, .{
+        .path = "/Users/test/secrets/gist",
+        .access_class = .read,
+        .label = "open O_RDONLY /gist",
+        .can_remember = true,
+        .pid = 42,
+        .uid = 501,
+        .gid = 20,
+        .executable_path = "/bin/cat",
+    }, 5_000);
+    defer allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "with timeout of 5 seconds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "giving up after") == null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "on error number error_number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "if error_number is -1712 then return \"timeout\"") != null);
+}
+
+test "parse linux ui response accepts known exit codes" {
+    try std.testing.expectEqual(prompt.Decision.allow, (try frontend.parseLinuxUiResponse(.{ .exited = 0 }, "Allow once")).decision);
+    try std.testing.expectEqual(prompt.Decision.deny, (try frontend.parseLinuxUiResponse(.{ .exited = 1 }, "")).decision);
+    try std.testing.expectEqual(prompt.Decision.timeout, (try frontend.parseLinuxUiResponse(.{ .exited = 5 }, "")).decision);
+    const remembered = try frontend.parseLinuxUiResponse(.{ .exited = 0 }, "Always deny");
+    try std.testing.expectEqual(prompt.Decision.deny, remembered.decision);
+    try std.testing.expectEqual(prompt.RememberKind.durable, remembered.remember_kind);
+}
+
+test "parse linux ui response rejects hidden machine labels" {
+    try std.testing.expectError(error.InvalidProtocolMessage, frontend.parseLinuxUiResponse(.{ .exited = 0 }, "allow"));
+    try std.testing.expectError(error.InvalidProtocolMessage, frontend.parseLinuxUiResponse(.{ .exited = 0 }, "deny"));
+    try std.testing.expectError(error.InvalidProtocolMessage, frontend.parseLinuxUiResponse(.{ .exited = 0 }, "allow-5m"));
+    try std.testing.expectError(error.InvalidProtocolMessage, frontend.parseLinuxUiResponse(.{ .exited = 0 }, "always-allow"));
+    try std.testing.expectError(error.InvalidProtocolMessage, frontend.parseLinuxUiResponse(.{ .exited = 0 }, "always-deny"));
+}
+
+test "stale socket cleanup rejects regular files" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-regular-{d}", .{runtime.nanoTimestamp()});
+    defer allocator.free(path);
+    defer deleteFileIfPresent(path);
+
+    const file = try std.Io.Dir.createFileAbsolute(runtime.io(), path, .{ .truncate = true });
+    file.close(runtime.io());
+
+    try std.testing.expectError(error.InvalidSocketPath, util.removeSocketFileIfStale(path));
+}
+
+test "stale socket cleanup preserves live sockets" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-socket-{d}.sock", .{runtime.nanoTimestamp()});
+    defer allocator.free(path);
+    defer deleteFileIfPresent(path);
+
+    const address = try net.UnixAddress.init(path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
+    defer server.deinit(runtime.io());
+
+    try std.testing.expectError(error.SocketPathInUse, util.removeSocketFileIfStale(path));
+    _ = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
+}
+
+test "stale socket cleanup removes dead sockets" {
+    const allocator = std.testing.allocator;
+    const path = try std.fmt.allocPrint(allocator, "/tmp/file-snitch-agent-dead-socket-{d}.sock", .{runtime.nanoTimestamp()});
+    defer allocator.free(path);
+    defer deleteFileIfPresent(path);
+
+    const address = try net.UnixAddress.init(path);
+    var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
+    server.deinit(runtime.io());
+
+    try util.removeSocketFileIfStale(path);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(runtime.io(), path, .{}));
+}
+
+test "agent socket parent directory is created private" {
+    const allocator = std.testing.allocator;
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-private-parent");
+    defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
+
+    try util.ensureParentDirectory(socket_path);
+
+    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
+    const stat = try util.statPath(parent_dir);
+    try std.testing.expectEqual(c.getuid(), stat.st_uid);
+    try std.testing.expectEqual(@as(c.mode_t, 0o700), stat.st_mode & 0o777);
+}
+
+test "agent socket parent directory rejects shared permissions" {
+    const allocator = std.testing.allocator;
+    const socket_path = try tempAgentSocketPathAlloc(allocator, "file-snitch-agent-shared-parent");
+    defer allocator.free(socket_path);
+    defer deleteParentDirectory(socket_path);
+
+    const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), parent_dir);
+    try util.chmodPath(parent_dir, 0o755);
+
+    try std.testing.expectError(error.InvalidSocketPath, util.ensureParentDirectory(socket_path));
+}
+
 test "decideFromFrame returns an owned request id" {
     var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
@@ -1717,7 +397,7 @@ test "decideFromFrame returns an owned request id" {
         \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
     ;
 
-    const decision = try decideFromFrame(allocator, frame, .{
+    const decision = try protocol.decideFromFrame(allocator, frame, .{
         .context = null,
         .resolve_fn = resolveAllowFrontend,
     });
@@ -1735,16 +415,16 @@ test "decideFromFrame returns an owned request id" {
 
 test "requester waits through user interaction deadline and protocol timeout" {
     const deadline_ms = runtime.milliTimestamp() + 30_000;
-    const timeout_ms = timeoutUntilDeadlinePlusProtocolMs(deadline_ms, 1_000);
+    const timeout_ms = protocol.timeoutUntilDeadlinePlusProtocolMs(deadline_ms, 1_000);
     try std.testing.expect(timeout_ms > 29_000);
     try std.testing.expect(timeout_ms <= 31_000);
 
     const expired_deadline_ms = runtime.milliTimestamp() - 2_000;
-    try std.testing.expectEqual(@as(u32, 0), timeoutUntilDeadlinePlusProtocolMs(expired_deadline_ms, 1_000));
+    try std.testing.expectEqual(@as(u32, 0), protocol.timeoutUntilDeadlinePlusProtocolMs(expired_deadline_ms, 1_000));
 }
 
 const DelayedDecisionServerContext = struct {
-    service_context: *AgentServiceContext,
+    service_context: *core.AgentServiceContext,
     socket_path: []const u8,
     failed: *std.atomic.Value(bool),
 };
@@ -1756,18 +436,18 @@ fn runDelayedDecisionServerThread(context: *DelayedDecisionServerContext) void {
 }
 
 fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
-    try ensureParentDirectory(context.socket_path);
-    try removeSocketFileIfStale(context.socket_path);
+    try util.ensureParentDirectory(context.socket_path);
+    try util.removeSocketFileIfStale(context.socket_path);
 
     const address = try net.UnixAddress.init(context.socket_path);
     var server = try address.listen(runtime.io(), .{ .kernel_backlog = 1 });
     defer server.deinit(runtime.io());
-    defer removeStaleSocketFileForCleanup(context.socket_path);
+    defer util.removeStaleSocketFileForCleanup(context.socket_path);
 
     const stream = try server.accept(runtime.io());
     defer stream.close(runtime.io());
-    try assertSameUidPeer(stream);
-    try handleConnection(context.service_context, stream);
+    try util.assertSameUidPeer(stream);
+    try protocol.handleConnection(context.service_context, stream);
 }
 
 test "handleConnection ignores requester disconnect after prompt timeout" {
@@ -1780,7 +460,7 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
     defer allocator.destroy(blocking_context);
     blocking_context.* = .{};
 
-    const service_context = try allocator.create(AgentServiceContext);
+    const service_context = try allocator.create(core.AgentServiceContext);
     defer allocator.destroy(service_context);
     service_context.* = .{
         .allocator = allocator,
@@ -1809,13 +489,13 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
     const client_address = try net.UnixAddress.init(socket_path);
     var client_stream = try client_address.connect(runtime.io());
 
-    const hello_frame = try readFrameAlloc(allocator, client_stream, 1_000);
+    const hello_frame = try protocol.readFrameAlloc(allocator, client_stream, 1_000);
     defer allocator.free(hello_frame);
-    try validateHelloFrame(allocator, hello_frame);
+    try protocol.validateHelloFrame(allocator, hello_frame);
 
-    const hello_request_id = try requestIdFromFrame(allocator, hello_frame);
+    const hello_request_id = try protocol.requestIdFromFrame(allocator, hello_frame);
     defer allocator.free(hello_request_id);
-    try sendWelcome(allocator, client_stream, hello_request_id);
+    try protocol.sendWelcome(allocator, client_stream, hello_request_id);
 
     const request: prompt.Request = .{
         .path = "/known_hosts.old",
@@ -1827,11 +507,11 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         .gid = 0,
         .executable_path = "/bin/cat",
     };
-    try sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?);
+    try protocol.sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?);
 
-    const event_frame = try readFrameAlloc(allocator, client_stream, 1_000);
+    const event_frame = try protocol.readFrameAlloc(allocator, client_stream, 1_000);
     defer allocator.free(event_frame);
-    try std.testing.expect((try userInteractionDeadlineMsFromEventFrame(allocator, event_frame, "disconnect-check")) != null);
+    try std.testing.expect((try protocol.userInteractionDeadlineMsFromEventFrame(allocator, event_frame, "disconnect-check")) != null);
 
     client_stream.close(runtime.io());
 
@@ -1857,7 +537,7 @@ test "agent accepts later connections while one prompt is blocked" {
     defer allocator.destroy(blocking_context);
     blocking_context.* = .{};
 
-    const service_context = try allocator.create(AgentServiceContext);
+    const service_context = try allocator.create(core.AgentServiceContext);
     defer allocator.destroy(service_context);
     service_context.* = .{
         .allocator = allocator,
@@ -1893,7 +573,7 @@ test "agent accepts later connections while one prompt is blocked" {
     defer allocator.destroy(second_failed);
     second_failed.* = std.atomic.Value(bool).init(false);
 
-    const first_requester = try allocator.create(RequesterContext);
+    const first_requester = try allocator.create(core.RequesterContext);
     defer allocator.destroy(first_requester);
     first_requester.* = .{
         .allocator = allocator,
@@ -1901,7 +581,7 @@ test "agent accepts later connections while one prompt is blocked" {
         .policy_path = policy_path,
         .protocol_timeout_ms = 1_000,
     };
-    const second_requester = try allocator.create(RequesterContext);
+    const second_requester = try allocator.create(core.RequesterContext);
     defer allocator.destroy(second_requester);
     second_requester.* = first_requester.*;
 
@@ -1938,36 +618,13 @@ test "agent accepts later connections while one prompt is blocked" {
         try std.Io.sleep(runtime.io(), .fromMilliseconds(5), .awake);
     }
     try std.testing.expect(second_completed);
-    second_thread.join();
-    try std.testing.expect(!second_failed.load(.acquire));
 
     blocking_context.release_first.store(true, .release);
-    first_thread.join();
-    try std.testing.expect(!first_failed.load(.acquire));
     service_thread.join();
+    first_thread.join();
+    second_thread.join();
+
     try std.testing.expect(!service_failed.load(.acquire));
-}
-
-test "apple script escaping covers control characters" {
-    const allocator = std.testing.allocator;
-    const escaped = try appleScriptStringLiteralContentsAlloc(allocator, "quoted \"value\"\npath\\name\r");
-    defer allocator.free(escaped);
-
-    try std.testing.expectEqualStrings("quoted \\\"value\\\"\\npath\\\\name", escaped);
-}
-
-test "outcomeFromLabel maps canonical labels to decisions" {
-    try std.testing.expectEqual(prompt.Decision.allow, try outcomeFromLabel("allow"));
-    try std.testing.expectEqual(prompt.Decision.deny, try outcomeFromLabel("deny"));
-    try std.testing.expectEqual(prompt.Decision.timeout, try outcomeFromLabel("timeout"));
-    try std.testing.expectEqual(prompt.Decision.unavailable, try outcomeFromLabel("unavailable"));
-}
-
-test "outcomeFromLabel rejects unknown and prefix-matching labels" {
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel(""));
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("abc"));
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("allowed"));
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("ALLOW"));
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("cancel"));
-    try std.testing.expectError(error.InvalidProtocolMessage, outcomeFromLabel("canceled"));
+    try std.testing.expect(!first_failed.load(.acquire));
+    try std.testing.expect(!second_failed.load(.acquire));
 }
