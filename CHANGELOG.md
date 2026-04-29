@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Refactored `build.zig` to use data-driven test configuration, reducing code
   by 42% (99 lines removed). Unit tests are now defined in a compile-time
   array with a single loop handling all test setup.
+- Split large agent, filesystem, config, and policy command implementations
+  into focused submodules while preserving the existing import surface.
 
 ### Fixed
 
