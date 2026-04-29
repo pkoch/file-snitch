@@ -585,7 +585,10 @@ fn writeDebugDossier(
     var dossier_allocating_writer: std.Io.Writer.Allocating = .fromArrayList(allocator, &dossier);
     const writer = &dossier_allocating_writer.writer;
 
-    var file = try std.Io.Dir.cwd().createFile(runtime.io(), output_path, .{ .truncate = true });
+    var file = try std.Io.Dir.cwd().createFile(runtime.io(), output_path, .{
+        .truncate = true,
+        .permissions = .fromMode(0o600),
+    });
     defer file.close(runtime.io());
 
     const generated_at = runtime.timestamp();
@@ -650,13 +653,15 @@ fn writeDebugDossier(
     if (loaded_policy.decisions.len != 0) {
         try writer.writeAll("### Durable Decisions\n\n");
         for (loaded_policy.decisions) |decision| {
-            const redacted = try redactHomePathAlloc(allocator, home_dir, decision.path);
-            defer allocator.free(redacted);
+            const executable_redacted = try redactHomePathAlloc(allocator, home_dir, decision.executable_path);
+            defer allocator.free(executable_redacted);
+            const path_redacted = try redactHomePathAlloc(allocator, home_dir, decision.path);
+            defer allocator.free(path_redacted);
             try writer.print(
                 "- executable_path: `{s}` path: `{s}` approval_class: `{s}` outcome: `{s}` expires_at: `{s}`\n",
                 .{
-                    decision.executable_path,
-                    redacted,
+                    executable_redacted,
+                    path_redacted,
                     decision.approval_class,
                     decision.outcome,
                     decision.expires_at orelse "null",
