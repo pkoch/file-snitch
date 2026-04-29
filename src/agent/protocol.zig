@@ -59,6 +59,7 @@ pub const DecideMessage = struct {
     request_id: []const u8,
     subject: struct {
         uid: u32,
+        gid: u32,
         pid: u32,
         executable_path: ?[]const u8 = null,
     },
@@ -215,12 +216,12 @@ pub fn handleConnection(context: *@import("core.zig").AgentServiceContext, strea
     defer context.allocator.free(hello_request_id);
     try sendHello(context.allocator, stream, hello_request_id);
 
-    const welcome_frame = try readFrameAlloc(context.allocator, stream, null);
+    const welcome_frame = try readFrameAlloc(context.allocator, stream, defaults.protocol_timeout_ms_default);
     defer context.allocator.free(welcome_frame);
     try validateWelcomeFrame(context.allocator, welcome_frame, hello_request_id);
 
     while (true) {
-        const frame = readFrameAlloc(context.allocator, stream, null) catch |err| switch (err) {
+        const frame = readFrameAlloc(context.allocator, stream, defaults.protocol_timeout_ms_default) catch |err| switch (err) {
             error.EndOfStream => return,
             else => return err,
         };
@@ -328,6 +329,7 @@ pub fn sendDecide(
         .request_id = request_id,
         .subject = .{
             .uid = request.uid,
+            .gid = request.gid,
             .pid = request.pid,
             .executable_path = request.executable_path,
         },
@@ -397,6 +399,7 @@ pub fn sendError(
 pub fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend_impl: core.Frontend) !ResolvedDecision {
     const parsed = try std.json.parseFromSlice(DecideMessage, allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
+    try validateDecideMessage(parsed.value);
 
     const request_id = try allocator.dupe(u8, parsed.value.request_id);
     errdefer allocator.free(request_id);
@@ -410,6 +413,7 @@ pub fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend
 fn handleDecideFrame(context: *@import("core.zig").AgentServiceContext, stream: net.Stream, frame: []const u8) !void {
     const parsed = try std.json.parseFromSlice(DecideMessage, context.allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
+    try validateDecideMessage(parsed.value);
 
     const request = try requestFromDecideMessage(parsed.value);
 
@@ -436,9 +440,15 @@ fn requestFromDecideMessage(message: DecideMessage) !prompt.Request {
         .can_remember = message.policy_context.can_remember,
         .pid = message.subject.pid,
         .uid = message.subject.uid,
-        .gid = 0,
+        .gid = message.subject.gid,
         .executable_path = message.subject.executable_path,
     };
+}
+
+fn validateDecideMessage(message: DecideMessage) !void {
+    if (!std.mem.eql(u8, message.protocol, protocol_name)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, message.version, protocol_version)) return error.InvalidProtocolMessage;
+    if (!std.mem.eql(u8, message.type, "decide")) return error.InvalidProtocolMessage;
 }
 
 pub fn validateHelloFrame(allocator: std.mem.Allocator, frame: []const u8) !void {

@@ -394,7 +394,7 @@ test "decideFromFrame returns an owned request id" {
     const allocator = gpa.allocator();
 
     const frame =
-        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"gid":20,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
     ;
 
     const decision = try protocol.decideFromFrame(allocator, frame, .{
@@ -411,6 +411,18 @@ test "decideFromFrame returns an owned request id" {
     defer for (reuse_allocations) |allocation| allocator.free(allocation);
 
     try std.testing.expectEqualStrings("req-copy-check", decision.request_id);
+}
+
+test "decideFromFrame rejects mismatched metadata" {
+    const allocator = std.testing.allocator;
+    const frame =
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"query","request_id":"req-bad-type","subject":{"uid":501,"gid":20,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+    ;
+
+    try std.testing.expectError(error.InvalidProtocolMessage, protocol.decideFromFrame(allocator, frame, .{
+        .context = null,
+        .resolve_fn = resolveAllowFrontend,
+    }));
 }
 
 test "requester waits through user interaction deadline and protocol timeout" {
