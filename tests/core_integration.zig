@@ -1190,8 +1190,6 @@ test "compiled durable decisions respect executable path" {
         .path = guarded_config_path,
         .access_class = .read,
         .pid = 42,
-        .uid = 1000,
-        .gid = 20,
         .executable_path = "/usr/bin/kubectl",
     }));
 
@@ -1199,8 +1197,6 @@ test "compiled durable decisions respect executable path" {
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
-        .uid = 999,
-        .gid = 20,
         .executable_path = "/usr/bin/kubectl",
     }));
 
@@ -1208,8 +1204,6 @@ test "compiled durable decisions respect executable path" {
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
-        .uid = 1000,
-        .gid = 20,
         .executable_path = "/usr/bin/bash",
     }));
 
@@ -1217,8 +1211,6 @@ test "compiled durable decisions respect executable path" {
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
-        .uid = 1000,
-        .gid = 20,
         .executable_path = "/usr/bin/kubectl",
     }));
 }
@@ -1265,8 +1257,6 @@ test "compiled durable decisions ignore expired entries" {
         .path = guarded_config_path,
         .access_class = .read,
         .pid = 42,
-        .uid = 1000,
-        .gid = 20,
         .executable_path = "/usr/bin/kubectl",
     }, 1_900_000_000));
 
@@ -1274,8 +1264,6 @@ test "compiled durable decisions ignore expired entries" {
         .path = guarded_config_path,
         .access_class = .write,
         .pid = 42,
-        .uid = 1000,
-        .gid = 20,
         .executable_path = "/usr/bin/kubectl",
     }, 1_900_000_000));
 }
@@ -1918,7 +1906,6 @@ const generated_executable_paths = [_][]const u8{
     "/usr/bin/python3",
 };
 
-const generated_uids = [_]u32{ 1000, 1001, 501 };
 const generated_approval_classes = [_][]const u8{ "read_like", "write_capable" };
 const generated_outcomes = [_][]const u8{ "allow", "deny" };
 const generated_expirations = [_]?[]const u8{ null, "1970-01-01T00:00:01Z", "2100-01-01T00:00:00Z" };
@@ -1993,8 +1980,6 @@ fn randomPolicyRequest(random: std.Random) policy.Request {
         .path = generated_query_paths[random.uintLessThan(usize, generated_query_paths.len)],
         .access_class = generated_access_classes[random.uintLessThan(usize, generated_access_classes.len)],
         .pid = @intCast(1 + random.uintLessThan(u32, 4_000)),
-        .uid = generated_uids[random.uintLessThan(usize, generated_uids.len)],
-        .gid = 20,
         .executable_path = generated_query_executable_paths[random.uintLessThan(usize, generated_query_executable_paths.len)],
     };
 }

@@ -58,8 +58,6 @@ pub const DecideMessage = struct {
     type: []const u8,
     request_id: []const u8,
     subject: struct {
-        uid: u32,
-        gid: u32,
         pid: u32,
         executable_path: ?[]const u8 = null,
     },
@@ -328,8 +326,6 @@ pub fn sendDecide(
         .type = "decide",
         .request_id = request_id,
         .subject = .{
-            .uid = request.uid,
-            .gid = request.gid,
             .pid = request.pid,
             .executable_path = request.executable_path,
         },
@@ -439,8 +435,6 @@ fn requestFromDecideMessage(message: DecideMessage) !prompt.Request {
         .label = if (message.details) |details| details.display_path else null,
         .can_remember = message.policy_context.can_remember,
         .pid = message.subject.pid,
-        .uid = message.subject.uid,
-        .gid = message.subject.gid,
         .executable_path = message.subject.executable_path,
     };
 }

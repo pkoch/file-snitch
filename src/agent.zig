@@ -292,8 +292,6 @@ test "macos ui remembered dialog uses compilable timeout block" {
         .label = "open O_RDONLY /gist",
         .can_remember = true,
         .pid = 42,
-        .uid = 501,
-        .gid = 20,
         .executable_path = "/bin/cat",
     }, 5_000);
     defer allocator.free(script);
@@ -394,7 +392,7 @@ test "decideFromFrame returns an owned request id" {
     const allocator = gpa.allocator();
 
     const frame =
-        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"uid":501,"gid":20,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"decide","request_id":"req-copy-check","subject":{"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
     ;
 
     const decision = try protocol.decideFromFrame(allocator, frame, .{
@@ -416,7 +414,7 @@ test "decideFromFrame returns an owned request id" {
 test "decideFromFrame rejects mismatched metadata" {
     const allocator = std.testing.allocator;
     const frame =
-        \\{"protocol":"file-snitch-agent","version":"1.0","type":"query","request_id":"req-bad-type","subject":{"uid":501,"gid":20,"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
+        \\{"protocol":"file-snitch-agent","version":"1.0","type":"query","request_id":"req-bad-type","subject":{"pid":42,"executable_path":"/bin/cat"},"request":{"enrolled_path":"/known_hosts.old","approval_class":"read_like","operation":"open","mode":"read"},"policy_context":{"can_remember":true},"details":{"display_path":"open O_RDONLY /known_hosts.old"}}
     ;
 
     try std.testing.expectError(error.InvalidProtocolMessage, protocol.decideFromFrame(allocator, frame, .{
@@ -515,8 +513,6 @@ test "handleConnection ignores requester disconnect after prompt timeout" {
         .label = "open O_RDONLY /known_hosts.old",
         .can_remember = true,
         .pid = 21065,
-        .uid = 501,
-        .gid = 0,
         .executable_path = "/bin/cat",
     };
     try protocol.sendDecide(allocator, client_stream, "disconnect-check", request, request.label.?);
@@ -605,8 +601,6 @@ test "agent accepts later connections while one prompt is blocked" {
         .access_class = .read,
         .can_remember = false,
         .pid = 1234,
-        .uid = 1000,
-        .gid = 1000,
         .executable_path = "/usr/bin/demo",
     };
 

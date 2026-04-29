@@ -547,8 +547,6 @@ pub const Model = struct {
             .path = policy_path,
             .access_class = access_class,
             .pid = context.pid,
-            .uid = context.uid,
-            .gid = context.gid,
             .executable_path = context.executable_path,
         };
 
@@ -1657,8 +1655,6 @@ pub const Model = struct {
                 .label = agent_event_path,
                 .can_remember = request.executable_path != null,
                 .pid = request.pid,
-                .uid = request.uid,
-                .gid = request.gid,
                 .executable_path = context.executable_path,
             })
         else

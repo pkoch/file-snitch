@@ -290,8 +290,8 @@ fn buildDialogPromptAlloc(allocator: std.mem.Allocator, request: prompt.Request)
     const executable_path = request.executable_path orelse "unknown executable";
     return std.fmt.allocPrint(
         allocator,
-        "{s}\n\nProcess: {s}\nPID: {d}\nUID: {d}",
-        .{ label, executable_path, request.pid, request.uid },
+        "{s}\n\nProcess: {s}\nPID: {d}",
+        .{ label, executable_path, request.pid },
     );
 }
 
