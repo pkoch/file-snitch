@@ -78,7 +78,7 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
 
     try restoreGuardedFileBackIfStillUnenrolled(allocator, policy_path, &guarded_store, pending.object_id, pending.enrolled_path);
     restore_policy_on_error = false;
-    removePendingUnenrollRecord(allocator, pending.policy_source_path) catch |err| {
+    removePendingUnenrollRecord(allocator, pending.policy_source_path, pending.object_id) catch |err| {
         std.debug.print(
             "warn: unenrolled {s}, but failed to remove pending unenroll record: {}\n",
             .{ pending.enrolled_path, err },
@@ -135,7 +135,7 @@ fn beginUnenrollPolicyUpdate(
     // The saved policy must drop this enrollment so the projection tears down,
     // so keep the object mapping durable until the guarded file is restored.
     try writePendingUnenrollRecord(allocator, loaded_policy.source_path, removed.path, removed.object_id);
-    errdefer removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+    errdefer removePendingUnenrollRecord(allocator, loaded_policy.source_path, removed.object_id) catch |err| {
         std.debug.panic("failed to roll back pending unenroll record for {s}: {}", .{ removed.path, err });
     };
 
@@ -161,7 +161,7 @@ fn rollbackUnenrollPolicyUpdate(
     defer loaded_policy.deinit();
 
     if (loaded_policy.findEnrollmentIndex(enrolled_path) != null) {
-        removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+        removePendingUnenrollRecord(allocator, loaded_policy.source_path, object_id) catch |err| {
             std.debug.print(
                 "warn: failed to remove stale pending unenroll record for {s}: {}\n",
                 .{ enrolled_path, err },
@@ -172,7 +172,7 @@ fn rollbackUnenrollPolicyUpdate(
 
     try loaded_policy.appendEnrollment(enrolled_path, object_id);
     try loaded_policy.saveToFile();
-    removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+    removePendingUnenrollRecord(allocator, loaded_policy.source_path, object_id) catch |err| {
         std.debug.print(
             "warn: restored policy enrollment for {s}, but failed to remove pending unenroll record: {}\n",
             .{ enrolled_path, err },
@@ -197,8 +197,8 @@ const PendingUnenrollRecord = struct {
     object_id: []const u8,
 };
 
-fn pendingUnenrollPathAlloc(allocator: std.mem.Allocator, policy_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}.pending-unenroll", .{policy_path});
+fn pendingUnenrollPathAlloc(allocator: std.mem.Allocator, policy_path: []const u8, object_id: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}.pending-unenroll.{s}", .{ policy_path, object_id });
 }
 
 fn writePendingUnenrollRecord(
@@ -207,7 +207,7 @@ fn writePendingUnenrollRecord(
     enrolled_path: []const u8,
     object_id: []const u8,
 ) !void {
-    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path);
+    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path, object_id);
     defer allocator.free(pending_path);
     const parent_dir_path = std.fs.path.dirname(pending_path) orelse return error.InvalidPolicyPath;
 
@@ -233,8 +233,8 @@ fn writePendingUnenrollRecord(
     try atomic_file.replace(runtime.io());
 }
 
-fn removePendingUnenrollRecord(allocator: std.mem.Allocator, policy_path: []const u8) !void {
-    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path);
+fn removePendingUnenrollRecord(allocator: std.mem.Allocator, policy_path: []const u8, object_id: []const u8) !void {
+    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path, object_id);
     defer allocator.free(pending_path);
     std.Io.Dir.deleteFileAbsolute(runtime.io(), pending_path) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -693,18 +693,28 @@ fn writeDebugDossier(
     defer allocator.free(pass_version);
     const gpg_version = try summarizeCommandVersionAlloc(allocator, gpg_command);
     defer allocator.free(gpg_version);
+    const header_executable_redacted = try redactHomePathAlloc(allocator, home_dir, executable_path);
+    defer allocator.free(header_executable_redacted);
+    const policy_redacted = try redactHomePathAlloc(allocator, home_dir, loaded_policy.source_path);
+    defer allocator.free(policy_redacted);
+    const agent_socket_redacted = try redactHomePathAlloc(allocator, home_dir, agent_socket_path);
+    defer allocator.free(agent_socket_redacted);
+    const pass_command_redacted = try redactHomePathAlloc(allocator, home_dir, pass_command);
+    defer allocator.free(pass_command_redacted);
+    const gpg_command_redacted = try redactHomePathAlloc(allocator, home_dir, gpg_command);
+    defer allocator.free(gpg_command_redacted);
 
     try writer.writeAll("# File Snitch Debug Dossier\n\n");
     try writer.print("- generated_at_unix: {d}\n", .{generated_at});
-    try writer.print("- executable: `{s}`\n", .{executable_path});
+    try writer.print("- executable: `{s}`\n", .{header_executable_redacted});
     try writer.print("- file_snitch: `{s}`\n", .{app_meta.version});
     try writer.print("- os: `{s}`\n", .{@tagName(builtin.os.tag)});
     try writer.print("- arch: `{s}`\n", .{@tagName(builtin.cpu.arch)});
     try writer.print("- zig: `{s}`\n", .{builtin.zig_version_string});
-    try writer.print("- policy: `{s}`\n", .{loaded_policy.source_path});
-    try writer.print("- agent_socket: `{s}`\n", .{agent_socket_path});
-    try writer.print("- pass_command: `{s}`\n", .{pass_command});
-    try writer.print("- gpg_command: `{s}`\n\n", .{gpg_command});
+    try writer.print("- policy: `{s}`\n", .{policy_redacted});
+    try writer.print("- agent_socket: `{s}`\n", .{agent_socket_redacted});
+    try writer.print("- pass_command: `{s}`\n", .{pass_command_redacted});
+    try writer.print("- gpg_command: `{s}`\n\n", .{gpg_command_redacted});
 
     try writer.writeAll("## Tool Versions\n\n");
     try writer.print("- pass: {s}\n", .{pass_version});
