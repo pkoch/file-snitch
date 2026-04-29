@@ -162,6 +162,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             "request_id": request_id,
             "subject": {
                 "uid": 501,
+                "gid": 20,
                 "pid": 42,
                 "executable_path": "/bin/cat",
             },
