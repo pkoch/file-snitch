@@ -4,9 +4,9 @@
 //! still read process/clock state — keep that in mind when adding tests.
 
 const std = @import("std");
-const policy = @import("policy.zig");
-const runtime = @import("runtime.zig");
-const types = @import("filesystem_types.zig");
+const policy = @import("../policy.zig");
+const runtime = @import("../runtime.zig");
+const types = @import("types.zig");
 const c = @cImport({
     @cUndef("_FORTIFY_SOURCE");
     @cDefine("_FORTIFY_SOURCE", "0");

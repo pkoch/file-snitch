@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
         .{ .source = "src/cli_completion.zig", .needs_yaml = false, .link_libc = false },
         .{ .source = "src/cli_policy_watch.zig", .needs_yaml = false, .link_libc = true },
         .{ .source = "src/cli_supervisor.zig", .needs_yaml = true, .link_libc = true },
-        .{ .source = "src/filesystem_util.zig", .needs_yaml = false, .link_libc = true },
+        .{ .source = "src/filesystem.zig", .needs_yaml = true, .link_libc = true },
         .{ .source = "src/user_services.zig", .needs_yaml = false, .link_libc = true },
         .{ .source = "src/rfc3339.zig", .needs_yaml = false, .link_libc = false },
     };
