@@ -309,6 +309,180 @@ fn freeEntries(allocator: std.mem.Allocator, entries: []const []const u8) void {
     allocator.free(entries);
 }
 
+const DirectoryEntryCollectContext = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    fn deinit(self: *DirectoryEntryCollectContext) void {
+        for (self.entries.items) |entry| {
+            self.allocator.free(entry);
+        }
+        self.entries.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
+const AuditEventSnapshot = struct {
+    allocator: std.mem.Allocator,
+    items: []filesystem.AuditEvent,
+
+    fn deinit(self: *AuditEventSnapshot) void {
+        for (self.items) |*event| {
+            freeAuditEvent(self.allocator, event);
+        }
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
+};
+
+fn sessionInspectPath(session: daemon.Session, path: []const u8) !filesystem.NodeInfo {
+    return (try session.state.filesystem.lookupPath(path)).node;
+}
+
+fn sessionRootEntries(session: daemon.Session, allocator: std.mem.Allocator) ![]const []const u8 {
+    return sessionDirectoryEntries(session, allocator, "/");
+}
+
+fn sessionDirectoryEntries(session: daemon.Session, allocator: std.mem.Allocator, path: []const u8) ![]const []const u8 {
+    var context = DirectoryEntryCollectContext{ .allocator = allocator };
+    errdefer context.deinit();
+
+    try session.state.filesystem.forEachDirectoryEntry(path, &context, collectDirectoryEntry);
+    return try context.entries.toOwnedSlice(allocator);
+}
+
+fn sessionReadPath(session: daemon.Session, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const node = (try session.state.filesystem.lookupPath(path)).node;
+    const buffer = try allocator.alloc(u8, @intCast(node.size));
+    errdefer allocator.free(buffer);
+
+    const result = session.state.filesystem.readInto(path, 0, buffer, .{}, null);
+    if (result < 0) {
+        return error.DebugReadFailed;
+    }
+
+    return buffer[0..@intCast(result)];
+}
+
+fn sessionDebugCreateFile(session: *daemon.Session, path: []const u8, mode: u32) !void {
+    if (session.state.filesystem.createFile(path, mode, .{}) != 0) {
+        return error.DebugCreateFailed;
+    }
+}
+
+fn sessionDebugCreateDirectory(session: *daemon.Session, path: []const u8, mode: u32) !void {
+    if (session.state.filesystem.createDirectory(path, mode, .{}) != 0) {
+        return error.DebugMkdirFailed;
+    }
+}
+
+fn sessionDebugWriteFile(session: *daemon.Session, path: []const u8, contents: []const u8) !void {
+    if (session.state.filesystem.writeFile(path, 0, contents, .{}) < 0) {
+        return error.DebugWriteFailed;
+    }
+}
+
+fn sessionDebugTruncateFile(session: *daemon.Session, path: []const u8, size: u64) !void {
+    if (session.state.filesystem.truncateFile(path, size, .{}) != 0) {
+        return error.DebugTruncateFailed;
+    }
+}
+
+fn sessionDebugRenameFile(session: *daemon.Session, from: []const u8, to: []const u8) !void {
+    if (session.state.filesystem.renameFile(from, to, .{}) != 0) {
+        return error.DebugRenameFailed;
+    }
+}
+
+fn sessionDebugSyncFile(session: *daemon.Session, path: []const u8, datasync: bool) !void {
+    if (session.state.filesystem.fsyncPath(path, datasync, .{}, null) != 0) {
+        return error.DebugSyncFailed;
+    }
+}
+
+fn sessionDebugRemoveDirectory(session: *daemon.Session, path: []const u8) !void {
+    if (session.state.filesystem.removeDirectory(path, .{}) != 0) {
+        return error.DebugRmdirFailed;
+    }
+}
+
+fn sessionAuditEventSnapshot(session: daemon.Session, allocator: std.mem.Allocator) !AuditEventSnapshot {
+    const count = session.state.filesystem.auditCount();
+    var events = try allocator.alloc(filesystem.AuditEvent, count);
+    var initialized: usize = 0;
+    errdefer {
+        for (events[0..initialized]) |*event| {
+            freeAuditEvent(allocator, event);
+        }
+        allocator.free(events);
+    }
+
+    for (0..count) |index| {
+        const stored = session.state.filesystem.auditEvent(@intCast(index)) orelse {
+            return error.Unexpected;
+        };
+        events[index] = try cloneAuditEvent(allocator, stored);
+        initialized += 1;
+    }
+
+    return .{
+        .allocator = allocator,
+        .items = events,
+    };
+}
+
+fn cloneAuditEvent(allocator: std.mem.Allocator, event: filesystem.AuditEvent) !filesystem.AuditEvent {
+    return .{
+        .action = try allocator.dupe(u8, event.action),
+        .path = try allocator.dupe(u8, event.path),
+        .result = event.result,
+        .timestamp = event.timestamp,
+        .pid = event.pid,
+        .uid = event.uid,
+        .gid = event.gid,
+        .executable_path = if (event.executable_path) |value| try allocator.dupe(u8, value) else null,
+        .file_info = event.file_info,
+        .lock = event.lock,
+        .flock = event.flock,
+        .xattr = if (event.xattr) |xattr| .{
+            .name = if (xattr.name) |name| try allocator.dupe(u8, name) else null,
+            .size = xattr.size,
+            .flags = xattr.flags,
+            .position = xattr.position,
+        } else null,
+        .rename = if (event.rename) |rename| .{
+            .from = try allocator.dupe(u8, rename.from),
+            .to = try allocator.dupe(u8, rename.to),
+        } else null,
+        .fsync = event.fsync,
+    };
+}
+
+fn freeAuditEvent(allocator: std.mem.Allocator, event: *filesystem.AuditEvent) void {
+    allocator.free(event.action);
+    allocator.free(event.path);
+    if (event.executable_path) |value| {
+        allocator.free(value);
+    }
+    if (event.xattr) |xattr| {
+        if (xattr.name) |name| {
+            allocator.free(name);
+        }
+    }
+    if (event.rename) |rename| {
+        allocator.free(rename.from);
+        allocator.free(rename.to);
+    }
+    event.* = undefined;
+}
+
+fn collectDirectoryEntry(context: *DirectoryEntryCollectContext, name: []const u8) !bool {
+    const owned_name = try context.allocator.dupe(u8, name);
+    errdefer context.allocator.free(owned_name);
+    try context.entries.append(context.allocator, owned_name);
+    return true;
+}
+
 test "session exercise is covered by core assertions" {
     const allocator = std.testing.allocator;
     var fixture = try Fixture.init(allocator);
@@ -317,10 +491,10 @@ test "session exercise is covered by core assertions" {
     var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
     defer session.deinit();
 
-    try session.debugCreateFile(created_note_path, 0o600);
-    try session.debugWriteFile(created_note_path, "hello from file-snitch\n");
-    try session.debugRenameFile(created_note_path, note_path);
-    try session.debugSyncFile(note_path, false);
+    try sessionDebugCreateFile(&session, created_note_path, 0o600);
+    try sessionDebugWriteFile(&session, created_note_path, "hello from file-snitch\n");
+    try sessionDebugRenameFile(&session, created_note_path, note_path);
+    try sessionDebugSyncFile(&session, note_path, false);
 
     const description = try session.describe();
     try std.testing.expect(!description.mount_implemented);
@@ -339,20 +513,20 @@ test "session exercise is covered by core assertions" {
     try std.testing.expectEqualStrings("-f", plan.args[1]);
     try std.testing.expectEqualStrings(fixture.mount_path, plan.args[2]);
 
-    const root = try session.inspectPath("/");
-    const note = try session.inspectPath(note_path);
+    const root = try sessionInspectPath(session, "/");
+    const note = try sessionInspectPath(session, note_path);
     try std.testing.expectEqual(filesystem.NodeKind.directory, root.kind);
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, note.kind);
 
-    const entries = try session.rootEntries(allocator);
+    const entries = try sessionRootEntries(session, allocator);
     defer freeEntries(allocator, entries);
     try expectEntriesContain(entries, &.{note_path[1..]});
 
-    const note_content = try session.readPath(allocator, note_path);
+    const note_content = try sessionReadPath(session, allocator, note_path);
     defer allocator.free(note_content);
     try std.testing.expectEqualStrings("hello from file-snitch\n", note_content);
 
-    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    var audit_snapshot = try sessionAuditEventSnapshot(session, allocator);
     defer audit_snapshot.deinit();
     try expectAuditEvent(audit_snapshot.items, "create", created_note_path, 0);
     try expectAuditEvent(audit_snapshot.items, "write", created_note_path, 23);
@@ -391,11 +565,11 @@ test "directory entry composition is owned by Zig" {
     var session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{}, null);
     defer session.deinit();
 
-    const root_entries = try session.rootEntries(allocator);
+    const root_entries = try sessionRootEntries(session, allocator);
     defer freeEntries(allocator, root_entries);
     try expectEntriesContain(root_entries, &.{"ghost-secret"});
 
-    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/nested")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try sessionInspectPath(session, "/nested")).kind);
 }
 
 test "session helper snapshots survive session teardown" {
@@ -404,12 +578,12 @@ test "session helper snapshots survive session teardown" {
     defer fixture.deinit();
 
     var session = try initSession(allocator, &fixture, &.{}, .allow, &.{}, null);
-    try session.debugCreateFile(created_note_path, 0o600);
+    try sessionDebugCreateFile(&session, created_note_path, 0o600);
 
     var plan = try session.executionPlan(allocator);
     errdefer plan.deinit();
 
-    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    var audit_snapshot = try sessionAuditEventSnapshot(session, allocator);
     errdefer audit_snapshot.deinit();
 
     session.deinit();
@@ -437,24 +611,24 @@ test "transient files cannot rename into regular projection entries" {
         session.state.filesystem.openFile("/._missing", .{ .flags = c.O_RDONLY, .handle_id = 0xfeed }, context),
     );
 
-    try session.debugCreateFile("/._tmp", 0o600);
+    try sessionDebugCreateFile(&session, "/._tmp", 0o600);
     try std.testing.expectError(
         error.DebugRenameFailed,
-        session.debugRenameFile("/._tmp", "/regular"),
+        sessionDebugRenameFile(&session, "/._tmp", "/regular"),
     );
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._tmp")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/regular")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try sessionInspectPath(session, "/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try sessionInspectPath(session, "/regular")).kind);
 
-    try session.debugRenameFile("/._tmp", "/._renamed-tmp");
-    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/._tmp")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._renamed-tmp")).kind);
+    try sessionDebugRenameFile(&session, "/._tmp", "/._renamed-tmp");
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try sessionInspectPath(session, "/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try sessionInspectPath(session, "/._renamed-tmp")).kind);
 
-    try session.debugCreateFile("/._nested-source", 0o600);
+    try sessionDebugCreateFile(&session, "/._nested-source", 0o600);
     try std.testing.expectError(
         error.DebugRenameFailed,
-        session.debugRenameFile("/._nested-source", "/._nested/._target"),
+        sessionDebugRenameFile(&session, "/._nested-source", "/._nested/._target"),
     );
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try session.inspectPath("/._nested-source")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try sessionInspectPath(session, "/._nested-source")).kind);
 
     var preseed_store = fixture.guardedStore();
     try preseed_store.putObject(allocator, "regular", .{
@@ -475,13 +649,13 @@ test "transient files cannot rename into regular projection entries" {
     }}, .allow, &.{}, null);
     defer guarded_session.deinit();
 
-    try guarded_session.debugCreateFile("/._tmp", 0o600);
+    try sessionDebugCreateFile(&guarded_session, "/._tmp", 0o600);
     try std.testing.expectError(
         error.DebugRenameFailed,
-        guarded_session.debugRenameFile("/._tmp", "/regular"),
+        sessionDebugRenameFile(&guarded_session, "/._tmp", "/regular"),
     );
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try guarded_session.inspectPath("/._tmp")).kind);
-    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try guarded_session.inspectPath("/regular")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try sessionInspectPath(guarded_session, "/._tmp")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.regular_file, (try sessionInspectPath(guarded_session, "/regular")).kind);
 }
 
 test "policy and prompt paths are covered by core assertions" {
@@ -517,7 +691,7 @@ test "policy and prompt paths are covered by core assertions" {
 
     try std.testing.expectError(
         error.DebugWriteFailed,
-        readonly_session.debugWriteFile(guarded_note_path, "blocked\n"),
+        sessionDebugWriteFile(&readonly_session, guarded_note_path, "blocked\n"),
     );
 
     var policy_session = try initSession(allocator, &fixture, guarded_entries, .allow, &.{
@@ -536,11 +710,11 @@ test "policy and prompt paths are covered by core assertions" {
 
     try std.testing.expectError(
         error.DebugReadFailed,
-        policy_session.readPath(allocator, guarded_note_path),
+        sessionReadPath(policy_session, allocator, guarded_note_path),
     );
     try std.testing.expectError(
         error.DebugWriteFailed,
-        policy_session.debugWriteFile(guarded_note_path, "denied\n"),
+        sessionDebugWriteFile(&policy_session, guarded_note_path, "denied\n"),
     );
 
     var allow_prompt_context = prompt.ScriptedContext.init(&.{.allow});
@@ -553,9 +727,9 @@ test "policy and prompt paths are covered by core assertions" {
     }, prompt.scriptedBroker(&allow_prompt_context));
     defer allowed_prompt_session.deinit();
 
-    try allowed_prompt_session.debugWriteFile(guarded_note_path, "updated guarded note\n");
+    try sessionDebugWriteFile(&allowed_prompt_session, guarded_note_path, "updated guarded note\n");
 
-    var readonly_audit = try readonly_session.auditEventSnapshot(allocator);
+    var readonly_audit = try sessionAuditEventSnapshot(readonly_session, allocator);
     defer readonly_audit.deinit();
     const guarded_note_policy_label = try std.fmt.allocPrint(allocator, "write {s}", .{guarded_note_policy_path});
     defer allocator.free(guarded_note_policy_label);
@@ -565,14 +739,14 @@ test "policy and prompt paths are covered by core assertions" {
     try expectAuditEvent(readonly_audit.items, "policy", guarded_note_policy_label, 2);
     try expectAuditEvent(readonly_audit.items, "write", guarded_note_path, -13);
 
-    var policy_audit = try policy_session.auditEventSnapshot(allocator);
+    var policy_audit = try sessionAuditEventSnapshot(policy_session, allocator);
     defer policy_audit.deinit();
     try expectAuditEvent(policy_audit.items, "prompt", guarded_note_read_prompt_label, 4);
     try expectAuditEvent(policy_audit.items, "read", guarded_note_path, -13);
     try expectAuditEvent(policy_audit.items, "policy", guarded_note_policy_label, 2);
     try expectAuditEvent(policy_audit.items, "write", guarded_note_path, -13);
 
-    var allowed_prompt_audit = try allowed_prompt_session.auditEventSnapshot(allocator);
+    var allowed_prompt_audit = try sessionAuditEventSnapshot(allowed_prompt_session, allocator);
     defer allowed_prompt_audit.deinit();
     try expectAuditEvent(allowed_prompt_audit.items, "prompt", guarded_note_policy_label, 1);
     try expectAuditEvent(allowed_prompt_audit.items, "write", guarded_note_path, 21);
@@ -594,11 +768,11 @@ test "policy and prompt paths are covered by core assertions" {
     );
     defer default_prompt_session.deinit();
 
-    const prompted_read = try default_prompt_session.readPath(allocator, guarded_note_path);
+    const prompted_read = try sessionReadPath(default_prompt_session, allocator, guarded_note_path);
     defer allocator.free(prompted_read);
     try std.testing.expectEqualStrings("updated guarded note\n", prompted_read);
 
-    var default_prompt_audit = try default_prompt_session.auditEventSnapshot(allocator);
+    var default_prompt_audit = try sessionAuditEventSnapshot(default_prompt_session, allocator);
     defer default_prompt_audit.deinit();
     try expectAuditEvent(default_prompt_audit.items, "prompt", guarded_note_read_prompt_label, 1);
     try expectAuditEvent(default_prompt_audit.items, "read", guarded_note_path, 21);
@@ -826,15 +1000,15 @@ test "directory operations fail explicitly in the file-only spike" {
 
     try std.testing.expectError(
         error.DebugMkdirFailed,
-        session.debugCreateDirectory("/empty-dir", 0o755),
+        sessionDebugCreateDirectory(&session, "/empty-dir", 0o755),
     );
     try std.testing.expectError(
         error.DebugRmdirFailed,
-        session.debugRemoveDirectory("/empty-dir"),
+        sessionDebugRemoveDirectory(&session, "/empty-dir"),
     );
     try std.testing.expectEqual(
         filesystem.NodeKind.missing,
-        (try session.inspectPath("/empty-dir")).kind,
+        (try sessionInspectPath(session, "/empty-dir")).kind,
     );
 
     const host_path = try std.fmt.allocPrint(allocator, "{s}/empty-dir", .{fixture.mount_path});
@@ -842,7 +1016,7 @@ test "directory operations fail explicitly in the file-only spike" {
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.openDirAbsolute(runtime.io(), host_path, .{}));
 
     const not_supported = -@as(i32, @intFromEnum(std.posix.E.OPNOTSUPP));
-    var audit_snapshot = try session.auditEventSnapshot(allocator);
+    var audit_snapshot = try sessionAuditEventSnapshot(session, allocator);
     defer audit_snapshot.deinit();
     try expectAuditEvent(audit_snapshot.items, "mkdir", "/empty-dir", not_supported);
     try expectAuditEvent(audit_snapshot.items, "rmdir", "/empty-dir", not_supported);
@@ -1665,18 +1839,18 @@ test "audit event snapshots remain immutable after later writes" {
         const second_contents = try repeatedByteStringZAlloc(allocator, 'b', 17 + index);
         defer allocator.free(second_contents);
 
-        try session.debugCreateFile(current_path, 0o600);
-        try session.debugWriteFile(current_path, first_contents);
+        try sessionDebugCreateFile(&session, current_path, 0o600);
+        try sessionDebugWriteFile(&session, current_path, first_contents);
 
-        var first_snapshot = try session.auditEventSnapshot(allocator);
+        var first_snapshot = try sessionAuditEventSnapshot(session, allocator);
         defer first_snapshot.deinit();
 
         try expectAuditEvent(first_snapshot.items, "write", current_path, @intCast(first_contents.len));
         try expectNoAuditEvent(first_snapshot.items, "write", current_path, @intCast(second_contents.len));
 
-        try session.debugWriteFile(current_path, second_contents);
+        try sessionDebugWriteFile(&session, current_path, second_contents);
 
-        var second_snapshot = try session.auditEventSnapshot(allocator);
+        var second_snapshot = try sessionAuditEventSnapshot(session, allocator);
         defer second_snapshot.deinit();
 
         try expectAuditEvent(first_snapshot.items, "write", current_path, @intCast(first_contents.len));
@@ -1739,16 +1913,16 @@ test "projection exposes the guarded file without backing siblings" {
     });
     defer session.deinit();
 
-    const guarded_node = try session.inspectPath("/config");
-    const sibling_node = try session.inspectPath("/sibling.txt");
+    const guarded_node = try sessionInspectPath(session, "/config");
+    const sibling_node = try sessionInspectPath(session, "/sibling.txt");
     try std.testing.expectEqual(filesystem.NodeKind.regular_file, guarded_node.kind);
     try std.testing.expectEqual(filesystem.NodeKind.missing, sibling_node.kind);
 
-    const guarded_contents = try session.readPath(allocator, "/config");
+    const guarded_contents = try sessionReadPath(session, allocator, "/config");
     defer allocator.free(guarded_contents);
     try std.testing.expectEqualStrings("guarded kubeconfig\n", guarded_contents);
 
-    try session.debugWriteFile("/config", "updated guarded kubeconfig\n");
+    try sessionDebugWriteFile(&session, "/config", "updated guarded kubeconfig\n");
 
     {
         var object = try mock_state.loadObject(allocator, "config");
@@ -1848,18 +2022,18 @@ test "projection can expose multiple guarded siblings under one mount" {
     });
     defer session.deinit();
 
-    const first_contents = try session.readPath(allocator, "/a.key");
+    const first_contents = try sessionReadPath(session, allocator, "/a.key");
     defer allocator.free(first_contents);
     try std.testing.expectEqualStrings("guarded first\n", first_contents);
 
-    const second_contents = try session.readPath(allocator, "/b.key");
+    const second_contents = try sessionReadPath(session, allocator, "/b.key");
     defer allocator.free(second_contents);
     try std.testing.expectEqualStrings("guarded second\n", second_contents);
 
-    try std.testing.expectEqual(filesystem.NodeKind.missing, (try session.inspectPath("/pubring.kbx")).kind);
+    try std.testing.expectEqual(filesystem.NodeKind.missing, (try sessionInspectPath(session, "/pubring.kbx")).kind);
 
-    try session.debugWriteFile("/a.key", "updated guarded first\n");
-    try session.debugWriteFile("/b.key", "updated guarded second\n");
+    try sessionDebugWriteFile(&session, "/a.key", "updated guarded first\n");
+    try sessionDebugWriteFile(&session, "/b.key", "updated guarded second\n");
 
     {
         var object = try mock_state.loadObject(allocator, "a.key");

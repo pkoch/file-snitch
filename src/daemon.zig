@@ -52,19 +52,6 @@ pub const ExecutionPlan = struct {
     }
 };
 
-pub const AuditEventSnapshot = struct {
-    allocator: std.mem.Allocator,
-    items: []AuditEvent,
-
-    pub fn deinit(self: *AuditEventSnapshot) void {
-        for (self.items) |*event| {
-            freeAuditEvent(self.allocator, event);
-        }
-        self.allocator.free(self.items);
-        self.* = undefined;
-    }
-};
-
 pub const NodeInfo = filesystem.NodeInfo;
 pub const AuditEvent = filesystem.AuditEvent;
 
@@ -129,19 +116,6 @@ const DirectoryEntryEmitContext = struct {
     raw_context: ?*anyopaque,
     emit_fn: RawDirectoryEntryEmitFn,
     result: c_int = 0,
-};
-
-const DirectoryEntryCollectContext = struct {
-    allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged([]const u8) = .empty,
-
-    fn deinit(self: *DirectoryEntryCollectContext) void {
-        for (self.entries.items) |entry| {
-            self.allocator.free(entry);
-        }
-        self.entries.deinit(self.allocator);
-        self.* = undefined;
-    }
 };
 
 const DecodedContext = struct {
@@ -253,108 +227,6 @@ pub const Session = struct {
         };
     }
 
-    pub fn inspectPath(self: Session, path: [:0]const u8) !NodeInfo {
-        return (try self.state.filesystem.lookupPath(path)).node;
-    }
-
-    pub fn rootEntries(self: Session, allocator: std.mem.Allocator) ![]const []const u8 {
-        return self.directoryEntries(allocator, "/");
-    }
-
-    pub fn directoryEntries(self: Session, allocator: std.mem.Allocator, path: []const u8) ![]const []const u8 {
-        var context = DirectoryEntryCollectContext{ .allocator = allocator };
-        errdefer context.deinit();
-
-        try self.state.filesystem.forEachDirectoryEntry(path, &context, collectDirectoryEntry);
-        return try context.entries.toOwnedSlice(allocator);
-    }
-
-    pub fn readPath(self: Session, allocator: std.mem.Allocator, path: [:0]const u8) ![]u8 {
-        const node = (try self.state.filesystem.lookupPath(path)).node;
-        const buffer = try allocator.alloc(u8, @intCast(node.size));
-        errdefer allocator.free(buffer);
-
-        const result = self.state.filesystem.readInto(path, 0, buffer, .{}, null);
-        if (result < 0) {
-            return error.DebugReadFailed;
-        }
-
-        return buffer[0..@intCast(result)];
-    }
-
-    pub fn debugCreateFile(self: *Session, path: [:0]const u8, mode: u32) !void {
-        if (self.state.filesystem.createFile(path, mode, .{}) != 0) {
-            return error.DebugCreateFailed;
-        }
-    }
-
-    pub fn debugCreateDirectory(self: *Session, path: [:0]const u8, mode: u32) !void {
-        if (self.state.filesystem.createDirectory(path, mode, .{}) != 0) {
-            return error.DebugMkdirFailed;
-        }
-    }
-
-    pub fn debugWriteFile(self: *Session, path: [:0]const u8, contents: [:0]const u8) !void {
-        if (self.state.filesystem.writeFile(path, 0, contents[0..contents.len], .{}) < 0) {
-            return error.DebugWriteFailed;
-        }
-    }
-
-    pub fn debugTruncateFile(self: *Session, path: [:0]const u8, size: u64) !void {
-        if (self.state.filesystem.truncateFile(path, size, .{}) != 0) {
-            return error.DebugTruncateFailed;
-        }
-    }
-
-    pub fn debugRenameFile(self: *Session, from: [:0]const u8, to: [:0]const u8) !void {
-        if (self.state.filesystem.renameFile(from, to, .{}) != 0) {
-            return error.DebugRenameFailed;
-        }
-    }
-
-    pub fn debugSyncFile(self: *Session, path: [:0]const u8, datasync: bool) !void {
-        if (self.state.filesystem.fsyncPath(path, datasync, .{}, null) != 0) {
-            return error.DebugSyncFailed;
-        }
-    }
-
-    pub fn debugRemoveFile(self: *Session, path: [:0]const u8) !void {
-        if (self.state.filesystem.removeFile(path, .{}) != 0) {
-            return error.DebugRemoveFailed;
-        }
-    }
-
-    pub fn debugRemoveDirectory(self: *Session, path: [:0]const u8) !void {
-        if (self.state.filesystem.removeDirectory(path, .{}) != 0) {
-            return error.DebugRmdirFailed;
-        }
-    }
-
-    pub fn auditEventSnapshot(self: Session, allocator: std.mem.Allocator) !AuditEventSnapshot {
-        const count = self.state.filesystem.auditCount();
-        var events = try allocator.alloc(AuditEvent, count);
-        var initialized: usize = 0;
-        errdefer {
-            for (events[0..initialized]) |*event| {
-                freeAuditEvent(allocator, event);
-            }
-            allocator.free(events);
-        }
-
-        for (0..count) |index| {
-            const stored = self.state.filesystem.auditEvent(@intCast(index)) orelse {
-                return error.Unexpected;
-            };
-            events[index] = try cloneAuditEvent(allocator, stored);
-            initialized += 1;
-        }
-
-        return .{
-            .allocator = allocator,
-            .items = events,
-        };
-    }
-
     pub fn run(self: *Session) !void {
         self.state.run_attempts += 1;
         try fuse.runSession(self.handle);
@@ -364,51 +236,6 @@ pub const Session = struct {
         self.state.filesystem.publishStatus();
     }
 };
-
-fn cloneAuditEvent(allocator: std.mem.Allocator, event: AuditEvent) !AuditEvent {
-    return .{
-        .action = try allocator.dupe(u8, event.action),
-        .path = try allocator.dupe(u8, event.path),
-        .result = event.result,
-        .timestamp = event.timestamp,
-        .pid = event.pid,
-        .uid = event.uid,
-        .gid = event.gid,
-        .executable_path = if (event.executable_path) |value| try allocator.dupe(u8, value) else null,
-        .file_info = event.file_info,
-        .lock = event.lock,
-        .flock = event.flock,
-        .xattr = if (event.xattr) |xattr| .{
-            .name = if (xattr.name) |name| try allocator.dupe(u8, name) else null,
-            .size = xattr.size,
-            .flags = xattr.flags,
-            .position = xattr.position,
-        } else null,
-        .rename = if (event.rename) |rename| .{
-            .from = try allocator.dupe(u8, rename.from),
-            .to = try allocator.dupe(u8, rename.to),
-        } else null,
-        .fsync = event.fsync,
-    };
-}
-
-fn freeAuditEvent(allocator: std.mem.Allocator, event: *AuditEvent) void {
-    allocator.free(event.action);
-    allocator.free(event.path);
-    if (event.executable_path) |value| {
-        allocator.free(value);
-    }
-    if (event.xattr) |xattr| {
-        if (xattr.name) |name| {
-            allocator.free(name);
-        }
-    }
-    if (event.rename) |rename| {
-        allocator.free(rename.from);
-        allocator.free(rename.to);
-    }
-    event.* = undefined;
-}
 
 pub fn mountProjection(allocator: std.mem.Allocator, config: ProjectionConfig) !void {
     try ensureDirectory(config.mount_path);
@@ -585,13 +412,6 @@ fn errnoCodeFromDirectoryError(err: anyerror) c_int {
         error.OutOfMemory, error.SystemResources => errnoCode(.NOMEM),
         else => errnoCode(.IO),
     };
-}
-
-fn collectDirectoryEntry(context: *DirectoryEntryCollectContext, name: []const u8) !bool {
-    const owned_name = try context.allocator.dupe(u8, name);
-    errdefer context.allocator.free(owned_name);
-    try context.entries.append(context.allocator, owned_name);
-    return true;
 }
 
 fn emitDirectoryEntryToRaw(context: *DirectoryEntryEmitContext, name: []const u8) !bool {
