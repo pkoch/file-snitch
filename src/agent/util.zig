@@ -66,7 +66,19 @@ pub fn chmodPath(path: []const u8, mode: c.mode_t) !void {
 pub fn mkdirPath(path: []const u8, mode: c.mode_t) !void {
     const path_z = try std.heap.page_allocator.dupeZ(u8, path);
     defer std.heap.page_allocator.free(path_z);
-    if (c.mkdir(path_z.ptr, mode) != 0) return error.PathAlreadyExists;
+    if (c.mkdir(path_z.ptr, mode) != 0) {
+        return switch (std.posix.errno(-1)) {
+            .EXIST => error.PathAlreadyExists,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            .ACCES, .PERM => error.AccessDenied,
+            .NAMETOOLONG => error.NameTooLong,
+            .INTR => error.Interrupted,
+            .IO => error.InputOutput,
+            .NOMEM => error.OutOfMemory,
+            else => error.Unexpected,
+        };
+    }
 }
 
 pub fn statPath(path: []const u8) !c.struct_stat {
@@ -158,7 +170,7 @@ pub fn socketPathHasLiveListener(path: []const u8) !bool {
         return true;
     }
 
-    return switch (std.c.errno(-1)) {
+    return switch (std.posix.errno(-1)) {
         .NOENT => error.FileNotFound,
         .CONNREFUSED, .CONNRESET => false,
         else => error.SocketPathInUse,

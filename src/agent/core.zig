@@ -114,6 +114,7 @@ pub fn runAgentService(context: *AgentServiceContext) !void {
             .service_context = context,
             .stream = stream,
         };
+        errdefer stream.close(runtime.io());
 
         const thread = try std.Thread.spawn(.{}, protocol.runConnectionWorker, .{worker_context});
         thread.detach();
