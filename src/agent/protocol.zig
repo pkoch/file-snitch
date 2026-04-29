@@ -398,23 +398,12 @@ pub fn decideFromFrame(allocator: std.mem.Allocator, frame: []const u8, frontend
     const parsed = try std.json.parseFromSlice(DecideMessage, allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    const request: prompt.Request = .{
-        .path = parsed.value.request.enrolled_path,
-        .access_class = try util.accessClassFromLabel(parsed.value.request.approval_class),
-        .label = if (parsed.value.details) |details| details.display_path else null,
-        .can_remember = parsed.value.policy_context.can_remember,
-        .pid = parsed.value.subject.pid,
-        .uid = parsed.value.subject.uid,
-        .gid = 0,
-        .executable_path = parsed.value.subject.executable_path,
-    };
-
     const request_id = try allocator.dupe(u8, parsed.value.request_id);
     errdefer allocator.free(request_id);
 
     return .{
         .request_id = request_id,
-        .response = frontend_impl.resolve(request),
+        .response = frontend_impl.resolve(try requestFromDecideMessage(parsed.value)),
     };
 }
 
@@ -422,16 +411,7 @@ fn handleDecideFrame(context: *@import("core.zig").AgentServiceContext, stream: 
     const parsed = try std.json.parseFromSlice(DecideMessage, context.allocator, frame, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    const request: prompt.Request = .{
-        .path = parsed.value.request.enrolled_path,
-        .access_class = try util.accessClassFromLabel(parsed.value.request.approval_class),
-        .label = if (parsed.value.details) |details| details.display_path else null,
-        .can_remember = parsed.value.policy_context.can_remember,
-        .pid = parsed.value.subject.pid,
-        .uid = parsed.value.subject.uid,
-        .gid = 0,
-        .executable_path = parsed.value.subject.executable_path,
-    };
+    const request = try requestFromDecideMessage(parsed.value);
 
     const interaction_deadline = try userInteractionDeadlineFromNowAlloc(
         context.allocator,
@@ -445,6 +425,19 @@ fn handleDecideFrame(context: *@import("core.zig").AgentServiceContext, stream: 
     sendDecision(context.allocator, stream, parsed.value.request_id, response) catch |err| {
         if (isPeerClosedError(err)) return;
         return err;
+    };
+}
+
+fn requestFromDecideMessage(message: DecideMessage) !prompt.Request {
+    return .{
+        .path = message.request.enrolled_path,
+        .access_class = try util.accessClassFromLabel(message.request.approval_class),
+        .label = if (message.details) |details| details.display_path else null,
+        .can_remember = message.policy_context.can_remember,
+        .pid = message.subject.pid,
+        .uid = message.subject.uid,
+        .gid = 0,
+        .executable_path = message.subject.executable_path,
     };
 }
 
@@ -557,7 +550,7 @@ fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
     var offset: usize = 0;
     while (offset < bytes.len) {
         const count = c.write(fd, bytes[offset..].ptr, bytes.len - offset);
-        if (count < 0) return switch (std.posix.errno(-1)) {
+        if (count < 0) return switch (std.c.errno(count)) {
             .PIPE => error.BrokenPipe,
             .CONNRESET => error.ConnectionResetByPeer,
             else => error.InputOutput,
