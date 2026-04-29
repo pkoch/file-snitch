@@ -32,19 +32,21 @@ pub fn enroll(allocator: std.mem.Allocator, policy_path: []const u8, target_path
     const object_id = try enrollment.allocateObjectId(allocator, &guarded_store);
     defer allocator.free(object_id);
 
-    try enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, target_path, object_id);
-    errdefer enrollment.moveGuardedFileBack(allocator, &guarded_store, object_id, target_path) catch |err| {
-        std.debug.panic("failed to roll back enrollment for {s}: {}", .{ target_path, err });
-    };
-
     try loaded_policy.appendEnrollment(target_path, object_id);
+    var enrollment_persisted = false;
     errdefer {
-        const enrollment_index = loaded_policy.findEnrollmentIndex(target_path).?;
-        var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
-        removed.deinit(allocator);
+        if (enrollment_persisted) {
+            removePersistedEnrollment(&loaded_policy, target_path) catch |err| {
+                std.debug.panic("failed to roll back enrollment policy update for {s}: {}", .{ target_path, err });
+            };
+        } else {
+            removeEnrollmentFromMemory(&loaded_policy, target_path);
+        }
     }
-
     try loaded_policy.saveToFile();
+    enrollment_persisted = true;
+
+    try enrollment.moveFileIntoGuardedStore(allocator, &guarded_store, target_path, object_id);
 
     std.debug.print(
         "file-snitch: enrolled {s} as {s} in {s}\n",
@@ -76,6 +78,12 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
 
     try restoreGuardedFileBackIfStillUnenrolled(allocator, policy_path, &guarded_store, pending.object_id, pending.enrolled_path);
     restore_policy_on_error = false;
+    removePendingUnenrollRecord(allocator, pending.policy_source_path) catch |err| {
+        std.debug.print(
+            "warn: unenrolled {s}, but failed to remove pending unenroll record: {}\n",
+            .{ pending.enrolled_path, err },
+        );
+    };
     removeDecisionsForUnenrolledPath(allocator, policy_path, pending.enrolled_path) catch |err| {
         std.debug.print(
             "warn: unenrolled {s}, but failed to remove remembered decisions: {}\n",
@@ -124,6 +132,13 @@ fn beginUnenrollPolicyUpdate(
     var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
     errdefer removed.deinit(allocator);
 
+    // The saved policy must drop this enrollment so the projection tears down,
+    // so keep the object mapping durable until the guarded file is restored.
+    try writePendingUnenrollRecord(allocator, loaded_policy.source_path, removed.path, removed.object_id);
+    errdefer removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+        std.debug.panic("failed to roll back pending unenroll record for {s}: {}", .{ removed.path, err });
+    };
+
     try loaded_policy.saveToFile();
 
     return .{
@@ -146,11 +161,85 @@ fn rollbackUnenrollPolicyUpdate(
     defer loaded_policy.deinit();
 
     if (loaded_policy.findEnrollmentIndex(enrolled_path) != null) {
+        removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+            std.debug.print(
+                "warn: failed to remove stale pending unenroll record for {s}: {}\n",
+                .{ enrolled_path, err },
+            );
+        };
         return;
     }
 
     try loaded_policy.appendEnrollment(enrolled_path, object_id);
     try loaded_policy.saveToFile();
+    removePendingUnenrollRecord(allocator, loaded_policy.source_path) catch |err| {
+        std.debug.print(
+            "warn: restored policy enrollment for {s}, but failed to remove pending unenroll record: {}\n",
+            .{ enrolled_path, err },
+        );
+    };
+}
+
+fn removeEnrollmentFromMemory(loaded_policy: *config.PolicyFile, enrolled_path: []const u8) void {
+    const enrollment_index = loaded_policy.findEnrollmentIndex(enrolled_path) orelse return;
+    var removed = loaded_policy.removeEnrollmentAt(enrollment_index);
+    removed.deinit(loaded_policy.allocator);
+}
+
+fn removePersistedEnrollment(loaded_policy: *config.PolicyFile, enrolled_path: []const u8) !void {
+    removeEnrollmentFromMemory(loaded_policy, enrolled_path);
+    try loaded_policy.saveToFile();
+}
+
+const PendingUnenrollRecord = struct {
+    version: u32 = 1,
+    path: []const u8,
+    object_id: []const u8,
+};
+
+fn pendingUnenrollPathAlloc(allocator: std.mem.Allocator, policy_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}.pending-unenroll", .{policy_path});
+}
+
+fn writePendingUnenrollRecord(
+    allocator: std.mem.Allocator,
+    policy_path: []const u8,
+    enrolled_path: []const u8,
+    object_id: []const u8,
+) !void {
+    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path);
+    defer allocator.free(pending_path);
+    const parent_dir_path = std.fs.path.dirname(pending_path) orelse return error.InvalidPolicyPath;
+
+    var parent_dir = try std.Io.Dir.openDirAbsolute(runtime.io(), parent_dir_path, .{});
+    defer parent_dir.close(runtime.io());
+
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
+    var allocating_writer: std.Io.Writer.Allocating = .fromArrayList(allocator, &buffer);
+    try std.json.Stringify.value(PendingUnenrollRecord{
+        .path = enrolled_path,
+        .object_id = object_id,
+    }, .{}, &allocating_writer.writer);
+    buffer = allocating_writer.toArrayList();
+
+    var atomic_file = try parent_dir.createFileAtomic(runtime.io(), std.fs.path.basename(pending_path), .{
+        .permissions = .fromMode(0o600),
+        .replace = true,
+    });
+    defer atomic_file.deinit(runtime.io());
+
+    try atomic_file.file.writeStreamingAll(runtime.io(), buffer.items);
+    try atomic_file.replace(runtime.io());
+}
+
+fn removePendingUnenrollRecord(allocator: std.mem.Allocator, policy_path: []const u8) !void {
+    const pending_path = try pendingUnenrollPathAlloc(allocator, policy_path);
+    defer allocator.free(pending_path);
+    std.Io.Dir.deleteFileAbsolute(runtime.io(), pending_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
 
 fn restoreGuardedFileBackIfStillUnenrolled(
