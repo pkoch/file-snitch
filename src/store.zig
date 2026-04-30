@@ -54,6 +54,10 @@ pub const ObjectIdList = struct {
     }
 };
 
+fn objectIdLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
+}
+
 pub const Backend = union(enum) {
     pass: PassBackend,
     memory: MemoryBackend,
@@ -543,6 +547,8 @@ pub const MemoryState = struct {
             items[initialized] = try allocator.dupe(u8, entry.key_ptr.*);
             initialized += 1;
         }
+
+        std.mem.sort([]const u8, items, {}, objectIdLessThan);
 
         return .{
             .allocator = allocator,
