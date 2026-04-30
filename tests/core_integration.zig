@@ -361,7 +361,12 @@ fn sessionReadPath(session: daemon.Session, allocator: std.mem.Allocator, path: 
         return error.DebugReadFailed;
     }
 
-    return buffer[0..@intCast(result)];
+    const read_len: usize = @intCast(result);
+    if (read_len == buffer.len) return buffer;
+
+    const exact = try allocator.dupe(u8, buffer[0..read_len]);
+    allocator.free(buffer);
+    return exact;
 }
 
 fn sessionDebugCreateFile(session: *daemon.Session, path: []const u8, mode: u32) !void {

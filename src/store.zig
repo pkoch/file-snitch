@@ -552,17 +552,23 @@ pub const MemoryState = struct {
 
     pub fn putObject(self: *MemoryState, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         if (self.entries.getPtr(object_id)) |existing| {
+            const owned_content = try allocator.dupe(u8, object.content);
             existing.deinit(allocator);
             existing.* = .{
                 .metadata = object.metadata,
-                .content = try allocator.dupe(u8, object.content),
+                .content = owned_content,
             };
             return;
         }
 
-        try self.entries.put(allocator, try allocator.dupe(u8, object_id), .{
+        const owned_object_id = try allocator.dupe(u8, object_id);
+        errdefer allocator.free(owned_object_id);
+        const owned_content = try allocator.dupe(u8, object.content);
+        errdefer allocator.free(owned_content);
+
+        try self.entries.put(allocator, owned_object_id, .{
             .metadata = object.metadata,
-            .content = try allocator.dupe(u8, object.content),
+            .content = owned_content,
         });
     }
 
