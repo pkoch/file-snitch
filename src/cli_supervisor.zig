@@ -47,7 +47,8 @@ pub fn reconcilePolicyInForeground(allocator: std.mem.Allocator, command: RunCom
     var child: ?ManagedProjectionChild = null;
     defer stopManagedProjectionChild(allocator, &child);
 
-    var change_source = policy_watch.ChangeSource.init(allocator, command.policy_path);
+    try ensurePolicyWatcherParentReady(allocator, command.policy_path);
+    var change_source = try policy_watch.ChangeSource.init(allocator, command.policy_path);
     defer change_source.deinit();
 
     var last_marker: ?PolicyMarker = null;
@@ -92,6 +93,11 @@ fn changeSourceWait(change_source: *policy_watch.ChangeSource, next_expiration_u
             .timeout => {},
         }
     }
+}
+
+fn ensurePolicyWatcherParentReady(allocator: std.mem.Allocator, policy_path: []const u8) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    policy_lock.deinit();
 }
 
 fn reconcileManagedProjectionChild(
@@ -151,7 +157,7 @@ fn reconcileManagedProjectionChild(
     const exe_path = try std.process.executablePathAlloc(runtime.io(), allocator);
     defer allocator.free(exe_path);
 
-    if (!prepareProjectionPathForSpawn(projection_plan.root_path)) {
+    if (!prepareProjectionPathForSpawn(allocator, projection_plan.root_path)) {
         return next_expiration_unix_seconds;
     }
 
@@ -160,7 +166,7 @@ fn reconcileManagedProjectionChild(
     return next_expiration_unix_seconds;
 }
 
-fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
+fn prepareProjectionPathForSpawn(allocator: std.mem.Allocator, projection_path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             // The projection root is normally created by the child on first use.
@@ -168,7 +174,7 @@ fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
         },
         error.NoDevice => {
             std.log.warn("stale projection mount at {s}; attempting to unmount before restart", .{projection_path});
-            bestEffortUnmount(projection_path);
+            bestEffortUnmount(allocator, projection_path);
             var recovered_dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |retry_err| {
                 std.log.err("stale projection mount at {s} is still inaccessible after unmount attempt: {}", .{ projection_path, retry_err });
                 return false;
@@ -488,4 +494,20 @@ test "buildProjectionChildEnv propagates status fifo when provided" {
 
     try std.testing.expectEqualStrings("1", env.get(defaults.internal_projection_child_env).?);
     try std.testing.expectEqualStrings("/tmp/status.fifo", env.get(defaults.internal_status_fifo_env).?);
+}
+
+test "ensurePolicyWatcherParentReady creates missing policy parent" {
+    const allocator = std.testing.allocator;
+    const test_root = try std.fmt.allocPrint(allocator, ".zig-cache/file-snitch-policy-watch-parent-{d}", .{runtime.nanoTimestamp()});
+    defer allocator.free(test_root);
+    defer std.Io.Dir.cwd().deleteTree(runtime.io(), test_root) catch {};
+
+    const policy_path = try std.fs.path.join(allocator, &.{ test_root, "config", "policy.yml" });
+    defer allocator.free(policy_path);
+
+    try ensurePolicyWatcherParentReady(allocator, policy_path);
+
+    const parent_dir = std.fs.path.dirname(policy_path).?;
+    const stat = try std.Io.Dir.cwd().statFile(runtime.io(), parent_dir, .{});
+    try std.testing.expect(stat.kind == .directory);
 }
