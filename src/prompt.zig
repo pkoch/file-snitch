@@ -42,7 +42,7 @@ pub const Broker = struct {
 };
 
 pub const CliContext = struct {
-    allocator: std.mem.Allocator = std.heap.page_allocator,
+    allocator: std.mem.Allocator,
     timeout_ms: u32 = defaults.prompt_timeout_ms_default,
     stdin_file: std.Io.File = .stdin(),
     stderr_file: std.Io.File = .stderr(),
