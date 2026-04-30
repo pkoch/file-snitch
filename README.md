@@ -108,7 +108,7 @@ Operational guidance and troubleshooting live in
 - `src/`: Zig application code
 - `src/root.zig`: shared application module surface for tests and non-CLI consumers
 - `src/cli.zig`: command-line parsing, env loading, and runtime dispatch
-- `src/policy_commands.zig`: `enroll`, `unenroll`, `status`, and `doctor`
+- `src/policy/core.zig`: `enroll`, `unenroll`, `status`, and `doctor`
 - `src/enrollment.zig`: guarded-object migration and path-level enrollment helpers
 - `src/config.zig`: `policy.yml` loading, mutation, and projection-plan derivation
 - `src/agent.zig`: local requester/agent socket protocol and frontends

@@ -34,22 +34,49 @@ pub const ObjectView = struct {
     content: []const u8,
 };
 
+pub const BackendVersion = struct {
+    name: []const u8,
+    interface_version: u32,
+    durable: bool,
+    encrypted_at_rest: bool,
+};
+
+pub const ObjectIdList = struct {
+    allocator: Allocator,
+    items: []const []const u8,
+
+    pub fn deinit(self: *ObjectIdList) void {
+        for (self.items) |item| {
+            self.allocator.free(item);
+        }
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
+};
+
+fn objectIdLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
+}
+
 pub const Backend = union(enum) {
     pass: PassBackend,
-    mock: MockBackend,
+    memory: MemoryBackend,
 
     pub fn initPass(allocator: Allocator) !Backend {
         return .{ .pass = try PassBackend.init(allocator) };
     }
 
-    pub fn initMock(state: *MockState) Backend {
-        return .{ .mock = .{ .state = state } };
+    pub fn initMemory(state: *MemoryState) Backend {
+        return .{ .memory = .{ .state = state } };
     }
 
     pub fn name(self: *const Backend) []const u8 {
+        return self.version().name;
+    }
+
+    pub fn version(self: *const Backend) BackendVersion {
         return switch (self.*) {
-            .pass => "pass",
-            .mock => "mock",
+            inline else => |*backend| backend.version(),
         };
     }
 
@@ -75,6 +102,12 @@ pub const Backend = union(enum) {
     pub fn loadObject(self: *Backend, allocator: Allocator, object_id: []const u8) !Object {
         return switch (self.*) {
             inline else => |*backend| backend.loadObject(allocator, object_id),
+        };
+    }
+
+    pub fn listObjects(self: *Backend, allocator: Allocator) !ObjectIdList {
+        return switch (self.*) {
+            inline else => |*backend| backend.listObjects(allocator),
         };
     }
 
@@ -131,6 +164,16 @@ pub const PassBackend = struct {
         self.* = undefined;
     }
 
+    fn version(self: *const PassBackend) BackendVersion {
+        _ = self;
+        return .{
+            .name = "pass",
+            .interface_version = 1,
+            .durable = true,
+            .encrypted_at_rest = true,
+        };
+    }
+
     fn describeRefAlloc(self: *const PassBackend, allocator: Allocator, object_id: []const u8) ![]u8 {
         const entry_name = try self.entryNameAlloc(allocator, object_id);
         defer allocator.free(entry_name);
@@ -156,6 +199,12 @@ pub const PassBackend = struct {
         const encoded = try self.showEntry(allocator, entry_name);
         defer allocator.free(encoded);
         return decodeStoredObject(allocator, encoded);
+    }
+
+    fn listObjects(self: *PassBackend, allocator: Allocator) !ObjectIdList {
+        _ = self;
+        _ = allocator;
+        return error.UnsupportedOperation;
     }
 
     fn restoreObjectToFile(self: *PassBackend, allocator: Allocator, object_id: []const u8, target_path: []const u8) !void {
@@ -393,28 +442,42 @@ pub const PassBackend = struct {
     }
 };
 
-pub const MockBackend = struct {
-    state: *MockState,
+pub const MemoryBackend = struct {
+    state: *MemoryState,
 
-    fn deinit(self: *MockBackend, allocator: Allocator) void {
+    fn deinit(self: *MemoryBackend, allocator: Allocator) void {
         _ = self;
         _ = allocator;
     }
 
-    fn describeRefAlloc(self: *const MockBackend, allocator: Allocator, object_id: []const u8) ![]u8 {
+    fn version(self: *const MemoryBackend) BackendVersion {
         _ = self;
-        return std.fmt.allocPrint(allocator, "mock:file-snitch/{s}", .{object_id});
+        return .{
+            .name = "memory",
+            .interface_version = 1,
+            .durable = false,
+            .encrypted_at_rest = false,
+        };
     }
 
-    fn exists(self: *MockBackend, allocator: Allocator, object_id: []const u8) !bool {
+    fn describeRefAlloc(self: *const MemoryBackend, allocator: Allocator, object_id: []const u8) ![]u8 {
+        _ = self;
+        return std.fmt.allocPrint(allocator, "memory:file-snitch/{s}", .{object_id});
+    }
+
+    fn exists(self: *MemoryBackend, allocator: Allocator, object_id: []const u8) !bool {
         return self.state.exists(allocator, object_id);
     }
 
-    fn loadObject(self: *MockBackend, allocator: Allocator, object_id: []const u8) !Object {
+    fn loadObject(self: *MemoryBackend, allocator: Allocator, object_id: []const u8) !Object {
         return self.state.loadObject(allocator, object_id);
     }
 
-    fn restoreObjectToFile(self: *MockBackend, allocator: Allocator, object_id: []const u8, target_path: []const u8) !void {
+    fn listObjects(self: *MemoryBackend, allocator: Allocator) !ObjectIdList {
+        return self.state.listObjects(allocator);
+    }
+
+    fn restoreObjectToFile(self: *MemoryBackend, allocator: Allocator, object_id: []const u8, target_path: []const u8) !void {
         var object = try self.loadObject(allocator, object_id);
         defer object.deinit(allocator);
 
@@ -424,16 +487,16 @@ pub const MockBackend = struct {
         });
     }
 
-    fn putObject(self: *MockBackend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
+    fn putObject(self: *MemoryBackend, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         return self.state.putObject(allocator, object_id, object);
     }
 
-    fn removeObject(self: *MockBackend, allocator: Allocator, object_id: []const u8) !void {
+    fn removeObject(self: *MemoryBackend, allocator: Allocator, object_id: []const u8) !void {
         return self.state.removeObject(allocator, object_id);
     }
 };
 
-pub const MockState = struct {
+pub const MemoryState = struct {
     entries: std.StringHashMapUnmanaged(StoredEntry) = .{},
 
     const StoredEntry = struct {
@@ -446,7 +509,7 @@ pub const MockState = struct {
         }
     };
 
-    pub fn deinit(self: *MockState, allocator: Allocator) void {
+    pub fn deinit(self: *MemoryState, allocator: Allocator) void {
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -456,12 +519,12 @@ pub const MockState = struct {
         self.* = undefined;
     }
 
-    pub fn exists(self: *MockState, allocator: Allocator, object_id: []const u8) !bool {
+    pub fn exists(self: *MemoryState, allocator: Allocator, object_id: []const u8) !bool {
         _ = allocator;
         return self.entries.contains(object_id);
     }
 
-    pub fn loadObject(self: *MockState, allocator: Allocator, object_id: []const u8) !Object {
+    pub fn loadObject(self: *MemoryState, allocator: Allocator, object_id: []const u8) !Object {
         const entry = self.entries.get(object_id) orelse return error.ObjectNotFound;
         return .{
             .metadata = entry.metadata,
@@ -469,23 +532,53 @@ pub const MockState = struct {
         };
     }
 
-    pub fn putObject(self: *MockState, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
+    pub fn listObjects(self: *MemoryState, allocator: Allocator) !ObjectIdList {
+        var items = try allocator.alloc([]const u8, self.entries.count());
+        var initialized: usize = 0;
+        errdefer {
+            for (items[0..initialized]) |item| {
+                allocator.free(item);
+            }
+            allocator.free(items);
+        }
+
+        var iterator = self.entries.iterator();
+        while (iterator.next()) |entry| {
+            items[initialized] = try allocator.dupe(u8, entry.key_ptr.*);
+            initialized += 1;
+        }
+
+        std.mem.sort([]const u8, items, {}, objectIdLessThan);
+
+        return .{
+            .allocator = allocator,
+            .items = items,
+        };
+    }
+
+    pub fn putObject(self: *MemoryState, allocator: Allocator, object_id: []const u8, object: ObjectView) !void {
         if (self.entries.getPtr(object_id)) |existing| {
+            const owned_content = try allocator.dupe(u8, object.content);
             existing.deinit(allocator);
             existing.* = .{
                 .metadata = object.metadata,
-                .content = try allocator.dupe(u8, object.content),
+                .content = owned_content,
             };
             return;
         }
 
-        try self.entries.put(allocator, try allocator.dupe(u8, object_id), .{
+        const owned_object_id = try allocator.dupe(u8, object_id);
+        errdefer allocator.free(owned_object_id);
+        const owned_content = try allocator.dupe(u8, object.content);
+        errdefer allocator.free(owned_content);
+
+        try self.entries.put(allocator, owned_object_id, .{
             .metadata = object.metadata,
-            .content = try allocator.dupe(u8, object.content),
+            .content = owned_content,
         });
     }
 
-    pub fn removeObject(self: *MockState, allocator: Allocator, object_id: []const u8) !void {
+    pub fn removeObject(self: *MemoryState, allocator: Allocator, object_id: []const u8) !void {
         const removed = self.entries.fetchRemove(object_id) orelse return error.ObjectNotFound;
         allocator.free(removed.key);
         var value = removed.value;
@@ -804,14 +897,20 @@ fn finishAtomicObjectFile(atomic_file: *std.Io.File.Atomic, metadata: Metadata) 
     try atomic_file.replace(runtime.io());
 }
 
-test "mock backend round-trips objects" {
+test "memory backend round-trips objects" {
     const allocator = std.testing.allocator;
 
-    var state = MockState{};
+    var state = MemoryState{};
     defer state.deinit(allocator);
 
-    var backend = Backend.initMock(&state);
+    var backend = Backend.initMemory(&state);
     defer backend.deinit(allocator);
+
+    const version = backend.version();
+    try std.testing.expectEqualStrings("memory", version.name);
+    try std.testing.expectEqual(@as(u32, 1), version.interface_version);
+    try std.testing.expect(!version.durable);
+    try std.testing.expect(!version.encrypted_at_rest);
 
     try backend.putObject(allocator, "kube-config", .{
         .metadata = .{
@@ -823,8 +922,24 @@ test "mock backend round-trips objects" {
         },
         .content = "secret\n",
     });
+    try backend.putObject(allocator, "alpha-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 501,
+            .gid = 20,
+            .atime_nsec = 11,
+            .mtime_nsec = 22,
+        },
+        .content = "secret\n",
+    });
 
     try std.testing.expect(try backend.exists(allocator, "kube-config"));
+
+    var object_ids = try backend.listObjects(allocator);
+    defer object_ids.deinit();
+    try std.testing.expectEqual(@as(usize, 2), object_ids.items.len);
+    try std.testing.expectEqualStrings("alpha-config", object_ids.items[0]);
+    try std.testing.expectEqualStrings("kube-config", object_ids.items[1]);
 
     var loaded = try backend.loadObject(allocator, "kube-config");
     defer loaded.deinit(allocator);
