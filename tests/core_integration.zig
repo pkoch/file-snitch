@@ -1,6 +1,7 @@
 const std = @import("std");
 const app_src = @import("app_src");
 const builtin = @import("builtin");
+const agent = app_src.agent;
 const config = app_src.config;
 const daemon = app_src.daemon;
 const enrollment_ops = app_src.enrollment;
@@ -2228,6 +2229,67 @@ fn expectRenameAudit(
         .{ from, to, result },
     );
     return error.TestExpectedAuditEvent;
+}
+
+test "policy yaml parser handles edge cases" {
+    const allocator = std.testing.allocator;
+
+    const invalid_data_set = [_][]const u8{
+        "",
+        "   \n",
+    };
+
+    for (invalid_data_set) |data| {
+        try std.testing.expectError(error.InvalidPolicyFile, config.loadFromString(allocator, data));
+    }
+
+    const valid_data_set = [_][]const u8{
+        "version: 1\n",
+    };
+
+    for (data_set) |data| {
+        _ = config.loadFromString(allocator, data) catch |err| switch (err) {
+            error.InvalidPolicyFile,
+            error.FileNotFound,
+            error.UnsupportedPolicyVersion,
+            error.AccessDenied,
+            error.InvalidEnrollmentPath,
+            error.InvalidDecisionPath,
+            error.InvalidEnrollmentObjectId,
+            error.InvalidEnrollmentDuplicate,
+            => {},
+            else => return err,
+        };
+    }
+}
+
+test "agent frame parser handles known length prefixes" {
+    const valid_prefixes = [_]struct {
+        prefix: []const u8,
+        expected: usize,
+    }{
+        .{ .prefix = "1", .expected = 1 },
+        .{ .prefix = "10", .expected = 10 },
+        .{ .prefix = "100", .expected = 100 },
+        .{ .prefix = "999999", .expected = agent.protocol.max_frame_len },
+    };
+
+    for (valid_prefixes) |case| {
+        try std.testing.expectEqual(case.expected, try agent.protocol.parseFramePayloadLen(case.prefix));
+    }
+
+    const invalid_prefixes = [_][]const u8{
+        "",
+        "00",
+        "abc",
+        "9999999",
+    };
+
+    for (invalid_prefixes) |prefix| {
+        if (agent.protocol.parseFramePayloadLen(prefix)) |_| {
+            return error.TestExpectedParseFailure;
+        } else |_| {}
+    }
 }
 
 fn expectNoAuditEvent(

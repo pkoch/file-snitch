@@ -548,6 +548,20 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !PolicyFile 
         return try emptyPolicy(allocator, source_path);
     }
 
+    return try loadFromSource(allocator, source_path, source);
+}
+
+pub fn loadFromString(allocator: std.mem.Allocator, source: []const u8) !PolicyFile {
+    if (std.mem.trim(u8, source, &std.ascii.whitespace).len == 0) {
+        return error.InvalidPolicyFile;
+    }
+
+    const source_path = try allocator.dupe(u8, "<memory>");
+    errdefer allocator.free(source_path);
+    return try loadFromSource(allocator, source_path, source);
+}
+
+fn loadFromSource(allocator: std.mem.Allocator, source_path: []u8, source: []const u8) !PolicyFile {
     var document: yaml.Yaml = .{ .source = source };
     defer document.deinit(allocator);
 
@@ -1183,4 +1197,36 @@ test "copyDecisions handles allocation failures" {
         checkCopyDecisionsAllocationFailures,
         .{},
     );
+}
+
+test "policy file rejects empty decision paths" {
+    const allocator = std.testing.allocator;
+
+    const old_home_z = try setHomeForTest("/tmp");
+    defer restoreHomeForTest(old_home_z);
+
+    const test_dir = try std.fmt.allocPrint(allocator, "/tmp/test-empty-decision-path-{d}", .{runtime.nanoTimestamp()});
+    defer allocator.free(test_dir);
+    defer std.Io.Dir.cwd().deleteTree(runtime.io(), test_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(runtime.io(), test_dir);
+
+    const policy_path = try std.fs.path.join(allocator, &.{ test_dir, "policy.yml" });
+    defer allocator.free(policy_path);
+
+    var file = try std.Io.Dir.createFileAbsolute(runtime.io(), policy_path, .{ .truncate = true });
+    defer file.close(runtime.io());
+    try file.writeStreamingAll(runtime.io(),
+        \\version: 1
+        \\enrollments: []
+        \\decisions:
+        \\  - executable_path: /usr/bin/cat
+        \\    path: ""
+        \\    approval_class: read_like
+        \\    outcome: allow
+        \\    expires_at: null
+        \\
+    );
+
+    try std.testing.expectError(error.InvalidDecisionPath, loadFromFile(allocator, policy_path));
 }
