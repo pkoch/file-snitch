@@ -922,13 +922,24 @@ test "memory backend round-trips objects" {
         },
         .content = "secret\n",
     });
+    try backend.putObject(allocator, "alpha-config", .{
+        .metadata = .{
+            .mode = 0o600,
+            .uid = 501,
+            .gid = 20,
+            .atime_nsec = 11,
+            .mtime_nsec = 22,
+        },
+        .content = "secret\n",
+    });
 
     try std.testing.expect(try backend.exists(allocator, "kube-config"));
 
     var object_ids = try backend.listObjects(allocator);
     defer object_ids.deinit();
-    try std.testing.expectEqual(@as(usize, 1), object_ids.items.len);
-    try std.testing.expectEqualStrings("kube-config", object_ids.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), object_ids.items.len);
+    try std.testing.expectEqualStrings("alpha-config", object_ids.items[0]);
+    try std.testing.expectEqualStrings("kube-config", object_ids.items[1]);
 
     var loaded = try backend.loadObject(allocator, "kube-config");
     defer loaded.deinit(allocator);
