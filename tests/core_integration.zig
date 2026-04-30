@@ -2231,6 +2231,56 @@ fn expectRenameAudit(
     return error.TestExpectedAuditEvent;
 }
 
+test "policy engine evaluates correctly with various configurations" {
+    const allocator = std.testing.allocator;
+    var scoped_home = try ScopedHome.init(allocator, "/");
+    defer scoped_home.deinit();
+
+    var temp_policy = try TempPolicyFile.init(allocator, "engine-configs");
+    defer temp_policy.deinit();
+
+    var file = try createFileAbsolute(temp_policy.path, .{ .truncate = true });
+    try file.writeAll(
+        \\version: 1
+        \\enrollments:
+        \\  - path: /tmp/engine/config
+        \\    object_id: engine-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/demo
+        \\    path: /tmp/engine/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+    );
+    file.close();
+
+    var loaded = try config.loadFromFile(allocator, temp_policy.path);
+    defer loaded.deinit();
+
+    var compiled = try loaded.compilePolicyRuleViews(allocator);
+    defer compiled.deinit();
+
+    var engine = try policy.Engine.init(allocator, .deny, compiled.items);
+    defer engine.deinit();
+
+    const request: policy.Request = .{
+        .path = "/tmp/engine/config",
+        .access_class = .read,
+        .pid = 1,
+        .executable_path = "/usr/bin/demo",
+    };
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(request));
+
+    const mismatched_request: policy.Request = .{
+        .path = "/tmp/other",
+        .access_class = .write,
+        .pid = 1,
+        .executable_path = "/usr/bin/other",
+    };
+
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(mismatched_request));
+}
+
 test "policy yaml parser handles edge cases" {
     const allocator = std.testing.allocator;
 
@@ -2247,19 +2297,10 @@ test "policy yaml parser handles edge cases" {
         "version: 1\n",
     };
 
-    for (data_set) |data| {
-        _ = config.loadFromString(allocator, data) catch |err| switch (err) {
-            error.InvalidPolicyFile,
-            error.FileNotFound,
-            error.UnsupportedPolicyVersion,
-            error.AccessDenied,
-            error.InvalidEnrollmentPath,
-            error.InvalidDecisionPath,
-            error.InvalidEnrollmentObjectId,
-            error.InvalidEnrollmentDuplicate,
-            => {},
-            else => return err,
-        };
+    for (valid_data_set) |data| {
+        var policy_file = try config.loadFromString(allocator, data);
+        defer policy_file.deinit();
+        try std.testing.expectEqual(@as(u32, 1), policy_file.version);
     }
 }
 
