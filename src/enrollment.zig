@@ -120,8 +120,8 @@ pub fn pathKind(path: []const u8) !PathKind {
     if (c.stat(path_z.ptr, &stat) != 0) return pathKindError(std.posix.errno(-1));
 
     const mode: u32 = @intCast(stat.st_mode);
-    if (std.c.S.ISREG(mode)) return .file;
-    if (std.c.S.ISDIR(mode)) return .directory;
+    if ((mode & c.S_IFMT) == c.S_IFREG) return .file;
+    if ((mode & c.S_IFMT) == c.S_IFDIR) return .directory;
     return .other;
 }
 
