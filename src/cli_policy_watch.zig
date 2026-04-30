@@ -234,7 +234,7 @@ pub fn splitWatchPath(allocator: std.mem.Allocator, policy_path: []const u8) !st
 }
 
 pub fn nanosToPollTimeoutMs(timeout_ns: u64) i32 {
-    const timeout_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch unreachable;
+    const timeout_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch @panic("divCeil with non-zero divisor");
     if (timeout_ms > std.math.maxInt(i32)) return std.math.maxInt(i32);
     return @intCast(timeout_ms);
 }
