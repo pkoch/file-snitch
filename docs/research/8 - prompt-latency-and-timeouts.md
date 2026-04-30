@@ -22,8 +22,8 @@ The CLI prompt broker currently behaves as follows:
 - the timeout can be overridden with `FILE_SNITCH_PROMPT_TIMEOUT_MS`
 
 Sources:
-- [src/prompt.zig](/Users/pkoch/github.com/pkoch/file-snitch/src/prompt.zig)
-- [README.md](/Users/pkoch/github.com/pkoch/file-snitch/README.md)
+- [src/prompt.zig](../../src/prompt.zig)
+- [README.md](../../README.md)
 
 ## What the current tests actually prove
 

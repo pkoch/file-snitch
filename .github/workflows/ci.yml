@@ -9,6 +9,8 @@ on:
 jobs:
   hygiene:
     runs-on: ubuntu-24.04
+    env:
+      ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -22,6 +24,21 @@ jobs:
 
       - name: Check demo artifact redaction
         run: ./scripts/demo/check-demo-artifacts.sh
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            fuse3 \
+            libfuse3-dev \
+            pkg-config \
+          ;
+
+      - uses: ./.github/actions/setup-zig
+        with:
+          zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
+
+      - name: Check docs
+        run: ./scripts/docs/check-docs.sh
 
   build:
     runs-on: ubuntu-24.04
