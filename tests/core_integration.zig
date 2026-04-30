@@ -200,7 +200,7 @@ const Fixture = struct {
     allocator: std.mem.Allocator,
     temp_dir: TempDir,
     mount_path: []u8,
-    mock_state: store.MockState = .{},
+    memory_state: store.MemoryState = .{},
     backend: store.Backend = undefined,
 
     fn init(allocator: std.mem.Allocator) !Fixture {
@@ -220,14 +220,14 @@ const Fixture = struct {
     }
 
     fn deinit(self: *Fixture) void {
-        self.mock_state.deinit(self.allocator);
+        self.memory_state.deinit(self.allocator);
         self.allocator.free(self.mount_path);
         self.temp_dir.deinit();
         self.* = undefined;
     }
 
     fn guardedStore(self: *Fixture) *store.Backend {
-        self.backend = store.Backend.initMock(&self.mock_state);
+        self.backend = store.Backend.initMemory(&self.memory_state);
         return &self.backend;
     }
 
@@ -752,7 +752,7 @@ test "policy and prompt paths are covered by core assertions" {
     try expectAuditEvent(allowed_prompt_audit.items, "write", guarded_note_path, 21);
 
     {
-        var stored = try fixture.mock_state.loadObject(allocator, "guarded-note.txt");
+        var stored = try fixture.memory_state.loadObject(allocator, "guarded-note.txt");
         defer stored.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded note\n", stored.content);
     }
@@ -802,9 +802,9 @@ test "daemon sends home-relative display labels to prompt broker" {
     const lock_anchor_path = try home.childPathAlloc("config.lock");
     defer allocator.free(lock_anchor_path);
 
-    var mock_state: store.MockState = .{};
-    defer mock_state.deinit(allocator);
-    var guarded_store = store.Backend.initMock(&mock_state);
+    var memory_state: store.MemoryState = .{};
+    defer memory_state.deinit(allocator);
+    var guarded_store = store.Backend.initMemory(&memory_state);
     try guarded_store.putObject(allocator, "config", .{
         .metadata = .{
             .mode = 0o600,
@@ -1656,9 +1656,9 @@ test "live policy reload suppresses repeated prompt without remount" {
     try policy_file.appendEnrollment(source_guarded_path, "kube-config");
     try policy_file.saveToFile();
 
-    var mock_state: store.MockState = .{};
-    defer mock_state.deinit(allocator);
-    var guarded_store = store.Backend.initMock(&mock_state);
+    var memory_state: store.MemoryState = .{};
+    defer memory_state.deinit(allocator);
+    var guarded_store = store.Backend.initMemory(&memory_state);
     try guarded_store.putObject(allocator, "kube-config", .{
         .metadata = .{
             .mode = 0o600,
@@ -1885,9 +1885,9 @@ test "projection exposes the guarded file without backing siblings" {
     defer sibling_file.close();
     try sibling_file.writeAll("plain sibling\n");
 
-    var mock_state: store.MockState = .{};
-    defer mock_state.deinit(allocator);
-    var guarded_store = store.Backend.initMock(&mock_state);
+    var memory_state: store.MemoryState = .{};
+    defer memory_state.deinit(allocator);
+    var guarded_store = store.Backend.initMemory(&memory_state);
     try guarded_store.putObject(allocator, "config", .{
         .metadata = .{
             .mode = 0o600,
@@ -1925,7 +1925,7 @@ test "projection exposes the guarded file without backing siblings" {
     try sessionDebugWriteFile(&session, "/config", "updated guarded kubeconfig\n");
 
     {
-        var object = try mock_state.loadObject(allocator, "config");
+        var object = try memory_state.loadObject(allocator, "config");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded kubeconfig\n", object.content);
     }
@@ -1977,9 +1977,9 @@ test "projection can expose multiple guarded siblings under one mount" {
         try file.writeAll("host sibling\n");
     }
 
-    var mock_state: store.MockState = .{};
-    defer mock_state.deinit(allocator);
-    var guarded_store = store.Backend.initMock(&mock_state);
+    var memory_state: store.MemoryState = .{};
+    defer memory_state.deinit(allocator);
+    var guarded_store = store.Backend.initMemory(&memory_state);
     try guarded_store.putObject(allocator, "a.key", .{
         .metadata = .{
             .mode = 0o600,
@@ -2036,12 +2036,12 @@ test "projection can expose multiple guarded siblings under one mount" {
     try sessionDebugWriteFile(&session, "/b.key", "updated guarded second\n");
 
     {
-        var object = try mock_state.loadObject(allocator, "a.key");
+        var object = try memory_state.loadObject(allocator, "a.key");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded first\n", object.content);
     }
     {
-        var object = try mock_state.loadObject(allocator, "b.key");
+        var object = try memory_state.loadObject(allocator, "b.key");
         defer object.deinit(allocator);
         try std.testing.expectEqualStrings("updated guarded second\n", object.content);
     }
