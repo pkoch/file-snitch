@@ -84,7 +84,11 @@ remain outside the projection.
 This repo includes a ready-to-use devcontainer in
 [.devcontainer/devcontainer.json](./.devcontainer/devcontainer.json). Use it as
 the default local Linux development environment, or as a reference for setting
-up another Linux runner.
+up another Linux runner. After opening the container, run:
+
+```bash
+./.devcontainer/scripts/check.sh
+```
 
 ## Reporting Problems
 
