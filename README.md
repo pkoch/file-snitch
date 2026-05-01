@@ -79,6 +79,17 @@ The checked-in demo is a tmux-driven session that shows the agent pane, the
 daemon pane, and a user shell triggering guarded access while sibling files
 remain outside the projection.
 
+## Development Environment
+
+This repo includes a ready-to-use devcontainer in
+[.devcontainer/devcontainer.json](./.devcontainer/devcontainer.json). Use it as
+the default local Linux development environment, or as a reference for setting
+up another Linux runner. After opening the container, run:
+
+```bash
+./.devcontainer/scripts/check.sh
+```
+
 ## Reporting Problems
 
 Before opening an issue, export a dossier:

@@ -41,12 +41,12 @@ main() {
   platform_prime_guarded_path "$home_dir/.kube/config"
   platform_prime_guarded_path "$home_dir/.ssh/id_ed25519"
 
-  assert_eq \
-    "$(cat "$home_dir/.kube/config")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.kube/config" \
     "guarded kube" \
     "expected the kube enrollment to be projected from its guarded object"
-  assert_eq \
-    "$(cat "$home_dir/.ssh/id_ed25519")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.ssh/id_ed25519" \
     "guarded ssh" \
     "expected the ssh enrollment to be projected from its guarded object"
   assert_eq \

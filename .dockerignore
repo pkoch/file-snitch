@@ -1,0 +1,42 @@
+# VCS and local metadata.
+.git
+.git/
+.gitignore
+.DS_Store
+**/.DS_Store
+**/._*
+
+# Local editor and tool state.
+.cache/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Zig build products and local compiler metadata.
+.zig-cache/
+zig-cache/
+zig-out/
+compile_commands.json
+
+# Temporary logs, archives, and packaged binaries.
+*.log
+*.tmp
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.dmg
+*.pkg
+
+# Common dependency/build output directories if experiments create them locally.
+node_modules/
+dist/
+out/
+target/
+coverage/
+
+# Keep the devcontainer definition in the build context.
+!.devcontainer/
+!.devcontainer/**

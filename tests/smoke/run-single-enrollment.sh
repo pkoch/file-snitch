@@ -40,8 +40,8 @@ main() {
     "$(readlink "$home_dir/.kube/config")" \
     "$home_dir/.local/state/file-snitch/projection/$object_id" \
     "expected the enrolled path to symlink to its projection object"
-  assert_eq \
-    "$(cat "$home_dir/.kube/config")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.kube/config" \
     "guarded kube" \
     "expected the enrolled file to be projected from the guarded object"
   assert_eq \

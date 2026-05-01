@@ -38,8 +38,8 @@ main() {
   wait_for_mounts_ready
   platform_prime_guarded_path "$home_dir/.kube/config"
 
-  assert_eq \
-    "$(cat "$home_dir/.kube/config")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.kube/config" \
     "host kube" \
     "expected the reconciler to project a newly enrolled file without restarting run"
   assert_eq \

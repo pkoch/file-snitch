@@ -19,6 +19,27 @@ Platform dependencies:
 - macOS: macFUSE with libfuse compatibility libraries
 - all platforms: `pass` and a usable GPG setup for real guarded-store drills
 
+## Development Environment
+
+This repo ships a devcontainer at
+[../.devcontainer/devcontainer.json](../.devcontainer/devcontainer.json). Use it
+as the default local Linux development environment, or as a reference for
+setting up another Linux runner. Open it with your editor's Dev Containers
+support, or bring it up directly:
+
+```bash
+devcontainer up --workspace-folder .
+devcontainer exec --workspace-folder . ./.devcontainer/scripts/check.sh
+```
+
+- `.devcontainer/scripts/setup.sh` installs the Linux packages needed to build
+against FUSE, installs the pinned Zig release from ziglang.org when `zig` is
+missing or does not match the repo pin, and prints tool versions for build logs.
+- `.devcontainer/scripts/check.sh` verifies command presence, checks that
+`zig version` matches `minimum_zig_version` from `build.zig.zon`, checks
+`pkg-config --modversion fuse3`, then runs the core build, compile-commands,
+and docs checks.
+
 ## Core Loop
 
 ```bash
@@ -80,7 +101,7 @@ Coverage map:
 CI also enforces shell syntax and demo artifact freshness:
 
 ```bash
-bash -n $(find scripts tests -type f -name '*.sh' | sort)
+bash -n $(find .devcontainer scripts tests -type f -name '*.sh' | sort)
 ./scripts/docs/check-docs.sh
 ./scripts/demo/check-demo-artifacts.sh
 ```
