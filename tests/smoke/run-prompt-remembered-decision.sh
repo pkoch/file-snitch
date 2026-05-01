@@ -89,8 +89,8 @@ verify_durable_allow_read() {
   printf 'a\n' >&3
   platform_prime_guarded_path "$home_dir/.kube/config"
 
-  assert_eq \
-    "$(cat "$home_dir/.kube/config")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.kube/config" \
     "guarded seeded kube" \
     "expected durable allow to permit the first read"
 

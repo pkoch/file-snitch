@@ -60,8 +60,8 @@ verify_allow_read() {
   queue_prompt_answers yes 8
   platform_prime_guarded_path "$home_dir/.kube/config"
 
-  assert_eq \
-    "$(cat "$home_dir/.kube/config")" \
+  assert_projected_file_eq_eventually \
+    "$home_dir/.kube/config" \
     "guarded seeded kube" \
     "expected prompt allow to permit a read of the enrolled file"
   assert_log_contains "\"action\":\"prompt\",\"path\":\"open O_RDONLY $home_dir/.kube/config\",\"result\":1"
