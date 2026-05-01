@@ -30,13 +30,16 @@ assert_projected_file_eq_eventually() {
 
   error_file="$(mktemp "${TMP_ROOT:-/tmp}/file-snitch-read.XXXXXX")"
   for _ in $(seq 1 "$attempts"); do
-    actual="$(cat "$path" 2>"$error_file" || true)"
-    if [[ "$actual" == "$expected" ]]; then
-      rm -f "$error_file"
-      return
+    if actual="$(cat "$path" 2>"$error_file")"; then
+      if [[ "$actual" == "$expected" ]]; then
+        rm -f "$error_file"
+        return
+      fi
+      last_error=""
+    else
+      actual=""
+      last_error="$(cat "$error_file" 2>/dev/null || true)"
     fi
-
-    last_error="$(cat "$error_file" 2>/dev/null || true)"
     sleep 0.1
   done
 
