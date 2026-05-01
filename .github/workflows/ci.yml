@@ -18,7 +18,7 @@ jobs:
       - name: Check shell scripts
         run: |
           mapfile -t shell_files < <(
-            find scripts tests -type f -name '*.sh' | sort
+            find .devcontainer scripts tests -type f -name '*.sh' | sort
           )
           bash -n "${shell_files[@]}"
 
