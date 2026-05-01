@@ -28,7 +28,9 @@ assert_projected_file_eq_eventually() {
   local last_error=""
   local error_file=""
 
-  error_file="$(mktemp "${TMP_ROOT:-/tmp}/file-snitch-read.XXXXXX")"
+  if ! error_file="$(mktemp "${TMP_ROOT:-/tmp}/file-snitch-read.XXXXXX")"; then
+    fail "failed to create temporary file under ${TMP_ROOT:-/tmp}"
+  fi
   for _ in $(seq 1 "$attempts"); do
     if actual="$(cat "$path" 2>"$error_file")"; then
       if [[ "$actual" == "$expected" ]]; then
