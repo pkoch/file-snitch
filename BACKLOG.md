@@ -22,12 +22,6 @@ Status:
 - `[ ]` Make `doctor` hints point at stable docs sections
   - operations symptoms should map to concrete recovery docs
   - policy-shape failures should map to [docs/policy.md](./docs/policy.md)
-- `[ ]` Make the packaged user-service story boring
-  - verify the current `launchd` and `systemd --user` helpers in more real
-    environments
-  - tighten `doctor` around service drift and common install mistakes
-  - decide later whether service install stays script-based or moves into the
-    CLI
 - `[ ]` Improve daily-driver frontend UX
   - keep `terminal-pinentry` as the bootstrap/debug fallback
   - harden `macos-ui` and `linux-ui` behavior around helper failures and
@@ -44,11 +38,10 @@ Status:
   - keep the transport stream-friendly and user-to-user
   - keep requester-side policy ownership: forwarded decisions should still land
     in the requester's `policy.yml`
-- `[ ]` Add a recent-events view
-- `[ ]` Add a basic rule editor
-- `[ ]` Add a specific warning for [LOLBins](https://gtfobins.org)
+- `[ ]` Add a specific warning for [GTFOBins](https://gtfobins.org)
+  - Keep a trimmed down version of <https://gtfobins.org/api.json>.
+  - Decide which functions are problematic regarding file access.
 - `[ ]` Support mount persistence across restarts
-- `[ ]` Add config import and export
 
 ## Platform And Packaging
 
@@ -63,20 +56,12 @@ Status:
 ## Filesystem And Policy Research
 
 - `[ ]` Revisit xattr mediation beyond the current passthrough-only prompt path
-- `[ ]` Align editor probe and save flows
-  - include Vim writability probes
-  - include temp-file save and rename-over-target semantics
-- `[ ]` Revisit tree or directory enrollment only if exact-file enrollment stops
-  fitting the product
-  - exact-file enrollment remains the v1 product shape
-  - unprotected siblings should continue passing through normally
 
 ## Future Backend Work
 
 - `[ ]` Add more guarded-object backends beyond `pass`
   - likely first candidates: `1password`, `bitwarden`
-- `[ ]` Revisit an encrypted native guarded-object format only if the project
-  outgrows the external-store model
+  - local storage candidates: `secret-tool` for linux, `security` for macOS
 
 ## Product Constraints
 

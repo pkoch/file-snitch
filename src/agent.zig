@@ -128,7 +128,7 @@ fn runTestAgentServiceThread(context: *TestAgentServiceContext) void {
 fn runTestAgentService(context: *TestAgentServiceContext) !void {
     const service_context = context.service_context;
 
-    try util.ensureParentDirectory(service_context.socket_path);
+    try util.ensureParentDirectory(service_context.allocator, service_context.socket_path);
     try util.removeSocketFileIfStale(service_context.socket_path);
 
     const address = try net.UnixAddress.init(service_context.socket_path);
@@ -365,10 +365,10 @@ test "agent socket parent directory is created private" {
     defer allocator.free(socket_path);
     defer deleteParentDirectory(socket_path);
 
-    try util.ensureParentDirectory(socket_path);
+    try util.ensureParentDirectory(allocator, socket_path);
 
     const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
-    const stat = try util.statPath(parent_dir);
+    const stat = try util.statPath(allocator, parent_dir);
     try std.testing.expectEqual(c.getuid(), stat.st_uid);
     try std.testing.expectEqual(@as(c.mode_t, 0o700), stat.st_mode & 0o777);
 }
@@ -381,9 +381,9 @@ test "agent socket parent directory rejects shared permissions" {
 
     const parent_dir = std.fs.path.dirname(socket_path) orelse return error.InvalidPath;
     try std.Io.Dir.cwd().createDirPath(runtime.io(), parent_dir);
-    try util.chmodPath(parent_dir, 0o755);
+    try util.chmodPath(allocator, parent_dir, 0o755);
 
-    try std.testing.expectError(error.InvalidSocketPath, util.ensureParentDirectory(socket_path));
+    try std.testing.expectError(error.InvalidSocketPath, util.ensureParentDirectory(allocator, socket_path));
 }
 
 test "decideFromFrame returns an owned request id" {
@@ -446,7 +446,7 @@ fn runDelayedDecisionServerThread(context: *DelayedDecisionServerContext) void {
 }
 
 fn runDelayedDecisionServer(context: *DelayedDecisionServerContext) !void {
-    try util.ensureParentDirectory(context.socket_path);
+    try util.ensureParentDirectory(context.service_context.allocator, context.socket_path);
     try util.removeSocketFileIfStale(context.socket_path);
 
     const address = try net.UnixAddress.init(context.socket_path);

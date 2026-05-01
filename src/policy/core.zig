@@ -68,12 +68,12 @@ pub fn unenroll(allocator: std.mem.Allocator, policy_path: []const u8, target_pa
         };
     };
 
-    if (try enrollment.pathExists(pending.enrolled_path)) {
+    if (try enrollment.pathExists(allocator, pending.enrolled_path)) {
         std.debug.print(
             "file-snitch: waiting for active projection to stop: {s}\n",
             .{pending.enrolled_path},
         );
-        try waitForTargetPathToDisappear(pending.enrolled_path);
+        try waitForTargetPathToDisappear(allocator, pending.enrolled_path);
     }
 
     try restoreGuardedFileBackIfStillUnenrolled(allocator, policy_path, &guarded_store, pending.object_id, pending.enrolled_path);
@@ -283,10 +283,10 @@ fn removeDecisionsForUnenrolledPath(
     try loaded_policy.saveToFile();
 }
 
-fn waitForTargetPathToDisappear(enrolled_path: []const u8) !void {
+fn waitForTargetPathToDisappear(allocator: std.mem.Allocator, enrolled_path: []const u8) !void {
     const deadline_ms = runtime.milliTimestamp() + projection_teardown_timeout_ms;
     while (runtime.milliTimestamp() < deadline_ms) {
-        if (!try enrollment.pathExists(enrolled_path)) {
+        if (!try enrollment.pathExists(allocator, enrolled_path)) {
             return;
         }
 
@@ -295,7 +295,7 @@ fn waitForTargetPathToDisappear(enrolled_path: []const u8) !void {
         };
     }
 
-    if (!try enrollment.pathExists(enrolled_path)) {
+    if (!try enrollment.pathExists(allocator, enrolled_path)) {
         return;
     }
 
@@ -402,7 +402,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
         try report_writer.writeAll("hint: check that GPG works for this shell and that GNUPGHOME points at a usable keyring\n");
     }
 
-    const agent_socket_exists = enrollment.pathExists(agent_socket_path) catch |err| blk: {
+    const agent_socket_exists = enrollment.pathExists(allocator, agent_socket_path) catch |err| blk: {
         has_errors = true;
         try report_writer.print("error: agent socket path could not be inspected: {s}: {}\n", .{ agent_socket_path, err });
         break :blk false;
@@ -457,7 +457,7 @@ pub fn doctor(allocator: std.mem.Allocator, options: DoctorOptions) !void {
             continue;
         };
 
-        const parent_exists = enrollment.directoryExists(parent_dir) catch |err| {
+        const parent_exists = enrollment.directoryExists(allocator, parent_dir) catch |err| {
             has_errors = true;
             try report_writer.print("error: parent directory could not be inspected: {s}: {}\n", .{ parent_dir, err });
             continue;
@@ -571,7 +571,7 @@ fn appendTargetPathReport(
             symlink_target;
         defer if (symlink_inspect_path_owned) allocator.free(symlink_inspect_path);
 
-        const symlink_kind = enrollment.pathKind(symlink_inspect_path) catch |err| {
+        const symlink_kind = enrollment.pathKind(allocator, symlink_inspect_path) catch |err| {
             has_errors.* = true;
             if (err == error.NoDevice) {
                 try writer.print(
@@ -610,7 +610,7 @@ fn appendTargetPathReport(
         }
     }
 
-    const target_kind = enrollment.pathKind(target_path) catch |err| {
+    const target_kind = enrollment.pathKind(allocator, target_path) catch |err| {
         has_errors.* = true;
         if (err == error.NoDevice) {
             try writer.print(
@@ -906,7 +906,7 @@ fn ensureProjectionServiceCanLoadPass(allocator: std.mem.Allocator) !void {
     const run_service_path = try user_services.macosLaunchAgentPathAlloc(allocator, home_dir, "dev.file-snitch.run.plist");
     defer allocator.free(run_service_path);
 
-    const service_exists = enrollment.pathExists(run_service_path) catch |err| {
+    const service_exists = enrollment.pathExists(allocator, run_service_path) catch |err| {
         std.debug.print("error: launchd run service file could not be inspected: {s}: {}\n", .{ run_service_path, err });
         return error.InvalidUsage;
     };
@@ -946,7 +946,7 @@ fn appendMacosRunServicePassReport(
     has_errors: *bool,
     run_service_path: []const u8,
 ) !void {
-    const service_exists = enrollment.pathExists(run_service_path) catch |err| {
+    const service_exists = enrollment.pathExists(allocator, run_service_path) catch |err| {
         has_errors.* = true;
         try writer.print("error: launchd run service file could not be inspected for pass access: {s}: {}\n", .{ run_service_path, err });
         return;

@@ -14,6 +14,7 @@ pub const PolicyFile = core.PolicyFile;
 pub const currentPolicyMarker = core.currentPolicyMarker;
 pub const acquirePolicyLock = core.acquirePolicyLock;
 pub const loadFromFile = core.loadFromFile;
+pub const loadFromString = core.loadFromString;
 pub const defaultPolicyPathAlloc = core.defaultPolicyPathAlloc;
 pub const defaultProjectionRootPathAlloc = core.defaultProjectionRootPathAlloc;
 

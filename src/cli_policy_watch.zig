@@ -78,7 +78,12 @@ pub const DarwinWatcher = if (builtin.os.tag == .macos) struct {
         var timespec = nanosToTimespec(timeout_ns);
         var event_buffer: [1]std.c.Kevent = undefined;
         const count = std.c.kevent(self.kqueue_fd, &.{}, 0, &event_buffer, event_buffer.len, &timespec);
-        if (count < 0) return error.InputOutput;
+        if (count < 0) {
+            return switch (std.posix.errno(-1)) {
+                .INTR => .timeout,
+                else => error.InputOutput,
+            };
+        }
         if (count == 0) return .timeout;
         return .changed;
     }
@@ -100,16 +105,10 @@ pub const ChangeSource = union(enum) {
     linux_inotify: LinuxWatcher,
     darwin_kqueue: DarwinWatcher,
 
-    pub fn init(allocator: std.mem.Allocator, policy_path: []const u8) ChangeSource {
+    pub fn init(allocator: std.mem.Allocator, policy_path: []const u8) !ChangeSource {
         return switch (builtin.os.tag) {
-            .linux => initLinuxWatcher(allocator, policy_path) catch |err| {
-                std.log.warn("falling back to polling for policy changes at {s}: {}", .{ policy_path, err });
-                return .polling;
-            },
-            .macos => initDarwinWatcher(allocator, policy_path) catch |err| {
-                std.log.warn("falling back to polling for policy changes at {s}: {}", .{ policy_path, err });
-                return .polling;
-            },
+            .linux => try initLinuxWatcher(allocator, policy_path),
+            .macos => try initDarwinWatcher(allocator, policy_path),
             else => .polling,
         };
     }
@@ -129,18 +128,12 @@ pub const ChangeSource = union(enum) {
                 return .timeout;
             },
             .linux_inotify => |*watcher| watcher.wait(timeout_ns) catch |err| {
-                std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
-                watcher.deinit();
-                self.* = .polling;
-                sleepForPolling(timeout_ns);
-                return .timeout;
+                std.log.err("policy watcher failed, exiting to allow service manager to restart: {}", .{err});
+                @panic("policy watcher failed");
             },
             .darwin_kqueue => |*watcher| watcher.wait(timeout_ns) catch |err| {
-                std.log.warn("policy watcher failed; falling back to polling: {}", .{err});
-                watcher.deinit();
-                self.* = .polling;
-                sleepForPolling(timeout_ns);
-                return .timeout;
+                std.log.err("policy watcher failed, exiting to allow service manager to restart: {}", .{err});
+                @panic("policy watcher failed");
             },
         };
     }
@@ -234,7 +227,7 @@ pub fn splitWatchPath(allocator: std.mem.Allocator, policy_path: []const u8) !st
 }
 
 pub fn nanosToPollTimeoutMs(timeout_ns: u64) i32 {
-    const timeout_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch unreachable;
+    const timeout_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch @panic("divCeil with non-zero divisor");
     if (timeout_ms > std.math.maxInt(i32)) return std.math.maxInt(i32);
     return @intCast(timeout_ms);
 }

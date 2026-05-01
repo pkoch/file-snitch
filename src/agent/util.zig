@@ -17,13 +17,13 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
-pub fn ensureParentDirectory(path: []const u8) !void {
+pub fn ensureParentDirectory(allocator: std.mem.Allocator, path: []const u8) !void {
     const parent_dir = std.fs.path.dirname(path) orelse return error.InvalidPath;
     if (std.Io.Dir.cwd().statFile(runtime.io(), parent_dir, .{})) |_| {
         if (std.mem.eql(u8, std.fs.path.basename(parent_dir), "file-snitch")) {
-            try chmodPath(parent_dir, 0o700);
+            try chmodPath(allocator, parent_dir, 0o700);
         }
-        try validatePrivateDirectory(parent_dir);
+        try validatePrivateDirectory(allocator, parent_dir);
         return;
     } else |err| switch (err) {
         error.FileNotFound => {},
@@ -35,19 +35,19 @@ pub fn ensureParentDirectory(path: []const u8) !void {
         error.PathAlreadyExists, error.NotDir => {},
         else => return err,
     };
-    mkdirPath(parent_dir, 0o700) catch |err| switch (err) {
+    mkdirPath(allocator, parent_dir, 0o700) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    try chmodPath(parent_dir, 0o700);
-    try validatePrivateDirectory(parent_dir);
+    try chmodPath(allocator, parent_dir, 0o700);
+    try validatePrivateDirectory(allocator, parent_dir);
 }
 
-pub fn validatePrivateDirectory(path: []const u8) !void {
+pub fn validatePrivateDirectory(allocator: std.mem.Allocator, path: []const u8) !void {
     const file_stat = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
     if (file_stat.kind != .directory) return error.InvalidSocketPath;
 
-    const posix_stat = try statPath(path);
+    const posix_stat = try statPath(allocator, path);
     if (posix_stat.st_uid != c.getuid()) return error.InvalidSocketPath;
     if ((posix_stat.st_mode & 0o777) != 0o700) return error.InvalidSocketPath;
 }
@@ -57,15 +57,15 @@ pub fn assertSameUidPeer(stream: anytype) !void {
     if (peer_uid != c.getuid()) return error.UnauthorizedPeer;
 }
 
-pub fn chmodPath(path: []const u8, mode: c.mode_t) !void {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
+pub fn chmodPath(allocator: std.mem.Allocator, path: []const u8, mode: c.mode_t) !void {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
     if (c.chmod(path_z.ptr, mode) != 0) return error.AccessDenied;
 }
 
-pub fn mkdirPath(path: []const u8, mode: c.mode_t) !void {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
+pub fn mkdirPath(allocator: std.mem.Allocator, path: []const u8, mode: c.mode_t) !void {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
     if (c.mkdir(path_z.ptr, mode) != 0) {
         return switch (std.posix.errno(-1)) {
             .EXIST => error.PathAlreadyExists,
@@ -81,9 +81,9 @@ pub fn mkdirPath(path: []const u8, mode: c.mode_t) !void {
     }
 }
 
-pub fn statPath(path: []const u8) !c.struct_stat {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
+pub fn statPath(allocator: std.mem.Allocator, path: []const u8) !c.struct_stat {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
     var stat: c.struct_stat = undefined;
     if (c.stat(path_z.ptr, &stat) != 0) return error.InvalidSocketPath;
     return stat;

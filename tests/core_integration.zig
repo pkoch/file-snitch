@@ -1,6 +1,7 @@
 const std = @import("std");
 const app_src = @import("app_src");
 const builtin = @import("builtin");
+const agent = app_src.agent;
 const config = app_src.config;
 const daemon = app_src.daemon;
 const enrollment_ops = app_src.enrollment;
@@ -2228,6 +2229,108 @@ fn expectRenameAudit(
         .{ from, to, result },
     );
     return error.TestExpectedAuditEvent;
+}
+
+test "policy engine evaluates correctly with various configurations" {
+    const allocator = std.testing.allocator;
+    var scoped_home = try ScopedHome.init(allocator, "/");
+    defer scoped_home.deinit();
+
+    var temp_policy = try TempPolicyFile.init(allocator, "engine-configs");
+    defer temp_policy.deinit();
+
+    var file = try createFileAbsolute(temp_policy.path, .{ .truncate = true });
+    try file.writeAll(
+        \\version: 1
+        \\enrollments:
+        \\  - path: /tmp/engine/config
+        \\    object_id: engine-config
+        \\decisions:
+        \\  - executable_path: /usr/bin/demo
+        \\    path: /tmp/engine/config
+        \\    approval_class: read_like
+        \\    outcome: allow
+    );
+    file.close();
+
+    var loaded = try config.loadFromFile(allocator, temp_policy.path);
+    defer loaded.deinit();
+
+    var compiled = try loaded.compilePolicyRuleViews(allocator);
+    defer compiled.deinit();
+
+    var engine = try policy.Engine.init(allocator, .deny, compiled.items);
+    defer engine.deinit();
+
+    const request: policy.Request = .{
+        .path = "/tmp/engine/config",
+        .access_class = .read,
+        .pid = 1,
+        .executable_path = "/usr/bin/demo",
+    };
+
+    try std.testing.expectEqual(policy.Outcome.allow, engine.evaluate(request));
+
+    const mismatched_request: policy.Request = .{
+        .path = "/tmp/other",
+        .access_class = .write,
+        .pid = 1,
+        .executable_path = "/usr/bin/other",
+    };
+
+    try std.testing.expectEqual(policy.Outcome.deny, engine.evaluate(mismatched_request));
+}
+
+test "policy yaml parser handles edge cases" {
+    const allocator = std.testing.allocator;
+
+    const invalid_data_set = [_][]const u8{
+        "",
+        "   \n",
+    };
+
+    for (invalid_data_set) |data| {
+        try std.testing.expectError(error.InvalidPolicyFile, config.loadFromString(allocator, data));
+    }
+
+    const valid_data_set = [_][]const u8{
+        "version: 1\n",
+    };
+
+    for (valid_data_set) |data| {
+        var policy_file = try config.loadFromString(allocator, data);
+        defer policy_file.deinit();
+        try std.testing.expectEqual(@as(u32, 1), policy_file.version);
+    }
+}
+
+test "agent frame parser handles known length prefixes" {
+    const valid_prefixes = [_]struct {
+        prefix: []const u8,
+        expected: usize,
+    }{
+        .{ .prefix = "1", .expected = 1 },
+        .{ .prefix = "10", .expected = 10 },
+        .{ .prefix = "100", .expected = 100 },
+        .{ .prefix = "999999", .expected = agent.protocol.max_frame_len },
+    };
+
+    for (valid_prefixes) |case| {
+        try std.testing.expectEqual(case.expected, try agent.protocol.parseFramePayloadLen(case.prefix));
+    }
+
+    const invalid_prefixes = [_][]const u8{
+        "",
+        "00",
+        "abc",
+        "9999999",
+    };
+
+    for (invalid_prefixes) |prefix| {
+        if (agent.protocol.parseFramePayloadLen(prefix)) |_| {
+            return error.TestExpectedParseFailure;
+        } else |_| {}
+    }
 }
 
 fn expectNoAuditEvent(

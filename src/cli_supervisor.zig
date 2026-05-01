@@ -7,8 +7,6 @@ const policy = @import("policy.zig");
 const policy_watch = @import("cli_policy_watch.zig");
 const runtime = @import("runtime.zig");
 
-const allocator = std.heap.page_allocator;
-
 var supervisor_shutdown_signal = std.atomic.Value(i32).init(0);
 
 pub const RunCommand = struct {
@@ -35,21 +33,22 @@ const ManagedProjectionChild = struct {
     alive: bool,
     term: ?std.process.Child.Term = null,
 
-    fn deinit(self: *ManagedProjectionChild) void {
-        allocator.free(self.projection_path);
-        allocator.free(self.argv);
+    fn deinit(self: *ManagedProjectionChild, alloc: std.mem.Allocator) void {
+        alloc.free(self.projection_path);
+        alloc.free(self.argv);
         self.* = undefined;
     }
 };
 
-pub fn reconcilePolicyInForeground(command: RunCommand) !void {
+pub fn reconcilePolicyInForeground(allocator: std.mem.Allocator, command: RunCommand) !void {
     const signal_handlers = installSupervisorSignalHandlers();
     defer signal_handlers.restore();
 
     var child: ?ManagedProjectionChild = null;
-    defer stopManagedProjectionChild(&child);
+    defer stopManagedProjectionChild(allocator, &child);
 
-    var change_source = policy_watch.ChangeSource.init(allocator, command.policy_path);
+    try ensurePolicyWatcherParentReady(allocator, command.policy_path);
+    var change_source = try policy_watch.ChangeSource.init(allocator, command.policy_path);
     defer change_source.deinit();
 
     var last_marker: ?PolicyMarker = null;
@@ -74,7 +73,7 @@ pub fn reconcilePolicyInForeground(command: RunCommand) !void {
             continue;
         };
         if (needs_reconcile or last_marker == null or !last_marker.?.eql(marker)) {
-            next_expiration_unix_seconds = try reconcileManagedProjectionChild(command, marker, &child);
+            next_expiration_unix_seconds = try reconcileManagedProjectionChild(allocator, command, marker, &child);
             last_marker = marker;
             needs_reconcile = false;
         }
@@ -96,7 +95,13 @@ fn changeSourceWait(change_source: *policy_watch.ChangeSource, next_expiration_u
     }
 }
 
+fn ensurePolicyWatcherParentReady(allocator: std.mem.Allocator, policy_path: []const u8) !void {
+    var policy_lock = try config.acquirePolicyLock(allocator, policy_path);
+    policy_lock.deinit();
+}
+
 fn reconcileManagedProjectionChild(
+    allocator: std.mem.Allocator,
     command: RunCommand,
     marker: PolicyMarker,
     child: *?ManagedProjectionChild,
@@ -143,7 +148,7 @@ fn reconcileManagedProjectionChild(
     };
     defer projection_plan.deinit();
 
-    stopManagedProjectionChild(child);
+    stopManagedProjectionChild(allocator, child);
 
     if (projection_plan.entries.len == 0) {
         return next_expiration_unix_seconds;
@@ -152,16 +157,16 @@ fn reconcileManagedProjectionChild(
     const exe_path = try std.process.executablePathAlloc(runtime.io(), allocator);
     defer allocator.free(exe_path);
 
-    if (!prepareProjectionPathForSpawn(projection_plan.root_path)) {
+    if (!prepareProjectionPathForSpawn(allocator, projection_plan.root_path)) {
         return next_expiration_unix_seconds;
     }
 
-    child.* = try spawnManagedProjectionChild(exe_path, command, projection_plan.root_path);
+    child.* = try spawnManagedProjectionChild(allocator, exe_path, command, projection_plan.root_path);
 
     return next_expiration_unix_seconds;
 }
 
-fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
+fn prepareProjectionPathForSpawn(allocator: std.mem.Allocator, projection_path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             // The projection root is normally created by the child on first use.
@@ -169,7 +174,7 @@ fn prepareProjectionPathForSpawn(projection_path: []const u8) bool {
         },
         error.NoDevice => {
             std.log.warn("stale projection mount at {s}; attempting to unmount before restart", .{projection_path});
-            bestEffortUnmount(projection_path);
+            bestEffortUnmount(allocator, projection_path);
             var recovered_dir = std.Io.Dir.openDirAbsolute(runtime.io(), projection_path, .{}) catch |retry_err| {
                 std.log.err("stale projection mount at {s} is still inaccessible after unmount attempt: {}", .{ projection_path, retry_err });
                 return false;
@@ -198,6 +203,7 @@ fn reconcileSleepNanos(next_expiration_unix_seconds: ?i64) u64 {
 }
 
 fn spawnManagedProjectionChild(
+    allocator: std.mem.Allocator,
     exe_path: []const u8,
     command: RunCommand,
     projection_path: []const u8,
@@ -214,7 +220,7 @@ fn spawnManagedProjectionChild(
     argv[3] = "--policy";
     argv[4] = command.policy_path;
 
-    var env_map = try buildProjectionChildEnv(command);
+    var env_map = try buildProjectionChildEnv(allocator, command);
     defer env_map.deinit();
     const child = try std.process.spawn(runtime.io(), .{
         .argv = argv,
@@ -232,7 +238,7 @@ fn spawnManagedProjectionChild(
     };
 }
 
-fn buildProjectionChildEnv(command: RunCommand) !std.process.Environ.Map {
+fn buildProjectionChildEnv(allocator: std.mem.Allocator, command: RunCommand) !std.process.Environ.Map {
     var env_map = if (runtime.envMap()) |env|
         try env.clone(allocator)
     else
@@ -274,10 +280,10 @@ fn pollProjectionChild(runner: *ManagedProjectionChild) ?std.process.Child.Term 
     return termFromWaitStatus(@intCast(status));
 }
 
-fn stopManagedProjectionChild(child: *?ManagedProjectionChild) void {
+fn stopManagedProjectionChild(allocator: std.mem.Allocator, child: *?ManagedProjectionChild) void {
     var runner = child.* orelse return;
     defer {
-        runner.deinit();
+        runner.deinit(allocator);
         child.* = null;
     }
 
@@ -289,7 +295,7 @@ fn stopManagedProjectionChild(child: *?ManagedProjectionChild) void {
         return;
     }
 
-    bestEffortUnmount(runner.projection_path);
+    bestEffortUnmount(allocator, runner.projection_path);
 
     if (waitForManagedProjectionChild(&runner, 20)) {
         return;
@@ -320,17 +326,17 @@ fn waitForManagedProjectionChild(runner: *ManagedProjectionChild, attempts: usiz
     return false;
 }
 
-fn bestEffortUnmount(mount_path: []const u8) void {
+fn bestEffortUnmount(allocator: std.mem.Allocator, mount_path: []const u8) void {
     switch (builtin.os.tag) {
         .macos => {
-            if (!runUnmountCommand(&.{ "umount", mount_path })) {
-                _ = runUnmountCommand(&.{ "diskutil", "unmount", "force", mount_path });
+            if (!runUnmountCommand(allocator, &.{ "umount", mount_path })) {
+                _ = runUnmountCommand(allocator, &.{ "diskutil", "unmount", "force", mount_path });
             }
         },
         .linux => {
-            if (!runUnmountCommand(&.{ "fusermount3", "-u", mount_path })) {
-                if (!runUnmountCommand(&.{ "fusermount", "-u", mount_path })) {
-                    _ = runUnmountCommand(&.{ "umount", mount_path });
+            if (!runUnmountCommand(allocator, &.{ "fusermount3", "-u", mount_path })) {
+                if (!runUnmountCommand(allocator, &.{ "fusermount", "-u", mount_path })) {
+                    _ = runUnmountCommand(allocator, &.{ "umount", mount_path });
                 }
             }
         },
@@ -338,7 +344,7 @@ fn bestEffortUnmount(mount_path: []const u8) void {
     }
 }
 
-fn runUnmountCommand(argv: []const []const u8) bool {
+fn runUnmountCommand(allocator: std.mem.Allocator, argv: []const []const u8) bool {
     const result = std.process.run(allocator, runtime.io(), .{
         .argv = argv,
         .stdout_limit = .limited(4096),
@@ -457,6 +463,7 @@ test "termFromWaitStatus decodes exit, signal, and stop encodings" {
 }
 
 test "buildProjectionChildEnv marks child and removes status fifo when missing" {
+    const allocator = std.testing.allocator;
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .deny,
@@ -465,7 +472,7 @@ test "buildProjectionChildEnv marks child and removes status fifo when missing" 
         .is_projection_child = false,
     };
 
-    var env = try buildProjectionChildEnv(command);
+    var env = try buildProjectionChildEnv(allocator, command);
     defer env.deinit();
 
     try std.testing.expectEqualStrings("1", env.get(defaults.internal_projection_child_env).?);
@@ -473,6 +480,7 @@ test "buildProjectionChildEnv marks child and removes status fifo when missing" 
 }
 
 test "buildProjectionChildEnv propagates status fifo when provided" {
+    const allocator = std.testing.allocator;
     const command = RunCommand{
         .policy_path = "/tmp/policy.yml",
         .default_mutation_outcome = .allow,
@@ -481,9 +489,25 @@ test "buildProjectionChildEnv propagates status fifo when provided" {
         .is_projection_child = false,
     };
 
-    var env = try buildProjectionChildEnv(command);
+    var env = try buildProjectionChildEnv(allocator, command);
     defer env.deinit();
 
     try std.testing.expectEqualStrings("1", env.get(defaults.internal_projection_child_env).?);
     try std.testing.expectEqualStrings("/tmp/status.fifo", env.get(defaults.internal_status_fifo_env).?);
+}
+
+test "ensurePolicyWatcherParentReady creates missing policy parent" {
+    const allocator = std.testing.allocator;
+    const test_root = try std.fmt.allocPrint(allocator, ".zig-cache/file-snitch-policy-watch-parent-{d}", .{runtime.nanoTimestamp()});
+    defer allocator.free(test_root);
+    defer std.Io.Dir.cwd().deleteTree(runtime.io(), test_root) catch {};
+
+    const policy_path = try std.fs.path.join(allocator, &.{ test_root, "config", "policy.yml" });
+    defer allocator.free(policy_path);
+
+    try ensurePolicyWatcherParentReady(allocator, policy_path);
+
+    const parent_dir = std.fs.path.dirname(policy_path).?;
+    const stat = try std.Io.Dir.cwd().statFile(runtime.io(), parent_dir, .{});
+    try std.testing.expect(stat.kind == .directory);
 }

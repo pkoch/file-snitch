@@ -79,7 +79,7 @@ pub fn socketBroker(context: *RequesterContext) prompt.Broker {
 }
 
 pub fn runAgentService(context: *AgentServiceContext) !void {
-    try util.ensureParentDirectory(context.socket_path);
+    try util.ensureParentDirectory(context.allocator, context.socket_path);
     try util.removeSocketFileIfStale(context.socket_path);
 
     const address = try net.UnixAddress.init(context.socket_path);

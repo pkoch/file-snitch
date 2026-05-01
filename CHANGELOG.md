@@ -194,30 +194,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fixed the smoke-test harness to supervise prompt-agent processes without
   leaking orphaned `file-snitch` children during teardown.
 
-## [0.1.12] - 2026-04-10
-
-## [0.1.11] - 2026-04-10
-
-## [0.1.10] - 2026-04-10
-
-## [0.1.9] - 2026-04-10
-
-## [0.1.8] - 2026-04-10
-
-## [0.1.7] - 2026-04-10
-
-## [0.1.6] - 2026-04-10
-
-## [0.1.5] - 2026-04-10
-
-## [0.1.4] - 2026-04-10
-
-## [0.1.3] - 2026-04-10
-
-## [0.1.2] - 2026-04-10
-
-## [0.1.1] - 2026-04-10
-
 ## [0.1.0] - 2026-04-10
 
 ### Added
@@ -228,6 +204,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `macos-ui`, and `linux-ui` frontends.
 - Added per-user service helpers for `launchd` and `systemd --user`.
 - Added reproducible demo, install, operations, and threat-model docs.
+
+### Changed
+
+- Iterated on release packaging and artifact generation.
+  (Patch releases 0.1.1–0.1.12 were part of the same effort.)
 
 ### Fixed
 

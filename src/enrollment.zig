@@ -112,25 +112,25 @@ pub fn defaultLockAnchorPathAlloc(alloc: std.mem.Allocator, object_id: []const u
     return std.fs.path.join(alloc, &.{ base, "file-snitch", "lock-anchors", filename });
 }
 
-pub fn pathKind(path: []const u8) !PathKind {
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
+pub fn pathKind(allocator: std.mem.Allocator, path: []const u8) !PathKind {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
 
     var stat: c.struct_stat = undefined;
     if (c.stat(path_z.ptr, &stat) != 0) return pathKindError(std.posix.errno(-1));
 
     const mode: u32 = @intCast(stat.st_mode);
-    if (std.c.S.ISREG(mode)) return .file;
-    if (std.c.S.ISDIR(mode)) return .directory;
+    if ((mode & c.S_IFMT) == c.S_IFREG) return .file;
+    if ((mode & c.S_IFMT) == c.S_IFDIR) return .directory;
     return .other;
 }
 
-pub fn pathExists(path: []const u8) !bool {
-    return try pathKind(path) != .missing;
+pub fn pathExists(allocator: std.mem.Allocator, path: []const u8) !bool {
+    return try pathKind(allocator, path) != .missing;
 }
 
-pub fn directoryExists(path: []const u8) !bool {
-    return try pathKind(path) == .directory;
+pub fn directoryExists(allocator: std.mem.Allocator, path: []const u8) !bool {
+    return try pathKind(allocator, path) == .directory;
 }
 
 fn pathKindError(err: std.posix.E) !PathKind {

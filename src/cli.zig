@@ -19,14 +19,15 @@ pub const std_options: std.Options = .{
     .log_level = .info,
 };
 
-const allocator = std.heap.page_allocator;
 const RunCommand = supervisor.RunCommand;
 
 pub fn main(init_info: std.process.Init) !void {
     runtime.init(init_info);
+    const allocator = std.heap.smp_allocator;
+
     const args = try init_info.minimal.args.toSlice(init_info.arena.allocator());
 
-    run(args[1..]) catch |err| switch (err) {
+    run(allocator, args[1..]) catch |err| switch (err) {
         error.InvalidUsage, error.DoctorFailed => std.process.exit(1),
         error.StoreUnavailable => {
             std.debug.print("error: `pass` was not found; install it or set FILE_SNITCH_PASS_BIN\n", .{});
@@ -76,20 +77,21 @@ pub fn main(init_info: std.process.Init) !void {
         },
         else => return err,
     };
+    std.process.exit(0);
 }
 
-pub fn run(args: []const []const u8) !void {
-    switch (try parseCommand(args)) {
+pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    switch (try parseCommand(allocator, args)) {
         .help => printUsage(),
         .version => printVersion(),
         .completion => |shell| try completion.print(shell),
         .agent => |command| {
             defer command.deinit(allocator);
-            try runAgent(command);
+            try runAgent(allocator, command);
         },
         .run => |command| {
             defer command.deinit(allocator);
-            try runWithPolicy(command);
+            try runWithPolicy(allocator, command);
         },
         .enroll => |command| {
             defer command.deinit(allocator);
@@ -112,7 +114,7 @@ pub fn run(args: []const []const u8) !void {
         },
         .services => |command| {
             defer command.deinit(allocator);
-            try runServicesCommand(command);
+            try runServicesCommand(allocator, command);
         },
     }
 }
@@ -193,35 +195,35 @@ const DoctorCommand = struct {
     }
 };
 
-fn parseCommand(args: []const []const u8) !Command {
+fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8) !Command {
     if (args.len == 0) {
         printUsage();
         return error.InvalidUsage;
     }
 
     if (std.mem.eql(u8, args[0], "run")) {
-        return .{ .run = try parseRunCommand(args[1..]) };
+        return .{ .run = try parseRunCommand(allocator, args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "agent")) {
-        return .{ .agent = try parseAgentCommand(args[1..]) };
+        return .{ .agent = try parseAgentCommand(allocator, args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "enroll")) {
-        return .{ .enroll = try parsePathCommand(args[1..], true) };
+        return .{ .enroll = try parsePathCommand(allocator, args[1..], true) };
     }
     if (std.mem.eql(u8, args[0], "unenroll")) {
-        return .{ .unenroll = try parsePathCommand(args[1..], false) };
+        return .{ .unenroll = try parsePathCommand(allocator, args[1..], false) };
     }
     if (std.mem.eql(u8, args[0], "status")) {
-        return .{ .status = try parsePolicyCommand(args[1..]) };
+        return .{ .status = try parsePolicyCommand(allocator, args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "doctor")) {
-        return .{ .doctor = try parseDoctorCommand(args[1..]) };
+        return .{ .doctor = try parseDoctorCommand(allocator, args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "completion")) {
         return .{ .completion = try parseCompletionCommand(args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "services")) {
-        return .{ .services = try parseServicesCommand(args[1..]) };
+        return .{ .services = try parseServicesCommand(allocator, args[1..]) };
     }
     if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "version")) {
         return .version;
@@ -234,7 +236,7 @@ fn parseCommand(args: []const []const u8) !Command {
     return error.InvalidUsage;
 }
 
-fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
+fn parseServicesCommand(allocator: std.mem.Allocator, args: []const []const u8) !ServicesCommand {
     if (args.len == 0) {
         printUsage();
         return error.InvalidUsage;
@@ -273,8 +275,9 @@ fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
             if (index >= args.len) {
                 return invalidUsage("error: `services --bin` requires a path or command name\n", .{});
             }
+            const new_path = try allocator.dupe(u8, args[index]);
             if (command.bin_path) |path| allocator.free(path);
-            command.bin_path = try allocator.dupe(u8, args[index]);
+            command.bin_path = new_path;
             continue;
         }
         if (std.mem.eql(u8, args[index], "--pass-bin")) {
@@ -285,8 +288,9 @@ fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
             if (index >= args.len) {
                 return invalidUsage("error: `services --pass-bin` requires a path or command name\n", .{});
             }
+            const new_path = try allocator.dupe(u8, args[index]);
             if (command.pass_bin_path) |path| allocator.free(path);
-            command.pass_bin_path = try allocator.dupe(u8, args[index]);
+            command.pass_bin_path = new_path;
             continue;
         }
         if (std.mem.eql(u8, args[index], "--output-dir")) {
@@ -297,8 +301,9 @@ fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
             if (index >= args.len) {
                 return invalidUsage("error: `services render --output-dir` requires a directory\n", .{});
             }
+            const new_path = try resolvePathArgument(allocator, args[index]);
             if (command.output_dir) |path| allocator.free(path);
-            command.output_dir = try resolvePathArgument(args[index]);
+            command.output_dir = new_path;
             continue;
         }
 
@@ -313,7 +318,7 @@ fn parseServicesCommand(args: []const []const u8) !ServicesCommand {
     return command;
 }
 
-fn parseRunCommand(args: []const []const u8) !RunCommand {
+fn parseRunCommand(allocator: std.mem.Allocator, args: []const []const u8) !RunCommand {
     var command: RunCommand = .{
         .policy_path = &.{},
         .default_mutation_outcome = .deny,
@@ -324,9 +329,9 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
     errdefer command.deinit(allocator);
 
     command.policy_path = try config.defaultPolicyPathAlloc(allocator);
-    command.protocol_timeout_ms = try loadProtocolTimeoutMs();
-    command.status_fifo_path = try loadOptionalInternalPath(defaults.internal_status_fifo_env);
-    command.is_projection_child = try loadInternalFlag(defaults.internal_projection_child_env);
+    command.protocol_timeout_ms = try loadProtocolTimeoutMs(allocator);
+    command.status_fifo_path = try loadOptionalInternalPath(allocator, defaults.internal_status_fifo_env);
+    command.is_projection_child = try loadInternalFlag(allocator, defaults.internal_projection_child_env);
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -337,7 +342,7 @@ fn parseRunCommand(args: []const []const u8) !RunCommand {
             continue;
         }
         if (std.mem.eql(u8, arg, "--policy")) {
-            try parsePolicyFlag(args, &index, &command.policy_path);
+            try parsePolicyFlag(allocator, args, &index, &command.policy_path);
             continue;
         }
         printUsage();
@@ -357,7 +362,7 @@ fn parseCompletionCommand(args: []const []const u8) !completion.Shell {
         invalidUsage("error: unsupported completion shell: {s}\n", .{args[0]});
 }
 
-fn parseAgentCommand(args: []const []const u8) !AgentCommand {
+fn parseAgentCommand(allocator: std.mem.Allocator, args: []const []const u8) !AgentCommand {
     const socket_path = try agent.defaultSocketPathAlloc(allocator);
 
     var command: AgentCommand = .{
@@ -376,8 +381,9 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
                 printUsage();
                 return error.InvalidUsage;
             }
+            const new_path = try resolvePathArgument(allocator, args[index]);
             allocator.free(command.socket_path);
-            command.socket_path = try resolvePathArgument(args[index]);
+            command.socket_path = new_path;
             continue;
         }
         if (std.mem.eql(u8, arg, "--frontend")) {
@@ -398,8 +404,9 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
                 printUsage();
                 return error.InvalidUsage;
             }
+            const new_path = try resolvePathArgument(allocator, args[index]);
             if (command.tty_path) |path| allocator.free(path);
-            command.tty_path = try resolvePathArgument(args[index]);
+            command.tty_path = new_path;
             continue;
         }
 
@@ -409,7 +416,7 @@ fn parseAgentCommand(args: []const []const u8) !AgentCommand {
     return command;
 }
 
-fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
+fn parsePolicyCommand(allocator: std.mem.Allocator, args: []const []const u8) !PolicyCommand {
     const policy_path = try config.defaultPolicyPathAlloc(allocator);
 
     var command: PolicyCommand = .{
@@ -420,7 +427,7 @@ fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            try parsePolicyFlag(args, &index, &command.policy_path);
+            try parsePolicyFlag(allocator, args, &index, &command.policy_path);
             continue;
         }
 
@@ -431,7 +438,7 @@ fn parsePolicyCommand(args: []const []const u8) !PolicyCommand {
     return command;
 }
 
-fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
+fn parseDoctorCommand(allocator: std.mem.Allocator, args: []const []const u8) !DoctorCommand {
     const policy_path = try config.defaultPolicyPathAlloc(allocator);
 
     var command: DoctorCommand = .{
@@ -443,7 +450,7 @@ fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            try parsePolicyFlag(args, &index, &command.policy_path);
+            try parsePolicyFlag(allocator, args, &index, &command.policy_path);
             continue;
         }
         if (std.mem.eql(u8, args[index], "--export-debug-dossier")) {
@@ -454,8 +461,9 @@ fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
                     .{},
                 );
             }
+            const new_path = try resolvePathArgument(allocator, args[index]);
             if (command.export_debug_dossier_path) |path| allocator.free(path);
-            command.export_debug_dossier_path = try resolvePathArgument(args[index]);
+            command.export_debug_dossier_path = new_path;
             continue;
         }
 
@@ -466,7 +474,7 @@ fn parseDoctorCommand(args: []const []const u8) !DoctorCommand {
     return command;
 }
 
-fn parsePathCommand(args: []const []const u8, require_existing_target: bool) !PathCommand {
+fn parsePathCommand(allocator: std.mem.Allocator, args: []const []const u8, require_existing_target: bool) !PathCommand {
     if (args.len == 0) {
         printUsage();
         return error.InvalidUsage;
@@ -479,16 +487,16 @@ fn parsePathCommand(args: []const []const u8, require_existing_target: bool) !Pa
     errdefer command.deinit(allocator);
 
     command.target_path = if (require_existing_target)
-        try resolveExistingRegularFileArgument("target file", args[0])
+        try resolveExistingRegularFileArgument(allocator, "target file", args[0])
     else
-        try resolveEnrolledPathArgument(args[0]);
+        try resolveEnrolledPathArgument(allocator, args[0]);
 
     command.policy_path = try config.defaultPolicyPathAlloc(allocator);
 
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], "--policy")) {
-            try parsePolicyFlag(args, &index, &command.policy_path);
+            try parsePolicyFlag(allocator, args, &index, &command.policy_path);
             continue;
         }
 
@@ -506,17 +514,17 @@ fn parseOutcome(arg: []const u8) ?policy.Outcome {
     return null;
 }
 
-fn runWithPolicy(command: RunCommand) !void {
+fn runWithPolicy(allocator: std.mem.Allocator, command: RunCommand) !void {
     if (!command.is_projection_child) {
-        try supervisor.reconcilePolicyInForeground(command);
+        try supervisor.reconcilePolicyInForeground(allocator, command);
         return;
     }
 
-    try runStaticPolicy(command);
+    try runStaticPolicy(allocator, command);
 }
 
-fn runAgent(command: AgentCommand) !void {
-    const timeout_ms = try loadPromptTimeoutMs();
+fn runAgent(allocator: std.mem.Allocator, command: AgentCommand) !void {
+    const timeout_ms = try loadPromptTimeoutMs(allocator);
     var cli_context = prompt.CliContext{
         .allocator = allocator,
         .timeout_ms = timeout_ms,
@@ -583,7 +591,7 @@ fn runAgent(command: AgentCommand) !void {
     try agent.runAgentService(&service_context);
 }
 
-fn runServicesCommand(command: ServicesCommand) !void {
+fn runServicesCommand(allocator: std.mem.Allocator, command: ServicesCommand) !void {
     const options: user_services.RenderOptions = .{
         .platform = command.platform,
         .bin_path = command.bin_path,
@@ -597,7 +605,7 @@ fn runServicesCommand(command: ServicesCommand) !void {
     }
 }
 
-fn runStaticPolicy(command: RunCommand) !void {
+fn runStaticPolicy(allocator: std.mem.Allocator, command: RunCommand) !void {
     var loaded_policy = try config.loadFromFile(allocator, command.policy_path);
     defer loaded_policy.deinit();
 
@@ -650,7 +658,7 @@ fn runStaticPolicy(command: RunCommand) !void {
     var guarded_store = try store.Backend.initPass(allocator);
     errdefer guarded_store.deinit(allocator);
 
-    var prepared_projection_plan = try prepareProjectionPlan(&projection_plan);
+    var prepared_projection_plan = try prepareProjectionPlan(allocator, &projection_plan);
     defer prepared_projection_plan.deinit();
     errdefer prepared_projection_plan.rollback();
 
@@ -680,7 +688,7 @@ fn runStaticPolicy(command: RunCommand) !void {
     });
 }
 
-fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) ![]const u8 {
+fn resolveExistingRegularFileArgument(allocator: std.mem.Allocator, label: []const u8, raw_path: []const u8) ![]const u8 {
     const resolved = std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), raw_path, allocator) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("error: {s} does not exist: {s}\n", .{ label, raw_path });
@@ -690,9 +698,10 @@ fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) !
     };
     errdefer allocator.free(resolved);
 
-    const target_kind = enrollment_ops.pathKind(resolved) catch |err| {
+    const target_kind = enrollment_ops.pathKind(allocator, resolved) catch |err| {
         if (err == error.NoDevice) {
             return invalidUsageWithOwnedPath(
+                allocator,
                 "error: target file is on a stale or inaccessible device: {s}\nhint: restart `file-snitch run`; if this persists, unmount the affected parent directory and retry\n",
                 resolved,
             );
@@ -703,16 +712,16 @@ fn resolveExistingRegularFileArgument(label: []const u8, raw_path: []const u8) !
 
     switch (target_kind) {
         .file => {},
-        .directory => return invalidUsageWithOwnedPath("error: target file is a directory: {s}\n", resolved),
-        .other => return invalidUsageWithOwnedPath("error: target file is not a regular file: {s}\n", resolved),
-        .missing => return invalidUsageWithOwnedPath("error: target file does not exist: {s}\n", resolved),
+        .directory => return invalidUsageWithOwnedPath(allocator, "error: target file is a directory: {s}\n", resolved),
+        .other => return invalidUsageWithOwnedPath(allocator, "error: target file is not a regular file: {s}\n", resolved),
+        .missing => return invalidUsageWithOwnedPath(allocator, "error: target file does not exist: {s}\n", resolved),
     }
 
-    try requireSupportedEnrollmentTargetPath(label, resolved);
+    try requireSupportedEnrollmentTargetPath(allocator, label, resolved);
     return resolved;
 }
 
-fn resolvePathArgument(raw_path: []const u8) ![]const u8 {
+fn resolvePathArgument(allocator: std.mem.Allocator, raw_path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(raw_path)) {
         return allocator.dupe(u8, raw_path);
     }
@@ -722,8 +731,8 @@ fn resolvePathArgument(raw_path: []const u8) ![]const u8 {
     return std.fs.path.resolve(allocator, &.{ cwd, raw_path });
 }
 
-fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
-    const lexical_path = try resolvePathArgument(raw_path);
+fn resolveEnrolledPathArgument(allocator: std.mem.Allocator, raw_path: []const u8) ![]const u8 {
+    const lexical_path = try resolvePathArgument(allocator, raw_path);
     errdefer allocator.free(lexical_path);
 
     const parent_dir = std.fs.path.dirname(lexical_path) orelse {
@@ -744,7 +753,7 @@ fn resolveEnrolledPathArgument(raw_path: []const u8) ![]const u8 {
     return canonical;
 }
 
-fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const u8) !void {
+fn requireSupportedEnrollmentTargetPath(allocator: std.mem.Allocator, label: []const u8, target_path: []const u8) !void {
     const home_dir = try enrollment_ops.currentUserHomeAlloc(allocator);
     defer allocator.free(home_dir);
 
@@ -774,7 +783,7 @@ fn requireSupportedEnrollmentTargetPath(label: []const u8, target_path: []const 
     }
 }
 
-fn loadPromptTimeoutMs() !u32 {
+fn loadPromptTimeoutMs(allocator: std.mem.Allocator) !u32 {
     const raw_value = runtime.getEnvVarOwned(allocator, defaults.prompt_timeout_ms_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return defaults.prompt_timeout_ms_default,
         else => return err,
@@ -788,7 +797,7 @@ fn loadPromptTimeoutMs() !u32 {
         );
 }
 
-fn loadProtocolTimeoutMs() !u32 {
+fn loadProtocolTimeoutMs(allocator: std.mem.Allocator) !u32 {
     const raw_value = runtime.getEnvVarOwned(allocator, defaults.protocol_timeout_ms_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return defaults.protocol_timeout_ms_default,
         else => return err,
@@ -802,19 +811,19 @@ fn loadProtocolTimeoutMs() !u32 {
         );
 }
 
-fn loadOptionalInternalPath(env_name: []const u8) !?[]const u8 {
+fn loadOptionalInternalPath(allocator: std.mem.Allocator, env_name: []const u8) !?[]const u8 {
     const raw_value = runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return null,
         else => return err,
     };
     errdefer allocator.free(raw_value);
 
-    const resolved = try resolvePathArgument(raw_value);
+    const resolved = try resolvePathArgument(allocator, raw_value);
     allocator.free(raw_value);
     return resolved;
 }
 
-fn loadInternalFlag(env_name: []const u8) !bool {
+fn loadInternalFlag(allocator: std.mem.Allocator, env_name: []const u8) !bool {
     const raw_value = runtime.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return false,
         else => return err,
@@ -844,11 +853,12 @@ fn openStatusFifo(path: []const u8) !std.Io.File {
 }
 
 const PreparedProjectionPlan = struct {
+    allocator: std.mem.Allocator,
     projection_plan: *const config.ProjectionPlan,
     created_symlinks: []bool,
 
     fn deinit(self: *PreparedProjectionPlan) void {
-        allocator.free(self.created_symlinks);
+        self.allocator.free(self.created_symlinks);
         self.* = undefined;
     }
 
@@ -858,7 +868,7 @@ const PreparedProjectionPlan = struct {
                 continue;
             }
             enrollment_ops.removeProjectionSymlinkIfCreated(
-                allocator,
+                self.allocator,
                 entry.target_path,
                 entry.projection_path,
             ) catch |err| {
@@ -873,10 +883,11 @@ const PreparedProjectionPlan = struct {
     }
 };
 
-fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !PreparedProjectionPlan {
+fn prepareProjectionPlan(allocator: std.mem.Allocator, projection_plan: *const config.ProjectionPlan) !PreparedProjectionPlan {
     try std.Io.Dir.cwd().createDirPath(runtime.io(), projection_plan.root_path);
 
     var prepared: PreparedProjectionPlan = .{
+        .allocator = allocator,
         .projection_plan = projection_plan,
         .created_symlinks = try allocator.alloc(bool, projection_plan.entries.len),
     };
@@ -904,13 +915,13 @@ fn prepareProjectionPlan(projection_plan: *const config.ProjectionPlan) !Prepare
     return prepared;
 }
 
-fn parsePolicyFlag(args: []const []const u8, index: *usize, policy_path: *[]const u8) !void {
+fn parsePolicyFlag(allocator: std.mem.Allocator, args: []const []const u8, index: *usize, policy_path: *[]const u8) !void {
     index.* += 1;
     if (index.* >= args.len) {
         printUsage();
         return error.InvalidUsage;
     }
-    const new_path = try resolvePathArgument(args[index.*]);
+    const new_path = try resolvePathArgument(allocator, args[index.*]);
     allocator.free(policy_path.*);
     policy_path.* = new_path;
 }
@@ -920,7 +931,7 @@ fn invalidUsage(comptime format: []const u8, args: anytype) error{InvalidUsage} 
     return error.InvalidUsage;
 }
 
-fn invalidUsageWithOwnedPath(comptime format: []const u8, owned_path: []const u8) error{InvalidUsage} {
+fn invalidUsageWithOwnedPath(allocator: std.mem.Allocator, comptime format: []const u8, owned_path: []const u8) error{InvalidUsage} {
     defer allocator.free(owned_path);
     std.debug.print(format, .{owned_path});
     return error.InvalidUsage;
@@ -1003,16 +1014,19 @@ fn printVersion() void {
 }
 
 test "parse command routes completion subcommand" {
-    const command = try parseCommand(&.{ "completion", "bash" });
+    const allocator = std.testing.allocator;
+    const command = try parseCommand(allocator, &.{ "completion", "bash" });
     try std.testing.expectEqual(completion.Shell.bash, command.completion);
 }
 
 test "parse command rejects unsupported completion shell" {
-    try std.testing.expectError(error.InvalidUsage, parseCommand(&.{ "completion", "elvish" }));
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.InvalidUsage, parseCommand(allocator, &.{ "completion", "elvish" }));
 }
 
 test "parse command routes services render" {
-    const command = try parseCommand(&.{ "services", "render", "--platform", "linux", "--bin", "file-snitch", "--pass-bin", "pass", "--output-dir", "/tmp/services" });
+    const allocator = std.testing.allocator;
+    const command = try parseCommand(allocator, &.{ "services", "render", "--platform", "linux", "--bin", "file-snitch", "--pass-bin", "pass", "--output-dir", "/tmp/services" });
     defer command.services.deinit(allocator);
     try std.testing.expectEqual(ServicesAction.render, command.services.action);
     try std.testing.expectEqual(user_services.Platform.linux, command.services.platform.?);
@@ -1022,10 +1036,12 @@ test "parse command routes services render" {
 }
 
 test "parse command rejects services render without output dir" {
-    try std.testing.expectError(error.InvalidUsage, parseCommand(&.{ "services", "render" }));
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.InvalidUsage, parseCommand(allocator, &.{ "services", "render" }));
 }
 
 test "projection prepare rollback only removes symlinks it created" {
+    const allocator = std.testing.allocator;
     const test_id = std.crypto.random.int(u64);
     const test_root = try std.fmt.allocPrint(allocator, ".zig-cache/file-snitch-projection-rollback-{x}", .{test_id});
     defer allocator.free(test_root);
@@ -1076,7 +1092,7 @@ test "projection prepare rollback only removes symlinks it created" {
         .object_id = try allocator.dupe(u8, "blocked"),
     };
 
-    try std.testing.expectError(error.InvalidUsage, prepareProjectionPlan(&plan));
+    try std.testing.expectError(error.InvalidUsage, prepareProjectionPlan(allocator, &plan));
 
     const existing_symlink = (try enrollment_ops.symlinkTargetAlloc(allocator, existing_target)).?;
     defer allocator.free(existing_symlink);
