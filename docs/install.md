@@ -1,253 +1,103 @@
 # Install
 
-GitHub Release assets are the canonical source of installable artifacts.
+## Prerequisites
 
-Current assumptions:
-- single-user, user-space tool
-- `pass` is the guarded-object backend
-- FUSE support is installed outside Homebrew
-- the current authorization frontends are:
-  - `terminal-pinentry`
-  - `macos-ui` on macOS via `osascript`
-  - `linux-ui` on Linux via `zenity`
+File Snitch needs a working FUSE installation and an initialized `pass` store
+with a GPG key that you can use to encrypt and decrypt entries.
 
-## Homebrew
+| Platform | Requirements |
+| --- | --- |
+| macOS | Homebrew, macFUSE, `pass`, and GPG |
+| Linux | Homebrew/Linuxbrew, distro FUSE 3, `pass`, and GPG; `zenity` for GUI prompts and user services |
 
-Install the current tagged release with:
-
-```bash
-brew install pkoch/tap/file-snitch
-```
-
-If you explicitly want unreleased `master` changes instead, use:
-
-```bash
-brew install --HEAD --build-from-source pkoch/tap/file-snitch
-```
-
-The Homebrew formula now lives in:
-- `pkoch/homebrew-tap`
-- https://github.com/pkoch/homebrew-tap
-
-The formula installs:
-- `file-snitch`
-
-It does not install or manage FUSE itself.
-
-### macOS prerequisites
-
-Install:
-- Homebrew
-- macFUSE
-- `pass`
-- a usable GPG setup for `pass`
-
-Sanity check:
-
-```bash
-pass ls >/dev/null
-file-snitch help >/dev/null
-```
-
-### Linux prerequisites
-
-Install:
-- Homebrew or Linuxbrew
-- `pass`
-- a usable GPG setup for `pass`
-- `zenity` if you want the Linux `linux-ui` agent frontend or user-service path
-- distro-provided FUSE 3 runtime and development files
-
-For example, on Debian/Ubuntu-like systems:
+On Debian/Ubuntu, install the FUSE runtime and build headers with:
 
 ```bash
 sudo apt-get install -y fuse3 libfuse3-dev
 ```
 
-This path has been verified on an Ubuntu arm64 Lima VM with Linuxbrew plus
-distro `fuse3` and `libfuse3-dev`.
+FUSE is a separate system prerequisite; the File Snitch formula does not manage
+it. The Linux GUI frontend also needs a graphical session where `zenity` can
+open a dialog. Terminal prompting works without it.
 
-## First real-user drill
-
-The manual bootstrap path can run entirely in the foreground.
-
-Cross-platform bootstrap path:
-
-Terminal 1:
+## Install the binary
 
 ```bash
-file-snitch agent
+brew install pkoch/tap/file-snitch
+file-snitch --version
+pass ls >/dev/null
 ```
 
-Terminal 2:
+The formula lives in [pkoch/homebrew-tap](https://github.com/pkoch/homebrew-tap).
+For unreleased `master` changes:
 
 ```bash
-file-snitch run prompt
+brew install --HEAD --build-from-source pkoch/tap/file-snitch
 ```
 
-Terminal 3:
+You can also download a binary tarball from
+[GitHub Releases](https://github.com/pkoch/file-snitch/releases), extract it,
+and put `file-snitch` on your `PATH`. Building from a checkout is covered in
+[development](./development.md).
+
+## First run
+
+Use a disposable file to check enrollment, prompting, and restoration with your
+real `pass` setup. The [demo](./demo.md) uses a fake store if you prefer that
+first.
+
+In your original terminal, create and enroll a file under your home directory:
 
 ```bash
-file-snitch enroll ~/.kube/config
-kubectl config view >/dev/null
-file-snitch unenroll ~/.kube/config
+example_file=$(mktemp "$HOME/file-snitch-example.XXXXXX")
+printf 'File Snitch example\n' > "$example_file"
+file-snitch enroll "$example_file"
 ```
 
-macOS native dialog path:
+Enrollment stores the contents under `pass:file-snitch/<object_id>` and removes
+the original file. Keep this terminal open so `$example_file` remains set.
 
-Terminal 1:
+In a second terminal, start the agent. Choose one frontend:
 
 ```bash
-file-snitch agent --frontend macos-ui
+file-snitch agent                              # terminal prompts
+# file-snitch agent --frontend macos-ui        # macOS dialogs
+# file-snitch agent --frontend linux-ui        # Linux dialogs via zenity
 ```
 
-Terminal 2:
-
-```bash
-file-snitch run prompt
-```
-
-Terminal 3:
-
-```bash
-file-snitch enroll ~/.kube/config
-kubectl config view >/dev/null
-file-snitch unenroll ~/.kube/config
-```
-
-That is still intentionally manual, but it now exercises the native dialog on
-macOS.
-
-Linux native dialog path:
-
-Terminal 1:
-
-```bash
-file-snitch agent --frontend linux-ui
-```
-
-Terminal 2:
+In a third terminal, start the daemon:
 
 ```bash
 file-snitch run prompt
 ```
 
-Terminal 3:
+Both processes stay in the foreground. All three terminals must use the same
+policy, store, and agent socket environment; see
+[CLI defaults](./cli.md#paths-and-environment) if you have customized them.
+
+After the daemon mounts the projection, return to the original terminal:
 
 ```bash
-file-snitch enroll ~/.kube/config
-kubectl config view >/dev/null
-file-snitch unenroll ~/.kube/config
+file-snitch status
+cat "$example_file"
 ```
 
-That uses `zenity` as the current Linux native frontend.
-
-## Disposable evaluation
-
-If you want to see the current feature set without touching your real secrets,
-use the repo demo driver:
+Choose **allow once** in the agent. The read should print `File Snitch example`.
+To finish, leave the daemon running while you restore the file:
 
 ```bash
-brew install anyzig
-zig build
-./scripts/demo/demo-session.sh
+file-snitch unenroll "$example_file"
+cat "$example_file"
+rm "$example_file"
 ```
 
-For a recording-friendly version, see [demo.md](./demo.md).
+Stop the daemon and agent with Ctrl-C. You can now repeat the flow with a file
+you want to guard, or set up [user services](./services.md) to run at login.
 
-## Reporting install or runtime problems
+For missing files, failed prompts, or store errors, follow
+[operations and troubleshooting](./operations.md).
 
-Export a dossier before filing an issue when possible:
+## Shell completion
 
-```bash
-file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
-```
-
-That file is meant to accompany GitHub bug reports. It includes policy and
-environment diagnostics, but not guarded file contents.
-
-## User services
-
-Per-user service installation is built into the `file-snitch` binary:
-- [docs/services.md](./services.md)
-
-macOS first-class path:
-
-```bash
-file-snitch services install \
-  --platform macos \
-  --bin "$(command -v file-snitch)" \
-  --pass-bin "$(command -v pass)"
-```
-
-Linux first-class path:
-
-```bash
-file-snitch services install \
-  --platform linux \
-  --bin "$(command -v file-snitch)" \
-  --pass-bin "$(command -v pass)"
-```
-
-That installs:
-- macOS:
-  - `dev.file-snitch.agent` with `macos-ui`
-  - `dev.file-snitch.run` in `prompt` mode
-- Linux:
-  - `file-snitch-agent.service` with `linux-ui`
-  - `file-snitch-run.service` in `prompt` mode
-
-Linux requires `zenity` for that unattended prompt path.
-
-## Shell Completion
-
-Bash:
-
-```bash
-mkdir -p ~/.local/share/bash-completion/completions
-file-snitch completion bash > ~/.local/share/bash-completion/completions/file-snitch
-```
-
-Zsh:
-
-```bash
-mkdir -p ~/.zsh/completions
-file-snitch completion zsh > ~/.zsh/completions/_file-snitch
-```
-
-Fish:
-
-```bash
-mkdir -p ~/.config/fish/completions
-file-snitch completion fish > ~/.config/fish/completions/file-snitch.fish
-```
-
-These commands write the generated completion file to a common per-user location.
-Whether that location is loaded automatically depends on your shell
-configuration.
-
-## Notes
-
-- for command defaults and environment-variable precedence, see
-  [cli.md](./cli.md)
-- `policy.yml` lives at `FILE_SNITCH_POLICY_PATH` when set, otherwise at
-  `XDG_CONFIG_HOME/file-snitch/policy.yml`, otherwise at
-  `~/.config/file-snitch/policy.yml`.
-- the local agent socket lives at `FILE_SNITCH_AGENT_SOCKET` when set,
-  otherwise under `XDG_RUNTIME_DIR` when it is set, otherwise under
-  `~/.local/state/file-snitch/agent.sock`
-- set `FILE_SNITCH_AGENT_TTY` or pass `--tty <path>` if you want a
-  `terminal-pinentry` agent to use a specific terminal
-- `macos-ui` uses `osascript` on macOS and does not accept `--tty`
-- prompt-capable frontends offer:
-  - allow once
-  - deny once
-  - allow 5 min
-  - always allow
-  - always deny
-- `run prompt` defaults timeout to deny
-- the current store backend is `pass:file-snitch/<object_id>`
-- each `pass` entry is a File Snitch JSON/base64 payload capped at 1 MiB; this
-  is a File Snitch capture/memory limit, not a `pass` limit
-- `unenroll` streams oversized guarded objects back to disk without the normal
-  capture limit before removing the store entry
+`file-snitch completion` generates scripts for bash, zsh, and fish. The
+[completion reference](./cli.md#completion) gives installation commands.

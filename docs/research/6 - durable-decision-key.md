@@ -1,5 +1,8 @@
 # Durable Decision Key Recommendation
 
+> Historical proposal. The persisted key is now `executable_path + path +
+> approval_class`, without a UID field; see [policy](../policy.md#decisions).
+
 ## Question
 
 What should the v1 decision key on?

@@ -1,58 +1,41 @@
 # Demo
 
-The fastest way to show File Snitch to someone who has not installed it is to
-record the built-in demo driver.
+The demo driver runs an agent, a daemon, and a user shell in three tmux panes.
+It creates a disposable home and fake `pass` store, then demonstrates enrollment,
+prompted reads, a denied write, dossier export, and restoration with `unenroll`.
+Sibling files stay on the host filesystem throughout.
 
-Prerequisite:
+## Run the walkthrough
+
+Set up the [build dependencies](./development.md#native-setup), including a
+working FUSE runtime. The demo also needs `tmux` and Python 3.
 
 ```bash
 zig build
+./scripts/demo/demo-session.sh
 ```
 
-Then record the session:
+The script uses `zig-out/bin/file-snitch`; set `FILE_SNITCH_BIN` to try another
+build. It uses sample contents and a fake store rather than your real secrets.
+It leaves its temporary home in place and prints dossier/log locations at the
+end for inspection.
+
+## Record or regenerate assets
+
+To record a session, install `asciinema` and run:
 
 ```bash
 asciinema rec --command ./scripts/demo/demo-session.sh
 ```
 
-Or regenerate the checked-in README assets directly:
+To regenerate the README recording and GIF, install `asciinema` and `agg` in
+addition to the walkthrough prerequisites:
 
 ```bash
 ./scripts/demo/regenerate-demo-artifacts.sh
+./scripts/demo/check-demo-artifacts.sh
 ```
 
-That regeneration path expects:
-- `zig`
-- `asciinema`
-- `agg`
-- `tmux`
-
-What the script demonstrates:
-- a three-pane tmux session with:
-  - the agent
-  - the daemon
-  - a user shell
-- `enroll` evacuates plaintext from its original path
-- the guarded object lands in the configured store backend
-- `doctor --export-debug-dossier` writes a shareable report without secret file contents
-- `run prompt` projects the guarded file back into place through a visible agent prompt
-- unguarded siblings remain on the normal filesystem
-- stopping `run` hides the guarded path again
-- `unenroll` restores the guarded file
-
-The demo uses:
-- a disposable temporary home directory
-- a fake `pass` binary
-- `tmux`
-- the built `zig-out/bin/file-snitch`
-
-So it is safe to record and share. It does not touch your real `pass` store or
-your real home-directory secrets.
-
-The script leaves its temporary home directory in place and prints the dossier
-and log paths at the end so you can inspect or reuse the artifacts after the
-recording.
-
-The generated artifacts live at:
-- `docs/assets/demo.cast`
-- `docs/assets/demo.gif`
+The outputs are [demo.cast](./assets/demo.cast) and [demo.gif](./assets/demo.gif).
+Review the recording before sharing it; the automated check only catches known
+leakage markers. See [redaction review](./redaction-review.md).

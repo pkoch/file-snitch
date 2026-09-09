@@ -1,152 +1,147 @@
 # Development
 
-This page is the local development and verification checklist for File Snitch.
-For contribution expectations and ownership conventions, read
-[../CONTRIBUTING.md](../CONTRIBUTING.md).
+Read [CONTRIBUTING.md](../CONTRIBUTING.md) for scope, ownership, and review
+conventions.
 
-## Prerequisites
+## Development environment
 
-Install Anyzig so `zig` follows the `minimum_zig_version` pinned in
-`build.zig.zon`:
-
-```bash
-brew install anyzig
-```
-
-Platform dependencies:
-
-- Linux: `fuse3` and `libfuse3-dev`
-- macOS: macFUSE with libfuse compatibility libraries
-- all platforms: `pass` and a usable GPG setup for real guarded-store drills
-
-## Development Environment
-
-This repo ships a devcontainer at
-[../.devcontainer/devcontainer.json](../.devcontainer/devcontainer.json). Use it
-as the default local Linux development environment, or as a reference for
-setting up another Linux runner. Open it with your editor's Dev Containers
-support, or bring it up directly:
+The [devcontainer](../.devcontainer/devcontainer.json) provides Ubuntu, FUSE 3
+build dependencies, GPG, `pass`, Python, and the Zig version pinned in
+[build.zig.zon](../build.zig.zon). Open it with your editor's Dev Containers
+support or the Dev Container CLI:
 
 ```bash
 devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . ./.devcontainer/scripts/check.sh
 ```
 
-- `.devcontainer/scripts/setup.sh` installs the Linux packages needed to build
-against FUSE, installs the pinned Zig release from ziglang.org when `zig` is
-missing or does not match the repo pin, and prints tool versions for build logs.
-- `.devcontainer/scripts/check.sh` verifies command presence, checks that
-`zig version` matches `minimum_zig_version` from `build.zig.zon`, checks
-`pkg-config --modversion fuse3`, then runs the core build, compile-commands,
-and docs checks.
+The container requires the Linux host's `/dev/fuse`; its configuration grants
+the container access to that device and the capabilities needed to mount FUSE.
+The check script verifies tool versions and FUSE discovery, then builds, runs
+Zig tests, generates compile commands, and checks the docs. It does not run the
+mounted smoke suite.
 
-## Core Loop
+### Native setup
+
+Use the Zig version in `build.zig.zon`. Anyzig selects it automatically:
+
+```bash
+brew install anyzig
+```
+
+A directly installed matching Zig release also works; the devcontainer setup
+script uses that approach.
+
+| Platform | Build dependencies |
+| --- | --- |
+| Linux | `pkg-config`, `fuse3`, and `libfuse3-dev` (Debian/Ubuntu package names) |
+| macOS | Xcode Command Line Tools and macFUSE with libfuse compatibility libraries |
+
+Python 3 is needed for docs and release-source checks. Real-store testing also
+needs `pass` and a usable GPG keyring.
+
+On macOS, export the SDK path so the C shim and Zig C imports can find headers
+such as `sys/xattr.h`:
+
+```bash
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+```
+
+FUSE discovery lives in [build/fuse_support.zig](../build/fuse_support.zig).
+Linux uses `pkg-config fuse3`, with a fallback to system paths. macOS accepts
+`FILE_SNITCH_FUSE_INCLUDE_DIR` and `FILE_SNITCH_FUSE_LIB_DIR`, then tries
+`pkg-config fuse`, then standard `/usr/local` and `/opt/homebrew` locations.
+Extracting the SDK for CI builds does not install a working FUSE runtime.
+
+## Core loop
 
 ```bash
 zig build
 zig build test
-zig build compile-commands
 ./scripts/docs/check-docs.sh
 ```
 
-What each command covers:
+`zig build` installs the CLI at `zig-out/bin/file-snitch`. `zig build test` runs
+the test roots wired in [build.zig](../build.zig). The docs check builds the
+binary, compares the documented command block with its help output, checks
+local Markdown links, and checks the smoke-test inventory below.
 
-- `zig build`: compiles the CLI binary and C `libfuse` shim
-- `zig build test`: runs every Zig test artifact wired in `build.zig`
-- `zig build compile-commands`: regenerates `compile_commands.json` for clangd
-- `./scripts/docs/check-docs.sh`: catches docs drift in links, CLI command
-  docs, and smoke-test listings
+Run `zig build compile-commands` after cloning or changing build flags or FUSE
+locations to refresh `compile_commands.json` for clangd.
 
-Run `zig build compile-commands` after cloning, changing build flags, or
-updating FUSE-related local dependencies.
+[tests/build.sh](../tests/build.sh) is the CI build entrypoint: it runs the build,
+Zig tests, compile-command generation, and a release-source tarball check.
+`ZIG_BUILD_TARGET` selects its target when needed.
 
-## Smoke Tests
+## Smoke tests
 
-```bash
-./tests/smoke/run-empty-policy.sh
-./tests/smoke/policy-lifecycle.sh
-./tests/smoke/doctor-debug-dossier.sh
-./tests/smoke/run-policy-reload.sh
-./tests/smoke/run-expired-decision-cleanup.sh
-./tests/smoke/run-single-enrollment.sh
-./tests/smoke/run-multi-mount.sh
-./tests/smoke/run-prompt-linux-ui.sh
-./tests/smoke/run-prompt-single.sh
-./tests/smoke/run-prompt-remembered-decision.sh
-./tests/smoke/user-service-rendering.sh
+Build the binary first. The smoke fixtures use a fake `pass` executable and a
+disposable home/store. Mounted scenarios still require a working host FUSE
+runtime; fake GUI helpers exercise frontend behavior without opening dialogs.
 
-# macOS only:
-./tests/smoke/run-prompt-macos-ui.sh
-./tests/smoke/run-prompt-macos-ui-agent.sh
-```
+| Command | Coverage |
+| --- | --- |
+| `./tests/smoke/run-empty-policy.sh` | Empty-policy daemon stays alive |
+| `./tests/smoke/policy-lifecycle.sh` | Enroll, status, doctor, unenroll |
+| `./tests/smoke/doctor-debug-dossier.sh` | Dossier export without guarded contents |
+| `./tests/smoke/run-policy-reload.sh` | Policy changes activate and remove projections |
+| `./tests/smoke/run-expired-decision-cleanup.sh` | Expired decisions are pruned |
+| `./tests/smoke/run-single-enrollment.sh` | One projected file with unguarded siblings |
+| `./tests/smoke/run-multi-mount.sh` | Multiple enrolled paths in one projection root |
+| `./tests/smoke/run-prompt-linux-ui.sh` | Linux frontend with fake `zenity` |
+| `./tests/smoke/run-prompt-single.sh` | Terminal allow, deny, and timeout |
+| `./tests/smoke/run-prompt-remembered-decision.sh` | Durable choice and prompt suppression |
+| `./tests/smoke/user-service-rendering.sh` | launchd and systemd service rendering |
+| `./tests/smoke/run-prompt-macos-ui.sh` | macOS projection with fake `osascript` |
+| `./tests/smoke/run-prompt-macos-ui-agent.sh` | macOS agent socket/frontend without a mount |
 
-Coverage map:
+The last two scripts require macOS. `run-multi-mount.sh` retains its historical
+name; it checks the shared projection root.
 
-- `run-empty-policy.sh`: `run` stays alive and watches for future policy changes when policy is empty
-- `policy-lifecycle.sh`: `enroll`, `status`, `doctor`, and `unenroll`
-- `doctor-debug-dossier.sh`: debug dossier export without guarded file contents
-- `run-policy-reload.sh`: live policy reload activates and tears down projections
-- `run-expired-decision-cleanup.sh`: expired durable decisions are pruned from `policy.yml`
-- `run-single-enrollment.sh`: one enrolled file is projected while siblings stay outside the projection
-- `run-multi-mount.sh`: one projection root handles multiple enrolled paths
-- `run-prompt-linux-ui.sh`: `linux-ui` through a fake `zenity` path suitable for CI
-- `run-prompt-macos-ui.sh`: `macos-ui` through a fake `osascript` path on macOS
-- `run-prompt-macos-ui-agent.sh`: macOS agent socket behavior with the `macos-ui` frontend
-- `run-prompt-single.sh`: interactive prompt allow, deny, and timeout behavior through `terminal-pinentry`
-- `run-prompt-remembered-decision.sh`: durable allow decision write and prompt suppression
-- `user-service-rendering.sh`: rendered `launchd` and `systemd --user` service files
+[tests/verify.sh](../tests/verify.sh) combines the CI build entrypoint, the main
+smoke suite, and demo checks. Run `run-prompt-macos-ui-agent.sh` separately on
+macOS; that script and the docs check are separate CI steps. See
+[repro scripts](../tests/repro/README.md) for intermittent process/harness failures.
 
-## Shell And Demo Hygiene
+## Shell and demo checks
 
-CI also enforces shell syntax and demo artifact freshness:
+To check each shell script's syntax:
 
 ```bash
-bash -n $(find .devcontainer scripts tests -type f -name '*.sh' | sort)
-./scripts/docs/check-docs.sh
-./scripts/demo/check-demo-artifacts.sh
+find .devcontainer scripts tests -type f -name '*.sh' -exec bash -n {} ';'
 ```
 
-Regenerate demo artifacts with:
+CI also runs ShellCheck and `./scripts/demo/check-demo-artifacts.sh`. The latter
+checks artifact presence and known leakage markers, not recording freshness.
+See [demo](./demo.md) for regeneration and
+[redaction review](./redaction-review.md) for manual review.
 
-```bash
-./scripts/demo/regenerate-demo-artifacts.sh
-```
+## Source layout
 
-That path expects:
+| Path | Responsibility |
+| --- | --- |
+| `src/cli.zig` | Argument parsing and dispatch |
+| `src/cli_supervisor.zig`, `src/cli_policy_watch.zig` | Projection lifecycle and policy watching |
+| `src/config/core.zig` | Policy parsing, writes, and projection plans |
+| `src/policy/core.zig`, `src/enrollment.zig` | Enrollment commands, diagnostics, and file migration |
+| `src/policy.zig` | Access-policy evaluation |
+| `src/agent/`, `src/prompt.zig` | Socket protocol and prompt frontends |
+| `src/filesystem/`, `src/daemon.zig` | Filesystem model and FUSE callbacks |
+| `src/store.zig` | Guarded-object backend interface and implementations |
+| `src/user_services.zig`, `packaging/` | Embedded service definitions |
+| `c/` | C FUSE harness and syscall helpers |
+| `src/root.zig` | Shared module exports for tests and non-CLI consumers |
 
-- `zig`
-- `asciinema`
-- `agg`
-- `tmux`
+`src/agent.zig`, `src/config.zig`, and `src/filesystem.zig` re-export their
+submodules. Most implementation changes belong in the corresponding directory.
 
-## Build Notes
+## Store testing
 
-`build.zig.zon` is the source of truth for the Zig version. Anyzig reads
-`minimum_zig_version`, downloads that Zig release into the global Zig cache
-when needed, and dispatches the requested `zig` command.
+The CLI uses the `pass` backend. `src/store.zig` also provides an in-memory
+backend for development and tests, with backend metadata and object-listing
+interfaces. It is not a selectable persistent CLI store; the `pass` backend
+does not implement object listing.
 
-FUSE discovery:
-
-- the Zig build prefers `pkg-config` when available
-- Linux falls back to standard `fuse3` system locations if `pkg-config` is absent or cannot resolve `fuse3.pc`
-- macOS falls back to standard macFUSE locations under `/usr/local` and `/opt/homebrew`
-- `zig build compile-commands` uses the same discovery logic as the main build
-
-## Real Store Drill
-
-Smoke tests use a fake `pass` binary plus a disposable `PASSWORD_STORE_DIR`.
-Production code talks to the `pass` CLI directly.
-
-Before testing against real secrets, verify the store outside File Snitch:
-
-```bash
-pass ls
-file-snitch doctor
-```
-
-For the safest real-store drill, use a disposable temp home, disposable
-password store, and local GPG key, then exercise:
-
-```text
-enroll -> run -> read/write -> unenroll
-```
+For a real-store check, follow the [first-run walkthrough](./install.md#first-run)
+with its disposable file. Use a disposable home, password store, and GPG keyring
+when testing migrations or recovery behavior that could damage data.

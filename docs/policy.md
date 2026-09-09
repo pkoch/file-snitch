@@ -1,26 +1,15 @@
 # Policy File
 
-`policy.yml` is the durable source of truth for enrolled files and remembered
-decisions.
+`policy.yml` records enrollments and remembered decisions. Use `enroll`,
+`unenroll`, and prompt choices for routine changes; manual edits are useful for
+reviewing or removing decisions. Removing an enrollment by hand does not
+restore the file from the store.
 
-File Snitch writes this file itself through `enroll`, `unenroll`, and remembered
-prompt decisions. Manual edits are useful for inspection and recovery, but
-prefer the CLI for normal changes.
+The [CLI reference](./cli.md#paths-and-environment) lists policy-path precedence.
+File Snitch serializes its writes with a sidecar lock, so enrollment commands,
+remembered decisions, and expiry pruning do not overwrite each other's updates.
 
-## Location
-
-Policy path precedence:
-
-1. `--policy <path>` where supported
-2. `FILE_SNITCH_POLICY_PATH`
-3. `XDG_CONFIG_HOME/file-snitch/policy.yml`
-4. `HOME/.config/file-snitch/policy.yml`
-
-Policy writes are serialized with a sidecar lock so concurrent `enroll`,
-`unenroll`, remembered decisions, and daemon expiry pruning do not clobber each
-other.
-
-## Empty Policy
+## Empty policy
 
 ```yaml
 version: 1
@@ -28,14 +17,11 @@ enrollments: []
 decisions: []
 ```
 
-`file-snitch run` stays alive with an empty policy and watches for future
-changes.
+`run` stays alive with an empty or missing policy and watches for changes.
 
 ## Enrollments
 
-Each enrollment maps one target path to one guarded-store object. File Snitch
-writes paths under the current user's home directory as `~/...` so the policy
-can roam between machines, and expands them to absolute paths when loading.
+Each enrollment maps a target path to an existing guarded-store object:
 
 ```yaml
 version: 1
@@ -45,25 +31,23 @@ enrollments:
 decisions: []
 ```
 
-Fields:
+`path` must expand to an absolute path under the current user's home directory.
+File Snitch writes home-relative paths as `~/...` and expands them when loading.
+The target must be a user-owned regular file when enrolled through the CLI.
 
-- `path`: enrolled file path, either absolute or `~/...`
-- `object_id`: backend object identifier under `pass:file-snitch/<object_id>`
+`object_id` identifies `pass:file-snitch/<object_id>`. It must be nonempty,
+must not start with `.`, and may contain only ASCII letters, digits, `_`, `-`,
+and `.`. Enrollment paths and object IDs must each be unique within the policy.
+The CLI generates IDs; typing an enrollment into YAML does not create its
+stored object or migrate the original file.
 
-Current constraints:
-
-- `path` must be absolute after `~/...` expansion
-- `path` must be under the current user's home directory after expansion
-- `object_id` must be non-empty and must not contain `/`
-- the target file must be a user-owned regular file under the current user's
-  home directory when enrolled through the CLI
-- exact-file enrollment is the product model; the state-directory projection is
-  an implementation detail
+Home-relative paths let a policy use the corresponding home directory on
+another machine. The policy alone is not a backup: restoring access also needs
+the matching `pass` objects and GPG keys.
 
 ## Decisions
 
-Decisions are remembered prompt outcomes. One-shot decisions are runtime-only;
-temporary and durable choices are written into `policy.yml`.
+A decision matches an executable path, enrolled path, and approval class:
 
 ```yaml
 version: 1
@@ -74,89 +58,57 @@ decisions:
   - executable_path: '/usr/local/bin/kubectl'
     path: '~/.kube/config'
     approval_class: 'read_like'
-    outcome: 'allow'
-    expires_at: '2026-04-09T12:34:56Z'
+    outcome: 'deny'
+    expires_at: null
 ```
 
-Fields:
+This example remembers a denial for reads by that executable. Use the actual
+requesting executable path; decisions do not identify binaries by hash or
+signer. Decision target paths follow the same home-directory restriction as
+enrollments.
 
-- `executable_path`: executable path that requested access
-- `path`: enrolled target path the decision applies to, either absolute or
-  `~/...`
-- `approval_class`: approval class covered by the decision
-- `outcome`: remembered result
-- `expires_at`: RFC3339 UTC expiry timestamp or `null`
+Writing a remembered decision for the same
+`executable_path + path + approval_class` replaces its outcome and expiry.
+Decisions take precedence over the daemon mode's defaults. Delete a decision
+to return to that default; set `outcome: 'prompt'` to ask again in `run prompt`.
+Only `prompt` mode connects to the agent.
 
-The durable decision key is:
+### Approval classes
 
-```text
-executable_path + path + approval_class
-```
+| Class | Access covered |
+| --- | --- |
+| `read_like` | Read-only access |
+| `write_capable` | Create, write, truncate, rename, delete, `chmod`/`chown`, and xattr operations |
 
-Writing a new remembered decision for the same key replaces the previous
-outcome and expiry.
+Xattr reads also use `write_capable`. These classes group policy decisions;
+the [authorization scope](./cli.md#authorization-scope) explains which operations
+reach the projection and when an open handle reuses a grant.
 
-Decision paths must also be under the current user's home directory after
-`~/...` expansion.
+### Outcomes and prompt choices
 
-## Approval Classes
+Policy accepts `allow`, `deny`, and `prompt`.
 
-Current approval classes:
+| Prompt choice | Written to policy |
+| --- | --- |
+| Allow once / deny once | No; applies to the current request |
+| Allow 5 min | `allow` with an expiry five minutes later |
+| Always allow / always deny | `allow` / `deny` with `expires_at: null` |
 
-- `read_like`: read-style guarded access
-- `write_capable`: create, write, rename, delete, metadata, and xattr-capable
-  access classes
-
-`prompt` mode currently prompts for `open` and `create` on guarded paths.
-Lower-level operation coverage can be finer than the durable approval classes;
-the classes are the remembered-decision boundary.
-
-## Outcomes
-
-Current outcomes:
-
-- `allow`
-- `deny`
-- `prompt`
-
-Prompt frontends expose:
-
-- allow once
-- deny once
-- allow 5 min
-- always allow
-- always deny
-
-Only temporary and durable choices are written to policy. `allow once` and
-`deny once` apply only to the current request.
+Remembering a choice requires the requester to identify the executable.
 
 ## Expiration
 
-`expires_at` accepts:
-
-- exact `null`
-- quoted or unquoted RFC3339 UTC timestamps in this exact shape:
-  `YYYY-MM-DDTHH:MM:SSZ`
-
-Examples:
+`expires_at` accepts exact `null` or a quoted/unquoted RFC3339 UTC timestamp in
+`YYYY-MM-DDTHH:MM:SSZ` form. Numeric epochs, timezone offsets, and other YAML
+null spellings are not accepted.
 
 ```yaml
-expires_at: null
-expires_at: '2026-04-09T12:34:56Z'
+expires_at: '2030-01-01T12:00:00Z'
 ```
 
-Expired decisions are ignored and pruned by `file-snitch run`.
+That decision expires at noon UTC on January 1, 2030. Expired decisions are
+ignored and pruned by `run`; changes to remembered decisions apply on the next
+guarded access without a remount.
 
-## Inspection
-
-Use:
-
-```bash
-file-snitch status
-file-snitch doctor
-file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
-```
-
-`status` prints enrollments, decisions, and the derived projection root. `doctor`
-also validates guarded objects, target-path health, agent reachability,
-frontend helpers, and service files where applicable.
+Use `file-snitch status` to inspect the policy and `file-snitch doctor` to check
+its objects and projection health.

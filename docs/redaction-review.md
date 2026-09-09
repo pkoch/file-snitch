@@ -1,44 +1,30 @@
 # Redaction Review
 
-File Snitch now ships shareable artifacts:
-- debug dossiers exported by `doctor`
-- checked-in demo assets
-- issue templates that ask users for environment details
+Review diagnostic and recording changes for information that should not appear
+in public reports or checked-in assets.
 
-That means accidental leakage is now a real maintenance risk.
+## Debug dossiers
 
-## Review Surfaces
+`doctor --export-debug-dossier` includes versions, enrollment paths, object IDs,
+remembered decisions, and doctor output. It omits guarded contents and replaces
+the home-directory prefix with `~`; it does not anonymize every path or piece of
+metadata. Keep that distinction clear in issue templates and user guidance.
 
-When changing user-facing diagnostics or recorded assets, review:
-- `file-snitch doctor --export-debug-dossier`
-- `docs/assets/demo.cast`
-- `docs/assets/demo.gif`
-- README snippets that show paths, environment variables, or commands
-- issue templates under `.github/ISSUE_TEMPLATE/`
+When changing diagnostics, ensure they do not print secret contents, private
+keys, or store payloads. Check the exported dossier as well as terminal output.
+Run `./tests/smoke/doctor-debug-dossier.sh` to verify the existing fixture's
+content and path-redaction assertions.
 
-## What Must Never Leak
+## Demo assets
 
-- real secret contents
-- private key material
-- real maintainer home-directory secret paths
-- real GPG home paths
-- real password-store contents
-
-## Current Discipline
-
-- demo assets must come from the disposable demo driver, not a real home dir
-- debug dossiers must summarize state without dumping guarded file contents
-- issue reporting should prefer dossiers over ad hoc environment dumps
-
-## Mechanical Check
-
-Run:
+Generate recordings with the [disposable demo driver](./demo.md). Use sample
+paths and data in README snippets and issue-template examples. Check for real
+home-directory paths, GPG keyring paths, private keys, or password-store contents.
 
 ```bash
 ./scripts/demo/check-demo-artifacts.sh
 ```
 
-That script scans the checked-in demo artifacts for obvious leakage markers and
-maintainer-specific path fragments.
-
-It is not a complete proof. It is only a cheap tripwire.
+This scans `demo.cast` and strings from `demo.gif` for known leakage markers and
+maintainer path fragments. It does not inspect every rendered GIF frame or
+prove that a recording is current. Watch the result before committing it.

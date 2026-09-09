@@ -1,121 +1,33 @@
-# File Snitch
+# Documentation
 
-Keep tools from silently reading your kubeconfig, SSH keys, and other
-secret-bearing files.
+New to File Snitch? The [project README](../README.md) explains what it does.
+Read the [threat model](./threat-model.md), then try the
+[disposable demo](./demo.md) or follow the [install guide](./install.md).
 
-File Snitch moves selected files out of their usual paths, projects them back
-through a user-owned FUSE daemon, and asks a local agent before guarded
-access. The rest of the directory still behaves normally.
+## Using File Snitch
 
-[![Recorded File Snitch demo](./assets/demo.gif)](./demo.md)
+| Guide | Use it to |
+| --- | --- |
+| [Install](./install.md) | Set up dependencies and enroll your first file |
+| [Demo](./demo.md) | Try a fake store or record the walkthrough |
+| [CLI reference](./cli.md) | Look up commands, defaults, and environment variables |
+| [Policy](./policy.md) | Inspect or edit enrollments and remembered decisions |
+| [User services](./services.md) | Install and inspect services that run at login |
+| [Operations](./operations.md) | Diagnose problems and recover enrolled files |
+| [Threat model](./threat-model.md) | Understand what the daemon can mediate |
 
-## Why It Exists
+## Contributing
 
-Some secret files are too convenient to leave in place and too useful to lock
-away completely.
+- [Development](./development.md): environment setup, source layout, and checks
+- [Contributing](../CONTRIBUTING.md): scope, memory ownership, and review conventions
+- [Error handling](./error-handling.md): propagation, errno boundaries, and rollback
+- [Redaction review](./redaction-review.md): diagnostic and recording checks
+- [Releasing](./releasing.md): artifacts, provenance, and the tap release flow
+- [Backlog](../BACKLOG.md): planned work
+- [Changelog](../CHANGELOG.md): shipped changes
 
-Examples:
-- `~/.kube/config`
-- `~/.ssh/id_ed25519`
-- Docker auth config
-- tool-specific token files
+## Design history
 
-File Snitch is for the middle ground:
-- keep the file out of its original path by default
-- make access visible and mediable
-- keep sibling files and normal workflows working
-
-## What You Get Today
-
-- exact-file enrollment for user-owned regular files under your home directory
-- guarded-object custody through `pass:file-snitch/<object_id>`
-- state-directory projection linked back to the target path
-- unguarded siblings remain on the normal filesystem
-- a local requester/agent socket with:
-  - `terminal-pinentry`
-  - `macos-ui` via `osascript`
-  - `linux-ui` via `zenity`
-- remembered decisions in `policy.yml`
-  - allow once
-  - deny once
-  - allow 5 min
-  - always allow
-  - always deny
-- Homebrew/Linuxbrew install path and embedded per-user service management
-
-## What It Is Not
-
-File Snitch is intentionally narrow.
-
-It does not try to:
-- protect against root
-- arbitrate between local users
-- become a system-wide MAC framework
-- replace encrypted-at-rest secret storage
-
-The short version: this is a user-first secret mediation tool, not a system
-security product.
-
-Read the full stance in [threat-model.md](./threat-model.md).
-
-## How It Feels
-
-1. Enroll one file.
-2. The plaintext disappears from its original host path.
-3. Start the daemon and the local agent.
-4. Use your normal tool.
-5. File Snitch prompts before guarded access.
-6. Stop the daemon and the guarded file disappears again.
-
-That is the core product moment.
-
-## Try It
-
-If you want a safe disposable walkthrough:
-- [demo.md](./demo.md)
-- `./scripts/demo/demo-session.sh`
-
-If you want to install and try it on a real machine:
-- [install.md](./install.md)
-
-If you want the command surface:
-- [cli.md](./cli.md)
-
-If you want the policy file format:
-- [policy.md](./policy.md)
-
-If you want per-user services:
-- [services.md](./services.md)
-- `file-snitch services install --bin "$(command -v file-snitch)" --pass-bin "$(command -v pass)"`
-
-## If Something Goes Wrong
-
-Start with:
-
-```bash
-file-snitch status
-file-snitch doctor
-```
-
-If you need to file a bug:
-
-```bash
-file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
-```
-
-Then use the issue templates under
-[../.github/ISSUE_TEMPLATE](../.github/ISSUE_TEMPLATE).
-
-Operational recovery guidance lives in [operations.md](./operations.md).
-
-## Read More
-
-- [install.md](./install.md)
-- [cli.md](./cli.md)
-- [policy.md](./policy.md)
-- [demo.md](./demo.md)
-- [services.md](./services.md)
-- [operations.md](./operations.md)
-- [threat-model.md](./threat-model.md)
-- [development.md](./development.md) for the full verification workflow
-- [README.md](../README.md) for repo layout and architecture notes
+The [research notes](./research/README.md) record experiments and proposals,
+including designs that have since changed. Use the guides above for current
+behavior.

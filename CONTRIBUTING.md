@@ -1,103 +1,13 @@
 # Contributing
 
-## Before You Change Code
+Start with the [development guide](./docs/development.md) for setup and checks.
+Before changing behavior, read the [threat model](./docs/threat-model.md) and
+[error-handling conventions](./docs/error-handling.md).
 
-- read [README.md](./README.md)
-- read [docs/threat-model.md](./docs/threat-model.md)
-- read [docs/operations.md](./docs/operations.md)
-- read [docs/error-handling.md](./docs/error-handling.md)
-
-This project is intentionally:
-- single-user
-- user-space
-- exact-file oriented
-- not a system security framework
-
-Changes that pull it toward system-wide policy or multi-user arbitration should
-be treated skeptically.
-
-## Development Loop
-
-Install Anyzig so the `zig` command follows this repo's `build.zig.zon`
-`minimum_zig_version` pin.
-
-The full local workflow lives in [docs/development.md](./docs/development.md).
-
-Build:
-
-```bash
-zig build
-```
-
-Run the Zig test roots:
-
-```bash
-zig build test
-```
-
-CI also enforces a small hygiene layer:
-
-```bash
-bash -n $(find scripts tests -type f -name '*.sh' | sort)
-./scripts/docs/check-docs.sh
-./scripts/demo/check-demo-artifacts.sh
-```
-
-Run the smoke suite:
-
-```bash
-./tests/smoke/run-empty-policy.sh
-./tests/smoke/policy-lifecycle.sh
-./tests/smoke/doctor-debug-dossier.sh
-./tests/smoke/run-policy-reload.sh
-./tests/smoke/run-expired-decision-cleanup.sh
-./tests/smoke/run-single-enrollment.sh
-./tests/smoke/run-multi-mount.sh
-./tests/smoke/run-prompt-linux-ui.sh
-./tests/smoke/run-prompt-single.sh
-./tests/smoke/run-prompt-remembered-decision.sh
-./tests/smoke/user-service-rendering.sh
-
-# macOS only:
-./tests/smoke/run-prompt-macos-ui.sh
-./tests/smoke/run-prompt-macos-ui-agent.sh
-```
-
-Refresh `compile_commands.json` when needed:
-
-```bash
-zig build compile-commands
-```
-
-## Demo Artifacts
-
-The README embed is not hand-made. Regenerate it with:
-
-```bash
-./scripts/demo/regenerate-demo-artifacts.sh
-```
-
-And then sanity-check it for obvious leakage:
-
-```bash
-./scripts/demo/check-demo-artifacts.sh
-```
-
-That expects:
-- `zig`
-- `asciinema`
-- `agg`
-- `tmux`
-
-## Reporting And Reproducing Problems
-
-Before filing a bug, prefer exporting a dossier:
-
-```bash
-file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
-```
-
-Use the templates in `.github/ISSUE_TEMPLATE/`.
+File Snitch mediates individual files for one user. Policy, state, sockets,
+locks, and services stay per-user. Keep product policy in Zig; the C shim owns
+the FUSE boundary and syscall bridging. Authorize operations before they take
+effect, and keep read-only grants from authorizing later writes.
 
 ## Commit Discipline
 
@@ -144,14 +54,14 @@ When reviewing code, be suspicious of:
 - slices into stack buffers
 - containers that allocate their outer slice but borrow nested fields
 
-## Packaging Reality
+## Documentation
 
-The current packaging story is:
-- tagged release artifacts from this repo
-- Homebrew/Linuxbrew formula in `pkoch/homebrew-tap`
-- per-user service management embedded in the `file-snitch` binary
-- FUSE remains an external system prerequisite
-- `pass` is the only guarded-object backend today
+Give instructions one home and link to them from other pages. The README
+introduces the project, the install guide owns the first-run walkthrough, the
+CLI and policy pages describe behavior, and the development guide owns checks.
+Update those guides when behavior changes. Keep experiments and superseded
+proposals in [research](./docs/research/README.md), labeled as history.
 
-Do not document or imply bottles or package-manager integrations that do not
-exist yet.
+For diagnostics or demo changes, follow the
+[redaction review](./docs/redaction-review.md). Packaging changes belong with
+the [release workflow](./docs/releasing.md).

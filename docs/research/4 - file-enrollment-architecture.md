@@ -1,5 +1,9 @@
 # File Enrollment Architecture Recommendation
 
+> Historical proposal. The parent-directory virtualization below was replaced
+> by a state-directory projection with target-path symlinks in 0.7.0. See the
+> [current run behavior](../cli.md#run).
+
 ## Question
 
 Should the product protect directories, or exact files?

@@ -1,5 +1,9 @@
 # Prompt Latency And Timeout Assumptions
 
+> Historical spike measurements. The five-second default discussed below was
+> replaced by a 30-second agent interaction timeout. Protocol liveness has a
+> separate one-second default; see [agent configuration](../cli.md#agent).
+
 ## Question
 
 What prompt latency and timeout assumptions are acceptable for the current

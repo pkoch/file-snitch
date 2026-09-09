@@ -1,6 +1,7 @@
 # Releasing
 
-Formal releases are owned by:
+The release entrypoints and inputs are:
+
 - [scripts/release/do-release.sh](../scripts/release/do-release.sh)
 - [scripts/release/build-release-source-tarball.py](../scripts/release/build-release-source-tarball.py)
 - [scripts/release/build-release-artifact.sh](../scripts/release/build-release-artifact.sh)
@@ -9,7 +10,8 @@ Formal releases are owned by:
 - [build.zig.zon](../build.zig.zon)
 - [release-inputs.json](../release-inputs.json)
 
-The intended release shape is:
+A release consists of:
+
 - one version source in [VERSION](../VERSION)
 - one release commit that bumps versioned metadata
 - one annotated tag
@@ -19,38 +21,27 @@ The intended release shape is:
 
 ## Canonical release artifacts
 
-Tagged releases are meant to publish:
+Tagged releases publish:
+
 - `file-snitch-<version>-source.tar.gz`
 - `file-snitch-<version>-linux-x86_64.tar.gz`
 - `file-snitch-<version>-macos-arm64.tar.gz`
 - `SHA256SUMS`
 - `release-manifest.json`
 
-Those GitHub Release assets are the canonical release artifacts.
+Homebrew consumes the tagged source tarball. The formula and bottle workflows
+live in [pkoch/homebrew-tap](https://github.com/pkoch/homebrew-tap). The release
+script updates the tap and waits for its checks and bottle publication, so a
+release includes both app artifacts and packaging follow-through.
 
-Homebrew should consume the tagged source tarball, not a branch tarball.
-Other package managers should prefer the published release artifacts or
-`release-manifest.json` over ad hoc branch snapshots.
-
-The Homebrew formula itself now lives in:
-- `pkoch/homebrew-tap`
-- https://github.com/pkoch/homebrew-tap
-
-This coupling is intentional for now.
-
-The release flow updates the tap as part of a normal release so packaging drift
-fails loudly instead of silently. The app release script also tails the tap PR
-checks and bottle publish workflow so the process stays visible instead of
-quietly drifting in a separate repo. That is an operational choice for
-visibility, not an architectural claim that the tap is the only valid
-downstream packaging home forever.
-
-If `file-snitch` later moves into `homebrew/core`, revisit this and decouple the
-tap update from the main release script then.
+Other package managers can consume the source tarball, binary artifacts, or
+`release-manifest.json`. If packaging moves to `homebrew/core`, revisit the
+script's dependency on the tap workflow.
 
 ## Deterministic release inputs
 
-The release flow is built around deterministic inputs:
+Inputs and verification:
+
 - the release source tarball is generated from tracked files only
 - the release source tarball builder fails loudly if any tracked file appears
   under `Formula/`; the Homebrew formula lives in `pkoch/homebrew-tap` and
@@ -81,9 +72,9 @@ The release workflow rebuilds each binary artifact twice from the same source
 bundle, with the same Anyzig-selected Zig version and SDK inputs, and compares
 the outputs byte-for-byte before publishing them.
 
-This is intentionally a pinned native-runner release flow, not a hermetic Nix
-build. The current guarantee is: same source tarball, same declared Zig package
-metadata and SDK inputs, same native runner class, same bytes out.
+Reproducibility is checked on the same native runner class with the same source
+bundle, Zig version, and SDK inputs. It does not establish reproducibility
+across arbitrary host environments.
 
 ## Running a release
 
@@ -93,14 +84,10 @@ From a clean worktree:
 ./scripts/release/do-release.sh patch
 ```
 
-Or:
-
-```bash
-./scripts/release/do-release.sh minor
-./scripts/release/do-release.sh major
-```
+Use `minor` or `major` instead of `patch` for a larger version bump.
 
 That script:
+
 1. bumps [VERSION](../VERSION) and `build.zig.zon` package metadata
 2. rolls [CHANGELOG.md](../CHANGELOG.md)
 3. runs `zig build test`
@@ -114,23 +101,18 @@ That script:
 
 ## What the script assumes
 
+- `gh`, `python3`, `zig`, and `brew` are installed, and `gh` is authenticated
 - the worktree is clean
-- the local `pkoch/homebrew-tap` checkout exists and is clean
+- the local `pkoch/homebrew-tap` checkout exists and is clean; the script finds
+  it with `brew --repository pkoch/homebrew-tap`, or uses
+  `FILE_SNITCH_HOMEBREW_TAP_REPO` when set
 - the current branch is the branch you actually want to release from
 - `origin` is the correct push target
 - GitHub push access is configured already
 - the tap repo Actions workflows are enabled
 
-It does not try to be clever about branch selection or interactive review.
-
-## Release provenance
-
-Every release publishes:
-- `SHA256SUMS`
-- `release-manifest.json`
-
-`release-manifest.json` includes the Anyzig-selected Zig version and macFUSE
-input metadata that the workflow used to produce the published artifacts.
+`release-manifest.json` records the Zig version and macFUSE input metadata used
+for the published artifacts. `SHA256SUMS` records artifact checksums.
 
 ## Changelog discipline
 
@@ -139,15 +121,4 @@ input metadata that the workflow used to produce the published artifacts.
 The release script moves whatever is under `## [Unreleased]` into the new
 versioned section. If `Unreleased` is empty, the release notes will be sparse.
 
-That means public-facing changes should be added to `Unreleased` as they land.
-
-## Packaging follow-through
-
-The source release tarball is the stable input for:
-- Homebrew/Linuxbrew via `pkoch/homebrew-tap`
-- future `.deb` packaging
-- any other downstream packaging that wants a fixed release source
-
-The binary release tarballs are for direct download and manual installation.
-Homebrew bottles are published from the tap repo's PR flow, not from this
-repo's release workflow.
+Add public-facing changes to `Unreleased` as they land.

@@ -1,5 +1,9 @@
 # Mount Planner Strategy
 
+> Superseded design. Since 0.7.0, all enrollments share one state-directory FUSE
+> projection with target-path symlinks. Parent directories are not mounted; see
+> [current run behavior](../cli.md#run).
+
 ## Question
 
 Given exact-path file enrollment, what mount set should the daemon derive at runtime?
