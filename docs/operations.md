@@ -1,103 +1,65 @@
-# Operations And Troubleshooting
+# Operations and Troubleshooting
 
-This is the operator's view of File Snitch.
-
-Use it when:
-- a guarded file is missing
-- you expected a prompt and did not get one
-- `pass` or GPG is failing
-- the daemon or agent died and you want to recover safely
-
-## First Checks
-
-Start here:
+Start with the policy summary and health checks:
 
 ```bash
 file-snitch status
 file-snitch doctor
 ```
 
-`doctor` is meant to be prescriptive, not just descriptive. When it reports a
-missing helper, socket, service file, or unusable `pass` setup, follow the
-adjacent `hint:` lines first.
+Follow the `hint:` lines from `doctor`. `status` reads policy; it does not check
+whether the daemon is alive. If you use a custom policy or socket, keep the
+[environment](./cli.md#paths-and-environment) consistent with the running processes.
 
-If you plan to file a bug, also export a dossier:
+## Symptom cheat sheet
 
-```bash
-file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
-```
+| Symptom | Next step |
+| --- | --- |
+| Guarded file is missing or a dangling symlink | [Check the projection](#if-a-guarded-file-is-missing) |
+| Prompt does not appear | [Check mode, decisions, and agent](#if-you-expected-a-prompt-and-did-not-get-one) |
+| `pass` or GPG fails | [Check the store and service environment](#if-pass-or-gpg-is-failing) |
+| Stale or inaccessible FUSE mount | [Recover the projection root](#if-the-daemon-dies-mid-session) |
+| `unenroll` waits for the target | [Resolve the existing path](#if-unenroll-waits-because-the-target-exists) |
+| Policy edit has no effect | [Check the policy path and daemon logs](#if-policy-changes-do-not-seem-to-apply) |
 
-## Symptom Cheat Sheet
+## If a guarded file is missing
 
-| Symptom | First command | What to check next |
-| --- | --- | --- |
-| Guarded file is missing | `file-snitch status` | Confirm the path is enrolled. If it is, start `file-snitch run prompt` or `file-snitch run allow`. |
-| Prompt does not appear | `file-snitch status` | Confirm the file is enrolled, `run` is in `prompt` mode, the agent socket exists, and no remembered decision already applies. |
-| `pass` or GPG fails | `pass ls` | Fix the GPG or `pass` environment first, then rerun `file-snitch doctor`. |
-| User service cannot find `pass` | `file-snitch doctor` | Reinstall services with explicit `--bin` and `--pass-bin` paths. |
-| Policy edit does not apply | `file-snitch status` | Confirm you edited the same policy path the daemon is using and that the YAML parses. |
-| Unenroll waits because target exists | `file-snitch status` | Confirm `file-snitch run` is active; if the wait times out, stop the projection or remove the stale path and retry. |
-| Stale or inaccessible target device | `file-snitch doctor` | Restart `file-snitch run`; if it persists, unmount the affected parent directory and retry. |
+Enrollment removes the original regular file. While `run` is active, the
+original path is a symlink into the state-directory projection. Without the
+mount, that path can be absent or a dangling symlink; its contents remain in
+`pass`.
 
-The policy file format is documented in [policy.md](./policy.md).
+Confirm the enrollment with `status`, then start the agent and daemon as in the
+[first-run walkthrough](./install.md#first-run). Use `run prompt` for prompted
+access. `run allow` allows reads and mutations by default; `run deny` still
+allows reads. See [mode behavior](./cli.md#run).
 
-## If A Guarded File Is Missing
+To restore the file permanently, run `file-snitch unenroll <path>`. Removing a
+policy entry by hand does not restore its contents.
 
-That is often the expected failure mode.
+## If you expected a prompt and did not get one
 
-Remember:
-- `enroll` evacuates the file out of its original host path
-- `run` projects it back into place
-- if `run` is not active, the file should normally be absent
+Check these in order:
 
-Check:
+1. `status` lists the intended file and policy path.
+2. The daemon is running in `prompt` mode.
+3. No remembered allow or deny outcome already covers that executable, enrolled
+   path, and approval class. Those outcomes apply on the next access without a
+   remount.
+4. `doctor` can reach the agent at the same socket the daemon uses.
+5. The frontend can display a prompt: inherited stdio or `--tty` for
+   `terminal-pinentry`, `osascript` on macOS, or `zenity` in a Linux graphical
+   session.
 
-```bash
-file-snitch status
-```
+An already-authorized handle can reuse its grant. An application may also have
+cached the contents instead of reading again. The terminal frontend treats
+Enter and EOF as allow; keep it attached to a usable terminal.
 
-If the file is enrolled and `run` is not active, start the daemon:
+If the target was replaced with a regular file or a different symlink, access
+may no longer reach File Snitch. `doctor` reports that mismatch. See
+[scope and bypasses](./threat-model.md#scope-and-bypasses).
 
-```bash
-file-snitch run allow
-```
-
-or:
-
-```bash
-file-snitch run prompt
-```
-
-## If You Expected A Prompt And Did Not Get One
-
-Check these layers:
-
-1. The file must actually be enrolled.
-
-```bash
-file-snitch status
-```
-
-2. The daemon must be running in `prompt` mode.
-
-3. The agent must be reachable on its Unix socket.
-
-4. A remembered decision may already cover the access.
-   Check `file-snitch status` or inspect `policy.yml` before assuming the
-   prompt path is broken.
-   Remembered decisions should apply on the next guarded access; they no longer
-   need a supervisor remount before prompt suppression starts.
-
-If the current agent frontend is terminal-based, also confirm that the agent
-has a usable TTY:
-- `agent` uses inherited stdio
-- `agent --tty <path>` targets a specific terminal
-
-## If `pass` Or GPG Is Failing
-
-File Snitch depends on `pass` for the current guarded-object backend.
-
-Check:
+## If `pass` or GPG is failing
 
 ```bash
 pass ls
@@ -105,94 +67,73 @@ gpg --version
 file-snitch doctor
 ```
 
-If `pass` cannot decrypt its store, File Snitch cannot load guarded objects
-either.
+Listing the store checks discovery, not decryption. File Snitch also needs the
+secret key, a working GPG agent/pinentry, and the correct `GNUPGHOME` and
+`PASSWORD_STORE_DIR`. A projection loads guarded objects when it starts, so GPG
+may ask for access before a File Snitch authorization prompt appears.
 
-When using the per-user service, `doctor` also checks whether the run service
-can find `pass` from its own service environment. It also compares both the
-installed service files and the service manager's loaded config against the
-service definitions rendered by the current `file-snitch` binary. On macOS this
-is especially important because launchd does not inherit your interactive shell
-`PATH`; if Homebrew installed `pass` under `/opt/homebrew/bin`, reinstall the
-services with:
+Services do not inherit your interactive shell environment. If `doctor` reports
+an incorrect `pass` path or stale service definition, reinstall with explicit
+binary paths as described in [user services](./services.md).
 
-```bash
-file-snitch services install \
-  --bin "$(command -v file-snitch)" \
-  --pass-bin "$(command -v pass)"
-```
+The stored JSON/base64 payload is capped at 1 MiB, including metadata and
+encoding overhead. This is a File Snitch limit. For an oversized object already
+in the store, `unenroll` streams it back to disk without the normal capture
+limit and removes the entry only after restoration succeeds.
 
-File Snitch currently captures each stored `pass:file-snitch/<object_id>` entry
-as one JSON/base64 payload capped at 1 MiB. If a guarded object exceeds that
-serialized payload limit, File Snitch reports the limit explicitly. The limit is
-in File Snitch's in-memory store handling, not in `pass` or GPG.
+## If the daemon dies mid-session
 
-`unenroll` is the recovery path for an oversized guarded object. It streams the
-stored JSON/base64 payload back to the target file without applying the normal
-capture limit, then removes the `pass` entry only after the restore succeeds.
+The store retains enrolled objects, but the original paths may point at an
+unavailable projection. Restart the daemon and check `doctor`. The supervisor
+attempts to recover an inaccessible stale mount before starting a new worker.
 
-Common causes:
-- wrong `GNUPGHOME`
-- missing secret key
-- broken pinentry/GPG agent setup
-- `pass` installed but unusable for the current shell environment
-
-## If The Daemon Dies Mid-Session
-
-The intended behavior is:
-- the projected file disappears again
-- the guarded object remains in the store
-- `unenroll` can restore the file later
-
-Recovery path:
-
-1. Restart the daemon and verify the projection returns:
+If recovery still fails, stop the daemon (including its user service) and
+inspect the mount at the **projection root** printed by `status`. With the
+same `XDG_STATE_HOME` environment as the daemon, unmount it using your platform's
+command:
 
 ```bash
-file-snitch run allow
+# Linux
+fusermount3 -u "${XDG_STATE_HOME:-$HOME/.local/state}/file-snitch/projection"
+
+# macOS
+umount "${XDG_STATE_HOME:-$HOME/.local/state}/file-snitch/projection"
 ```
 
-2. If you want to stop guarding the file entirely:
+Then restart in `prompt` mode or use `unenroll` to restore the files. The FUSE
+mount is in the state directory, not the enrolled file's parent directory.
+
+## If `unenroll` waits because the target exists
+
+`unenroll` removes the enrollment from policy so an active daemon can release
+it, then waits up to 10 seconds for the target to become unavailable before
+restoring the stored file. A timeout restores the enrollment for a retry.
+
+If the target is still mounted, stop the projection and retry. If it is an
+unexpected regular file or symlink, inspect and move it aside before retrying;
+it may contain changes that are not in the guarded store. Preserve the stored
+object until restoration succeeds.
+
+## If policy changes do not seem to apply
+
+`run` reconciles policy changes without a restart. Confirm that `status` reads
+the same path as the daemon, check the [YAML format](./policy.md), and inspect
+the daemon logs for parse or projection errors. Transient read/stat failures
+leave the existing projection running and report the error.
+
+## Before filing a bug
+
+Export diagnostics when possible:
 
 ```bash
-file-snitch unenroll <path>
+file-snitch doctor --export-debug-dossier ./file-snitch-debug-dossier.md
 ```
 
-3. If something still looks wrong, export a dossier before making ad hoc edits.
+The dossier includes versions, enrollment paths, object IDs, remembered
+decisions, and doctor output. It omits guarded file contents and replaces your
+home-directory prefix with `~`. Paths and other diagnostic metadata remain
+visible, so review the report before sharing it.
 
-## If `unenroll` Waits Because The Target Exists
-
-That usually means the file is still projected or a stale file is sitting at
-the host path. `unenroll` removes the enrollment from the policy first so an
-active `file-snitch run` process can tear the projection down, then restores the
-guarded object after the path disappears.
-
-If the wait times out, `unenroll` restores the policy enrollment. Stop the
-projection or remove the stale target path, then retry.
-
-Do not manually overwrite the store entry unless you are intentionally doing
-recovery work.
-
-## If Policy Changes Do Not Seem To Apply
-
-`run` now reconciles policy changes without restart.
-
-Check:
-- are you editing the same `policy.yml` the daemon is using?
-- did the file parse cleanly?
-- does `status` show the enrollment or decision you expect?
-
-`doctor` is the quickest way to catch obvious policy drift.
-
-## Before Filing A Bug
-
-Collect:
-- OS and architecture
-- install method
-- exact commands you ran
-- `file-snitch status`
-- `file-snitch doctor`
-- `file-snitch doctor --export-debug-dossier ...`
-- whether `pass ls` succeeds
-
-Then use the issue templates in `.github/ISSUE_TEMPLATE/`.
+Use the [issue templates](../.github/ISSUE_TEMPLATE) and include the install
+method, commands that reproduced the problem, and the dossier. A nonzero
+`doctor` exit status means it found problems; it can still write the report.

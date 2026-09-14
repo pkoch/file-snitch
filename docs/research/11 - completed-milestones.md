@@ -51,5 +51,7 @@ Completed outputs:
 - policy reconciliation in both foreground and daemon mode
 - policy-driven smoke coverage
 
-This is the active product foundation. Remaining work now lives in the
-forward-looking backlog.
+Later releases replaced parent-directory mounts with a shared state-directory
+projection and symlinks, and made `run` foreground-only under external
+supervision. See the [changelog](../../CHANGELOG.md) for shipped changes and the
+[backlog](../../BACKLOG.md) for remaining work.

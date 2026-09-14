@@ -13,9 +13,6 @@ Status:
 
 ## Near-Term Engineering
 
-- `[ ]` Wire docs checks into CI
-  - run `./scripts/docs/check-docs.sh` in `.github/workflows/ci.yml`
-  - keep shell syntax and demo-artifact checks beside it
 - `[ ]` Add policy examples that are validated by automation
   - examples: empty policy, one enrollment, temporary allow, durable deny
   - validate examples with the real parser rather than only Markdown review
@@ -55,7 +52,9 @@ Status:
 
 ## Filesystem And Policy Research
 
-- `[ ]` Revisit xattr mediation beyond the current passthrough-only prompt path
+- `[ ]` Revisit xattr policy granularity and persistence
+  - all xattr operations currently share `write_capable` approval
+  - attributes live on lock-anchor files, outside the guarded-store payload
 
 ## Future Backend Work
 
@@ -69,7 +68,7 @@ Do not duplicate architectural decisions here. Backlog items should stay
 consistent with the canonical docs:
 
 - product stance and non-goals: [docs/threat-model.md](./docs/threat-model.md)
-- repo-level guardrails: [README.md](./README.md)
+- contribution guardrails: [CONTRIBUTING.md](./CONTRIBUTING.md)
 - policy ownership and format: [docs/policy.md](./docs/policy.md)
 - protocol direction:
   [docs/research/12 - agent-broker-protocol.md](./docs/research/12%20-%20agent-broker-protocol.md)

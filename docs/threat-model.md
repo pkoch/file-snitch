@@ -1,80 +1,62 @@
 # Threat Model
 
-File Snitch is a single-user, user-space mediation tool.
+File Snitch helps one user notice and control file access by their own tools.
+For example, `run prompt` can ask before a CLI reads `~/.kube/config` or opens a
+secret file for writing.
 
-Its job is narrow:
-- keep selected secret-bearing files out of their normal host paths
-- project them back only while the user-owned daemon is active
-- require an explicit local decision before guarded access
+## Scope and bypasses
 
-It is not a general system security framework.
+Mediation applies when an operation reaches a projected file. Enrollment moves
+the original contents into `pass`; the daemon loads them into memory and
+serves them through FUSE. The original path becomes a symlink to that file.
+Sibling files and the original parent directory remain on the host filesystem.
 
-## What It Protects Against
+That means software can remove or replace the original symlink without passing
+through the projection. A tool that saves by renaming a sibling temporary file
+over the symlink can leave an ordinary, unguarded file at the target path.
+Applications that refuse symlinks may also fail to use an enrolled file.
+Validate the workflows you need before enrolling their secrets.
 
-File Snitch is meant to protect one user's own secret files from that same
-user's software.
+File Snitch does not isolate hostile software running as your user. Such
+software may be able to edit policy, access `pass` directly, or interfere with
+the daemon and agent. Remembered decisions identify an executable by its path,
+not by a content hash or signing identity.
 
-Examples:
-- a CLI that reads `~/.kube/config` without the user realizing it
-- a shell pipeline that would otherwise open `~/.ssh/id_ed25519`
-- a misbehaving local tool that should not silently mutate a guarded file
+It also does not defend against root, kernel compromise, or exfiltration after
+access has been allowed. Previously read data, backups, other copies, and
+plaintext in process memory are outside its control. Removing the original
+file during enrollment is not secure erasure.
 
-The intended boundary is:
-- one local user
-- one local policy file
-- one local agent
-- one local daemon
+## Authorization behavior
 
-## What It Does Not Protect Against
+Use `run prompt` to request a decision for access not already covered by policy.
+Remembered decisions take precedence over the mode's defaults. `run allow`
+allows reads and mutations by default; `run deny` allows reads and denies
+mutations by default.
 
-File Snitch does not try to protect against:
-- root
-- other local users with stronger system privileges
-- kernel compromise
-- malicious software that already controls the user account end to end
-- exfiltration after the user explicitly approves access
+Authorization precedes the operation. A read-only handle grant cannot authorize
+a later write. Matching handle grants and remembered decisions can suppress
+further prompts; the [CLI reference](./cli.md#authorization-scope) describes
+operation coverage.
 
-It is also not trying to be:
-- system-wide mandatory access control
-- a sandbox
-- a shared multi-user policy authority
-- a replacement for encrypted-at-rest secret storage
+Denial, timeout, and an unavailable prompt broker return permission denied.
+The terminal frontend treats Enter and EOF as allow, so it needs a usable
+terminal. A File Snitch prompt controls access through FUSE; it does not defer
+GPG decryption until approval.
 
-## Trusted Components
+## Trusted components
 
-Today, the practical trust base includes:
-- the local operating system and kernel
-- FUSE or macFUSE
-- the File Snitch daemon
-- the local File Snitch agent
-- the `pass` and GPG setup backing guarded objects
+The operating system, FUSE/macFUSE, File Snitch daemon and agent, and `pass`/GPG
+all handle or control access to secrets. Compromise of these components is
+outside the protection File Snitch provides. Encryption at rest comes from the
+`pass` backend.
 
-If any of those are compromised, File Snitch cannot meaningfully defend the
-user's secrets.
+Policy, sockets, locks, and services are per-user. There is no system-wide
+mandatory access control, sandbox, or shared multi-user policy authority.
 
-## Security Properties File Snitch Tries To Preserve
+## Failure and recovery
 
-- Enrolled plaintext should not sit at the original host path while the file is
-  merely "guarded by convention".
-- Prompting should happen before the guarded operation takes effect.
-- Policy should stay user-owned and local.
-- Sibling files under a mounted parent should not be broken just because one
-  file is guarded.
-- Expired durable decisions should stop applying and be cleaned out of policy.
-
-## Operational Consequences
-
-- If the daemon is down, enrolled files should be absent or inert, not silently
-  re-exposed from the original host path.
-- If the agent is unavailable, guarded requests should fail closed.
-- If `pass` or GPG is unusable, guarded objects are unavailable too.
-
-## Design Rule
-
-When deciding whether a new feature fits, ask:
-
-> Does this help one user control one user's own secret-bearing files from one
-> user's own software?
-
-If the answer is "not really", it probably does not belong in File Snitch's
-core.
+If the daemon stops, enrolled paths become unavailable or dangling symlinks;
+the original plaintext is not automatically restored. If the store cannot be
+decrypted, the projection cannot load its files. Use `unenroll` to restore
+contents, following the [recovery guide](./operations.md).

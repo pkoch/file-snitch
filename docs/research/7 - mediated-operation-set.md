@@ -1,5 +1,8 @@
 # Mediated Operation Set Recommendation
 
+> Historical scope recommendation. For implemented operation coverage, including
+> xattrs and metadata, see [authorization scope](../cli.md#authorization-scope).
+
 ## Question
 
 Which filesystem operations does v1 actually need to mediate, given the

@@ -1,5 +1,10 @@
 # Agent Broker Protocol
 
+> Design note. The local Unix-socket agent and three frontends are implemented;
+> remote forwarding remains planned. The implemented wire format lives in
+> [src/agent/protocol.zig](../../src/agent/protocol.zig), and current frontend
+> usage is in the [CLI reference](../cli.md#agent).
+
 This note proposes the first real broker protocol for file-snitch.
 
 The goal is to replace the current local TTY prompt path with an
