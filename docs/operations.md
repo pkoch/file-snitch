@@ -43,8 +43,9 @@ Check these in order:
 
 1. `status` lists the intended file and policy path.
 2. The daemon is running in `prompt` mode.
-3. No remembered decision already covers that executable, enrolled path, and
-   approval class. Decisions apply on the next access without a remount.
+3. No remembered allow or deny outcome already covers that executable, enrolled
+   path, and approval class. Those outcomes apply on the next access without a
+   remount.
 4. `doctor` can reach the agent at the same socket the daemon uses.
 5. The frontend can display a prompt: inherited stdio or `--tty` for
    `terminal-pinentry`, `osascript` on macOS, or `zenity` in a Linux graphical

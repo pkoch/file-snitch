@@ -7,8 +7,8 @@ with a GPG key that you can use to encrypt and decrypt entries.
 
 | Platform | Requirements |
 | --- | --- |
-| macOS | Homebrew, macFUSE, `pass`, and GPG |
-| Linux | Homebrew/Linuxbrew, distro FUSE 3, `pass`, and GPG; `zenity` for GUI prompts and user services |
+| macOS | macFUSE, `pass`, and GPG; Homebrew for formula installs only |
+| Linux | Distro FUSE 3, `pass`, and GPG; `zenity` for GUI prompts and user services; Homebrew/Linuxbrew for formula installs only |
 
 On Debian/Ubuntu, install the FUSE runtime and build headers with:
 

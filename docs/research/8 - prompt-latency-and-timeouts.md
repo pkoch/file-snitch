@@ -1,8 +1,10 @@
 # Prompt Latency And Timeout Assumptions
 
-> Historical spike measurements. The five-second default discussed below was
-> replaced by a 30-second agent interaction timeout. Protocol liveness has a
-> separate one-second default; see [agent configuration](../cli.md#agent).
+> Historical spike measurements. Everything below, including “Current
+> implementation facts” and references to a “current 5 s default,” describes
+> the superseded CLI broker. The current agent interaction timeout defaults to
+> 30 seconds, while protocol liveness has a separate one-second default; see
+> [agent configuration](../cli.md#agent).
 
 ## Question
 
