@@ -689,21 +689,21 @@ fn runStaticPolicy(allocator: std.mem.Allocator, command: RunCommand) !void {
 }
 
 fn resolveExistingRegularFileArgument(allocator: std.mem.Allocator, label: []const u8, raw_path: []const u8) ![]const u8 {
-    const resolved = std.Io.Dir.realPathFileAbsoluteAlloc(runtime.io(), raw_path, allocator) catch |err| switch (err) {
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().realPathFile(runtime.io(), raw_path, &buffer) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("error: {s} does not exist: {s}\n", .{ label, raw_path });
             return error.InvalidUsage;
         },
         else => return err,
     };
-    errdefer allocator.free(resolved);
+    const resolved = buffer[0..len];
 
     const target_kind = enrollment_ops.pathKind(allocator, resolved) catch |err| {
         if (err == error.NoDevice) {
-            return invalidUsageWithOwnedPath(
-                allocator,
+            return invalidUsage(
                 "error: target file is on a stale or inaccessible device: {s}\nhint: restart `file-snitch run`; if this persists, unmount the affected parent directory and retry\n",
-                resolved,
+                .{resolved},
             );
         }
         std.debug.print("error: target file could not be inspected: {s}: {}\n", .{ resolved, err });
@@ -712,13 +712,13 @@ fn resolveExistingRegularFileArgument(allocator: std.mem.Allocator, label: []con
 
     switch (target_kind) {
         .file => {},
-        .directory => return invalidUsageWithOwnedPath(allocator, "error: target file is a directory: {s}\n", resolved),
-        .other => return invalidUsageWithOwnedPath(allocator, "error: target file is not a regular file: {s}\n", resolved),
-        .missing => return invalidUsageWithOwnedPath(allocator, "error: target file does not exist: {s}\n", resolved),
+        .directory => return invalidUsage("error: target file is a directory: {s}\n", .{resolved}),
+        .other => return invalidUsage("error: target file is not a regular file: {s}\n", .{resolved}),
+        .missing => return invalidUsage("error: target file does not exist: {s}\n", .{resolved}),
     }
 
     try requireSupportedEnrollmentTargetPath(allocator, label, resolved);
-    return resolved;
+    return allocator.dupe(u8, resolved);
 }
 
 fn resolvePathArgument(allocator: std.mem.Allocator, raw_path: []const u8) ![]const u8 {
@@ -931,12 +931,6 @@ fn invalidUsage(comptime format: []const u8, args: anytype) error{InvalidUsage} 
     return error.InvalidUsage;
 }
 
-fn invalidUsageWithOwnedPath(allocator: std.mem.Allocator, comptime format: []const u8, owned_path: []const u8) error{InvalidUsage} {
-    defer allocator.free(owned_path);
-    std.debug.print(format, .{owned_path});
-    return error.InvalidUsage;
-}
-
 fn printUsage() void {
     std.debug.print(
         \\usage:
@@ -1040,12 +1034,16 @@ test "parse command rejects services render without output dir" {
     try std.testing.expectError(error.InvalidUsage, parseCommand(allocator, &.{ "services", "render" }));
 }
 
+test "enroll rejects a directory argument" {
+    try std.testing.expectError(error.InvalidUsage, parseCommand(std.testing.allocator, &.{ "enroll", "." }));
+}
+
 test "projection prepare rollback only removes symlinks it created" {
     const allocator = std.testing.allocator;
-    const test_id = std.crypto.random.int(u64);
-    const test_root = try std.fmt.allocPrint(allocator, ".zig-cache/file-snitch-projection-rollback-{x}", .{test_id});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const test_root = try tmp.dir.realPathFileAlloc(runtime.io(), ".", allocator);
     defer allocator.free(test_root);
-    defer std.Io.Dir.cwd().deleteTree(runtime.io(), test_root) catch {};
 
     const target_parent = try std.fs.path.join(allocator, &.{ test_root, "targets" });
     defer allocator.free(target_parent);

@@ -1028,6 +1028,25 @@ test "directory operations fail explicitly in the file-only spike" {
     try expectAuditEvent(audit_snapshot.items, "rmdir", "/empty-dir", not_supported);
 }
 
+test "enroll releases a valid target path when policy loading fails" {
+    const allocator = std.testing.allocator;
+    var fixture = try TempPolicyFile.init(allocator, "enroll-path");
+    defer fixture.deinit();
+    var home_scope = try ScopedHome.init(allocator, fixture.dir.path);
+    defer home_scope.deinit();
+
+    const target = try fixture.dir.childPathAlloc("target");
+    defer allocator.free(target);
+    (try createFileAbsolute(target, .{})).close();
+    var policy_file = try createFileAbsolute(fixture.path, .{});
+    defer policy_file.close();
+    try policy_file.writeAll("version: 2\n");
+
+    try std.testing.expectError(error.UnsupportedPolicyVersion, app_src.cli.run(allocator, &.{
+        "enroll", target, "--policy", fixture.path,
+    }));
+}
+
 test "policy file loader treats empty file as a no-op" {
     const allocator = std.testing.allocator;
     var temp_policy = try TempPolicyFile.init(allocator, "empty");
