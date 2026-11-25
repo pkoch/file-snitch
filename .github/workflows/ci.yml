@@ -9,18 +9,13 @@ on:
 jobs:
   hygiene:
     runs-on: ubuntu-24.04
-    env:
-      ZIG_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Check shell scripts
-        run: |
-          mapfile -t shell_files < <(
-            find .devcontainer scripts tests -type f -name '*.sh' | sort
-          )
-          bash -n "${shell_files[@]}"
+        shell: bash
+        run: find .devcontainer scripts tests -type f -name '*.sh' -print0 | xargs -0 -n 1 bash -n
 
       - name: Run shellcheck
         uses: reviewdog/action-shellcheck@f627b974d3005f993dc36f46d2cdf2684be18e5c # v1.9.0
@@ -29,21 +24,6 @@ jobs:
 
       - name: Check demo artifact redaction
         run: ./scripts/demo/check-demo-artifacts.sh
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            fuse3 \
-            libfuse3-dev \
-            pkg-config \
-          ;
-
-      - uses: ./.github/actions/setup-zig
-        with:
-          zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
-
-      - name: Check docs
-        run: ./scripts/docs/check-docs.sh
 
   build:
     runs-on: ubuntu-24.04
@@ -67,6 +47,9 @@ jobs:
           zig-cache-dir: ${{ env.ZIG_CACHE_DIR }}
 
       - run: ./tests/build.sh
+
+      - name: Check docs
+        run: ./scripts/docs/check-docs.sh --skip-build
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
