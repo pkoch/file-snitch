@@ -266,6 +266,188 @@ fn runLoadedConfigCommandAlloc(allocator: std.mem.Allocator, argv: []const []con
     return result.stdout;
 }
 
+pub fn macosLoadedServiceMatchesRender(
+    allocator: std.mem.Allocator,
+    rendered: RenderedServices,
+    service: RenderedService,
+    loaded: []const u8,
+) !bool {
+    if (std.mem.indexOf(u8, loaded, rendered.bin_path) == null) return false;
+
+    if (std.mem.eql(u8, service.label, "dev.file-snitch.agent")) {
+        return std.mem.indexOf(u8, loaded, "agent") != null and
+            std.mem.indexOf(u8, loaded, "--frontend") != null and
+            std.mem.indexOf(u8, loaded, "macos-ui") != null;
+    }
+
+    if (std.mem.indexOf(u8, loaded, "run") == null or std.mem.indexOf(u8, loaded, "prompt") == null) {
+        return false;
+    }
+
+    const loaded_pass_bin = (try launchctlStringValueAlloc(allocator, loaded, defaults.pass_bin_env)) orelse return false;
+    defer allocator.free(loaded_pass_bin);
+    const loaded_path = (try launchctlStringValueAlloc(allocator, loaded, "PATH")) orelse return false;
+    defer allocator.free(loaded_path);
+    const rendered_path = (try plistStringValueAlloc(allocator, service.contents, "PATH")) orelse return false;
+    defer allocator.free(rendered_path);
+
+    return std.mem.eql(u8, loaded_pass_bin, rendered.pass_bin_path) and
+        std.mem.eql(u8, loaded_path, rendered_path);
+}
+
+const launchd_default_path = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+const ServicePassProbe = struct {
+    command: []u8,
+    available: bool,
+    /// Static label for the service setting or fallback used by the probe.
+    source: []const u8,
+
+    pub fn deinit(self: *ServicePassProbe, allocator: std.mem.Allocator) void {
+        allocator.free(self.command);
+        self.* = undefined;
+    }
+};
+
+pub fn macosRunServicePassProbeAlloc(allocator: std.mem.Allocator, run_service_path: []const u8) !ServicePassProbe {
+    if (try macosRunServicePassProbeFromLaunchctlAlloc(allocator)) |probe| {
+        return probe;
+    }
+    return macosRunServicePassProbeFromPlistAlloc(allocator, run_service_path);
+}
+
+fn macosRunServicePassProbeFromLaunchctlAlloc(allocator: std.mem.Allocator) !?ServicePassProbe {
+    const result = std.process.run(allocator, runtime.io(), .{
+        .argv = &.{ "sh", "-lc", "launchctl print \"gui/$(id -u)/dev.file-snitch.run\"" },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(4096),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| {
+            if (code != 0) return null;
+        },
+        else => return null,
+    }
+
+    return try macosRunServicePassProbeFromTextAlloc(
+        allocator,
+        result.stdout,
+        launchctlStringValueAlloc,
+        .{
+            .pass_bin = "loaded launchd FILE_SNITCH_PASS_BIN",
+            .path = "loaded launchd PATH",
+            .default_path = "loaded launchd default PATH",
+        },
+    );
+}
+
+fn macosRunServicePassProbeFromPlistAlloc(allocator: std.mem.Allocator, run_service_path: []const u8) !ServicePassProbe {
+    const contents = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), run_service_path, allocator, .limited(64 * 1024));
+    defer allocator.free(contents);
+
+    return (try macosRunServicePassProbeFromTextAlloc(
+        allocator,
+        contents,
+        plistStringValueAlloc,
+        .{
+            .pass_bin = defaults.pass_bin_env,
+            .path = "launchd PATH",
+            .default_path = "launchd default PATH",
+        },
+    )).?;
+}
+
+const ServicePassProbeSources = struct {
+    pass_bin: []const u8,
+    path: []const u8,
+    default_path: []const u8,
+};
+
+fn macosRunServicePassProbeFromTextAlloc(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    comptime stringValueAlloc: fn (std.mem.Allocator, []const u8, []const u8) anyerror!?[]u8,
+    sources: ServicePassProbeSources,
+) !?ServicePassProbe {
+    if (try stringValueAlloc(allocator, contents, defaults.pass_bin_env)) |command| {
+        errdefer allocator.free(command);
+        const available = if (std.fs.path.isAbsolute(command))
+            try commandAvailable(allocator, command)
+        else blk: {
+            const service_path = (try stringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+            defer allocator.free(service_path);
+            break :blk try commandExistsInPath(allocator, command, service_path);
+        };
+        return .{
+            .command = command,
+            .available = available,
+            .source = sources.pass_bin,
+        };
+    }
+
+    const service_path = (try stringValueAlloc(allocator, contents, "PATH")) orelse try allocator.dupe(u8, launchd_default_path);
+    defer allocator.free(service_path);
+    return .{
+        .command = try allocator.dupe(u8, "pass"),
+        .available = try commandExistsInPath(allocator, "pass", service_path),
+        .source = if (std.mem.eql(u8, service_path, launchd_default_path)) sources.default_path else sources.path,
+    };
+}
+
+fn commandExistsInPath(allocator: std.mem.Allocator, command: []const u8, path: []const u8) !bool {
+    const result = std.process.run(allocator, runtime.io(), .{
+        .argv = &.{ "sh", "-lc", "PATH=\"$2\"; command -v \"$1\" >/dev/null 2>&1", "sh", command, path },
+        .stdout_limit = .limited(1),
+        .stderr_limit = .limited(1),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn launchctlStringValueAlloc(allocator: std.mem.Allocator, contents: []const u8, key: []const u8) !?[]u8 {
+    var value: ?[]u8 = null;
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (!std.mem.startsWith(u8, trimmed, key)) continue;
+
+        const after_key = std.mem.trim(u8, trimmed[key.len..], " \t");
+        if (!std.mem.startsWith(u8, after_key, "=>")) continue;
+
+        if (value) |previous| allocator.free(previous);
+        value = try allocator.dupe(u8, std.mem.trim(u8, after_key[2..], " \t\r\n"));
+    }
+    return value;
+}
+
+fn plistStringValueAlloc(allocator: std.mem.Allocator, contents: []const u8, key: []const u8) !?[]u8 {
+    const key_tag = try std.fmt.allocPrint(allocator, "<key>{s}</key>", .{key});
+    defer allocator.free(key_tag);
+    const key_index = std.mem.indexOf(u8, contents, key_tag) orelse return null;
+    const after_key = contents[key_index + key_tag.len ..];
+    const open_tag = "<string>";
+    const close_tag = "</string>";
+    const open_index = std.mem.indexOf(u8, after_key, open_tag) orelse return null;
+    const value_start = open_index + open_tag.len;
+    const after_open = after_key[value_start..];
+    const close_index = std.mem.indexOf(u8, after_open, close_tag) orelse return null;
+    return @as(?[]u8, try allocator.dupe(u8, std.mem.trim(u8, after_open[0..close_index], " \t\r\n")));
+}
+
 pub fn systemdCatBodyAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var body: std.ArrayList(u8) = .empty;
     errdefer body.deinit(allocator);

@@ -124,12 +124,13 @@ See [demo](./demo.md) for regeneration and
 | `src/cli.zig` | Argument parsing and dispatch |
 | `src/cli_supervisor.zig`, `src/cli_policy_watch.zig` | Projection lifecycle and policy watching |
 | `src/config/core.zig` | Policy parsing, writes, and projection plans |
-| `src/policy/core.zig`, `src/enrollment.zig` | Enrollment commands, diagnostics, and file migration |
+| `src/policy/core.zig`, `src/enrollment.zig` | Enrollment, policy status, and file migration |
+| `src/policy/doctor.zig` | Doctor checks and redacted debug dossiers |
 | `src/policy.zig` | Access-policy evaluation |
 | `src/agent/`, `src/prompt.zig` | Socket protocol and prompt frontends |
 | `src/filesystem/`, `src/daemon.zig` | Filesystem model and FUSE callbacks |
 | `src/store.zig` | Guarded-object backend interface and implementations |
-| `src/user_services.zig`, `packaging/` | Embedded service definitions |
+| `src/user_services.zig`, `packaging/` | User service definitions, installation, and inspection |
 | `c/` | C FUSE harness and syscall helpers |
 | `src/root.zig` | Shared module exports for tests and non-CLI consumers |
 
