@@ -103,12 +103,21 @@ Remembering a choice requires the requester to identify the executable.
 null spellings are not accepted.
 
 ```yaml
-expires_at: '2030-01-01T12:00:00Z'
+version: 1
+enrollments:
+  - path: '~/.kube/config'
+    object_id: '2c2188feb50066333c0723302c3ad32e'
+decisions:
+  - executable_path: '/usr/local/bin/kubectl'
+    path: '~/.kube/config'
+    approval_class: 'read_like'
+    outcome: 'allow'
+    expires_at: '2030-01-01T12:00:00Z'
 ```
 
-That decision expires at noon UTC on January 1, 2030. Expired decisions are
-ignored and pruned by `run`; changes to remembered decisions apply on the next
-guarded access without a remount.
+This policy allows reads by `kubectl` until noon UTC on January 1, 2030.
+`run` ignores and prunes expired decisions. Changes to remembered decisions
+apply on the next guarded access without a remount.
 
 Use `file-snitch status` to inspect the policy and `file-snitch doctor` to check
 its objects and projection health.

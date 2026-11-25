@@ -63,9 +63,13 @@ zig build test
 
 `zig build` installs the CLI at `zig-out/bin/file-snitch`. `zig build test` runs
 the test roots wired in [build.zig](../build.zig). The docs check builds the
-binary, compares the documented command block with its help output, checks
-local Markdown links, and checks the smoke-test inventory below.
-Linux CI passes `--skip-build` to check the binary produced by its build step.
+CLI, checks `--version` against [VERSION](../VERSION), compares the documented
+commands with its help, and loads the
+[policy examples](./policy.md) with `file-snitch status` in a disposable home.
+Across the project's Markdown it checks local links and section anchors. It
+runs `bash -n` on Bash examples, checks the repository scripts they reference,
+and parses JSON examples. It also verifies the smoke-test inventory below.
+Linux CI uses `--skip-build` to reuse its binary.
 
 Run `zig build compile-commands` after cloning or changing build flags or FUSE
 locations to refresh `compile_commands.json` for clangd.
@@ -121,18 +125,18 @@ See [demo](./demo.md) for regeneration and
 
 | Path | Responsibility |
 | --- | --- |
-| `src/cli.zig` | Argument parsing and dispatch |
-| `src/cli_supervisor.zig`, `src/cli_policy_watch.zig` | Projection lifecycle and policy watching |
-| `src/config/core.zig` | Policy parsing, writes, and projection plans |
-| `src/policy/core.zig`, `src/enrollment.zig` | Enrollment, policy status, and file migration |
-| `src/policy/doctor.zig` | Doctor checks and redacted debug dossiers |
-| `src/policy.zig` | Access-policy evaluation |
-| `src/agent/`, `src/prompt.zig` | Socket protocol and prompt frontends |
-| `src/filesystem/`, `src/daemon.zig` | Filesystem model and FUSE callbacks |
-| `src/store.zig` | Guarded-object backend interface and implementations |
-| `src/user_services.zig`, `packaging/` | User service definitions, installation, and inspection |
-| `c/` | C FUSE harness and syscall helpers |
-| `src/root.zig` | Shared module exports for tests and non-CLI consumers |
+| [src/cli.zig](../src/cli.zig) | Argument parsing and dispatch |
+| [src/cli_supervisor.zig](../src/cli_supervisor.zig), [src/cli_policy_watch.zig](../src/cli_policy_watch.zig) | Projection lifecycle and policy watching |
+| [src/config/core.zig](../src/config/core.zig) | Policy parsing, writes, and projection plans |
+| [src/policy/core.zig](../src/policy/core.zig), [src/enrollment.zig](../src/enrollment.zig) | Enrollment, policy status, and file migration |
+| [src/policy/doctor.zig](../src/policy/doctor.zig) | Doctor checks and redacted debug dossiers |
+| [src/policy.zig](../src/policy.zig) | Access-policy evaluation |
+| [src/agent/](../src/agent/), [src/prompt.zig](../src/prompt.zig) | Socket protocol and prompt frontends |
+| [src/filesystem/](../src/filesystem/), [src/daemon.zig](../src/daemon.zig) | Filesystem model and FUSE callbacks |
+| [src/store.zig](../src/store.zig) | Guarded-object backend interface and implementations |
+| [src/user_services.zig](../src/user_services.zig), [packaging/](../packaging/) | User service definitions, installation, and inspection |
+| [c/](../c/) | C FUSE harness and syscall helpers |
+| [src/root.zig](../src/root.zig) | Shared module exports for tests and non-CLI consumers |
 
 `src/agent.zig`, `src/config.zig`, and `src/filesystem.zig` re-export their
 submodules. Most implementation changes belong in the corresponding directory.

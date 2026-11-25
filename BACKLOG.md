@@ -13,9 +13,9 @@ Status:
 
 ## Near-Term Engineering
 
-- `[ ]` Add policy examples that are validated by automation
-  - examples: empty policy, one enrollment, temporary allow, durable deny
-  - validate examples with the real parser rather than only Markdown review
+- `[x]` Validate the [policy guide's examples](./docs/policy.md) with the real
+  parser, covering an empty policy, one enrollment, a temporary allow, and a
+  durable deny.
 - `[ ]` Make `doctor` hints point at stable docs sections
   - operations symptoms should map to concrete recovery docs
   - policy-shape failures should map to [docs/policy.md](./docs/policy.md)
