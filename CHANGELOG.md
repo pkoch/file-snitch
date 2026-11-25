@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a potential crash when `file-snitch enroll` cleaned up its target path.
+
 ## [0.8.1] - 2026-05-01
 
 ### Added

@@ -72,7 +72,9 @@ pub fn build(b: *std.Build) void {
         source: []const u8,
         needs_yaml: bool,
         link_libc: bool,
+        filters: []const []const u8 = &.{},
     }{
+        .{ .source = "src/cli.zig", .needs_yaml = true, .link_libc = true, .filters = &.{"cli.test."} },
         .{ .source = "src/prompt.zig", .needs_yaml = false, .link_libc = true },
         .{ .source = "src/store.zig", .needs_yaml = false, .link_libc = true },
         .{ .source = "src/config.zig", .needs_yaml = true, .link_libc = true },
@@ -98,7 +100,7 @@ pub fn build(b: *std.Build) void {
         }
         test_module.addOptions("build_options", build_options);
 
-        const tests = b.addTest(.{ .root_module = test_module });
+        const tests = b.addTest(.{ .root_module = test_module, .filters = test_info.filters });
         configureLinkerPolicy(tests, os_tag);
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
