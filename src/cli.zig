@@ -5,6 +5,7 @@ const completion = @import("cli_completion.zig");
 const config = @import("config.zig");
 const daemon = @import("daemon.zig");
 const defaults = @import("defaults.zig");
+const doctor = @import("policy/doctor.zig");
 const enrollment_ops = @import("enrollment.zig");
 const filesystem = @import("filesystem.zig");
 const policy = @import("policy.zig");
@@ -107,7 +108,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
         },
         .doctor => |command| {
             defer command.deinit(allocator);
-            try policy_commands.doctor(allocator, .{
+            try doctor.run(allocator, .{
                 .policy_path = command.policy_path,
                 .export_debug_dossier_path = command.export_debug_dossier_path,
             });
