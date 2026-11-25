@@ -12,13 +12,17 @@ command -v python3 >/dev/null 2>&1 || fail "missing required tool: python3"
 
 cd "$repo_root"
 
-python3 - "$repo_root" <<'PY'
+python3 - "$@" <<'PY'
+import argparse
 import pathlib
 import re
 import sys
 from urllib.parse import unquote
 
-repo_root = pathlib.Path(sys.argv[1])
+repo_root = pathlib.Path.cwd()
+parser = argparse.ArgumentParser(prog="check-docs.sh")
+parser.add_argument("--skip-build", action="store_true", help="use the existing zig-out/bin/file-snitch")
+args = parser.parse_args()
 
 
 def fail(message: str) -> None:
@@ -103,7 +107,8 @@ def extract_fenced_block(path: pathlib.Path, heading: str) -> list[str]:
 def check_cli_command_block() -> None:
     import subprocess
 
-    subprocess.run(["zig", "build", "--summary", "none"], cwd=repo_root, check=True)
+    if not args.skip_build:
+        subprocess.run(["zig", "build", "--summary", "none"], cwd=repo_root, check=True)
     completed = subprocess.run(
         [str(repo_root / "zig-out/bin/file-snitch"), "help"],
         cwd=repo_root,

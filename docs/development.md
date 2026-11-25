@@ -65,6 +65,7 @@ zig build test
 the test roots wired in [build.zig](../build.zig). The docs check builds the
 binary, compares the documented command block with its help output, checks
 local Markdown links, and checks the smoke-test inventory below.
+Linux CI passes `--skip-build` to check the binary produced by its build step.
 
 Run `zig build compile-commands` after cloning or changing build flags or FUSE
 locations to refresh `compile_commands.json` for clangd.
@@ -108,7 +109,7 @@ macOS; that script and the docs check are separate CI steps. See
 To check each shell script's syntax:
 
 ```bash
-find .devcontainer scripts tests -type f -name '*.sh' -exec bash -n {} ';'
+find .devcontainer scripts tests -type f -name '*.sh' -print0 | xargs -0 -n 1 bash -n
 ```
 
 CI also runs ShellCheck and `./scripts/demo/check-demo-artifacts.sh`. The latter
