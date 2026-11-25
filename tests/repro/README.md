@@ -15,15 +15,15 @@ the smoke tests in `tests/smoke/` and `./tests/build.sh`.
 
 ## Scripts
 
-- `repro-enroll-exit.sh`
+- [repro-enroll-exit.sh](./repro-enroll-exit.sh)
   Stress `file-snitch enroll` outside the smoke harness in `direct`,
   `capture`, and `wrapper` modes.
 
-- `repro-run-exit.sh`
+- [repro-run-exit.sh](./repro-run-exit.sh)
   Stress `file-snitch run allow` teardown with the same
   `SIGINT -> SIGTERM -> SIGKILL` escalation the smoke harness uses.
 
-- `repro-run-empty-policy-fixture.sh`
+- [repro-run-empty-policy-fixture.sh](./repro-run-empty-policy-fixture.sh)
   Reproduce the `run-empty-policy` smoke path through `tests/smoke/lib/run-fixture.sh`
   while preserving the failing fixture for inspection.
 
